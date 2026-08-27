@@ -1,0 +1,247 @@
+import { readFileSync } from "node:fs";
+
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { TextFlowStaticBlock } from "@/components/editor/text-flow/TextFlowStaticBlock";
+import type { CodeBlockNode, ListNode } from "@/features/document";
+
+/**
+ * `TextFlowStaticBlock` is the only static body renderer: print, PDF, the embedded viewer, and
+ * thumbnails all go through it. The marker itself comes from `document-surface.css`, which the
+ * viewer package `@import`s, so one attribute here plus one rule there covers every output.
+ */
+function orderedList(markerStyle?: ListNode["markerStyle"]): ListNode {
+  return {
+    type: "list",
+    id: "list_1",
+    listType: "ordered",
+    ...(markerStyle ? { markerStyle } : {}),
+    items: [{ type: "listItem", id: "li_1", children: [{ type: "text", text: "本文" }] }],
+  };
+}
+
+function documentSurfaceCss(): string {
+  return readFileSync(new URL("../../../app/document-surface.css", import.meta.url), "utf8");
+}
+
+describe("TextFlowStaticBlock ordered list markers", () => {
+  it("marks a paren list so print, PDF, and the viewer draw (1)", () => {
+    expect(renderToStaticMarkup(<TextFlowStaticBlock block={orderedList("paren")} />))
+      .toContain('data-list-marker="paren"');
+  });
+
+  it("leaves the plain decimal list without a marker attribute", () => {
+    expect(renderToStaticMarkup(<TextFlowStaticBlock block={orderedList()} />))
+      .not.toContain("data-list-marker");
+  });
+
+  it("styles the paren marker in the shared document surface stylesheet only", () => {
+    const css = documentSurfaceCss();
+
+    expect(css).toContain('ol[data-list-marker="paren"]');
+    expect(css).toMatch(/@counter-style\s+sigma-doc-paren-decimal/);
+  });
+
+  it("renders alignment on the list-item body without moving the marker container", () => {
+    const block = orderedList("paren");
+    block.items[0].align = "center";
+    const markup = renderToStaticMarkup(<TextFlowStaticBlock block={block} />);
+
+    expect(markup).toContain('style="display:block;text-align:center"');
+    expect(markup).not.toMatch(/<li[^>]*text-align:center/);
+  });
+
+  it("renders continuation paragraphs with independent alignment under one marker", () => {
+    const block = orderedList("paren");
+    block.items[0].continuations = [
+      { type: "paragraph", id: "li_1_center", children: [{ type: "text", text: "中央" }], align: "center" },
+      { type: "paragraph", id: "li_1_left", children: [{ type: "text", text: "左" }], align: "left" },
+    ];
+    const markup = renderToStaticMarkup(<TextFlowStaticBlock block={block} />);
+
+    expect(markup).toContain('data-sigma-doc-id="li_1_center"');
+    expect(markup).toContain('style="text-align:center"');
+    expect(markup).toContain('data-sigma-doc-id="li_1_left"');
+    expect(markup.match(/<li/g)).toHaveLength(1);
+  });
+});
+
+/**
+ * The marker takes the typography of the item's first run. The value is a derived one — nothing is
+ * added to SigmaDoc — so it has to be emitted by every projection; this component covers print,
+ * PDF, the viewer, and thumbnails at once.
+ */
+function styledList(
+  items: Array<{ id: string; children: ListNode["items"][number]["children"]; nested?: ListNode[] }>,
+): ListNode {
+  return {
+    type: "list",
+    id: "list_1",
+    listType: "ordered",
+    markerStyle: "paren",
+    items: items.map((item) => ({
+      type: "listItem",
+      id: item.id,
+      children: item.children,
+      ...(item.nested ? { nested: item.nested } : {}),
+    })),
+  };
+}
+
+describe("TextFlowStaticBlock list marker typography", () => {
+  it("puts the first run's font on the li so ::marker can read it", () => {
+    const markup = renderToStaticMarkup(<TextFlowStaticBlock block={styledList([
+      { id: "li_1", children: [{ type: "text", text: "いち", fontFamily: '"Yu Mincho", serif', fontSize: 18 }] },
+    ])} />);
+
+    expect(markup).toContain("data-list-marker-typography");
+    expect(markup).toContain("--sigma-doc-list-marker-font-family:&quot;Yu Mincho&quot;, serif");
+    expect(markup).toContain("--sigma-doc-list-marker-font-size:18pt");
+  });
+
+  it("leaves an unstyled item alone so existing documents keep their computed values", () => {
+    const markup = renderToStaticMarkup(<TextFlowStaticBlock block={styledList([
+      { id: "li_1", children: [{ type: "text", text: "いち" }] },
+    ])} />);
+
+    expect(markup).not.toContain("data-list-marker-typography");
+    expect(markup).not.toContain("--sigma-doc-list-marker");
+  });
+
+  it("takes only the size from a leading formula, never the family", () => {
+    const markup = renderToStaticMarkup(<TextFlowStaticBlock block={styledList([{
+      id: "li_1",
+      children: [
+        { type: "mathInline", id: "m_1", tex: "x^2", display: "inline", fontFamily: '"Yu Mincho", serif', fontSize: 18 },
+      ],
+    }])} />);
+
+    expect(markup).toContain("--sigma-doc-list-marker-font-size:18pt");
+    expect(markup).not.toContain("--sigma-doc-list-marker-font-family");
+  });
+
+  it("does not leak a styled parent's font into an unstyled nested item", () => {
+    const markup = renderToStaticMarkup(<TextFlowStaticBlock block={styledList([{
+      id: "li_1",
+      children: [{ type: "text", text: "いち", fontFamily: '"Yu Mincho", serif' }],
+      nested: [styledList([{ id: "li_1_1", children: [{ type: "text", text: "こ" }] }])],
+    }])} />);
+
+    // The child li must not carry the property; the CSS reset below is what stops the parent's
+    // value from inheriting into it.
+    expect(markup.match(/data-list-marker-typography/g)).toHaveLength(1);
+  });
+});
+
+/**
+ * The markup above is only half the behaviour: the attribute does nothing unless the shared
+ * stylesheet reads it. These assert the rules the projection depends on, so a rename or a deleted
+ * reset fails here instead of silently going back to "the marker ignores the font".
+ */
+describe("list marker typography stylesheet contract", () => {
+  it("reads both custom properties from ::marker on the attribute-carrying li", () => {
+    const css = documentSurfaceCss();
+    const rule = /li\[data-list-marker-typography\]::marker\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+    expect(rule).toMatch(/font-family:\s*var\(--sigma-doc-list-marker-font-family,\s*inherit\)/);
+    expect(rule).toMatch(/font-size:\s*var\(--sigma-doc-list-marker-font-size,\s*inherit\)/);
+  });
+
+  it("resets both custom properties on every list so they cannot inherit into a nested one", () => {
+    const css = documentSurfaceCss();
+    const rule = /:is\(ol,\s*ul\)\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+    expect(rule).toMatch(/--sigma-doc-list-marker-font-family:\s*initial/);
+    expect(rule).toMatch(/--sigma-doc-list-marker-font-size:\s*initial/);
+  });
+});
+
+describe("TextFlowStaticBlock code theme", () => {
+  const darkCode: CodeBlockNode = {
+    type: "codeBlock",
+    id: "code_dark",
+    language: "typescript",
+    theme: "dark",
+    children: [{ type: "text", text: "const answer = 42;", marks: ["bold"] }],
+  };
+
+  it("carries the code-only dark setting into print, PDF, viewer, and thumbnails", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock block={darkCode} classNames={{ code: "print-code" }} />,
+    );
+
+    expect(markup).toContain('class="print-code"');
+    expect(markup).toContain('data-code-theme="dark"');
+    expect(markup).toContain("font-weight:bold");
+  });
+
+  it("defines both backgrounds on the stable theme attribute rather than focus state", () => {
+    const css = documentSurfaceCss();
+
+    expect(css).toMatch(/\.print-code\s*\{[\s\S]*?background:\s*#f7f8fa/);
+    expect(css).toMatch(/\.print-code\[data-code-theme="dark"\]\s*\{[\s\S]*?background:\s*#171717/);
+    expect(css).not.toMatch(/\.print-code:(?:focus|focus-within)[^{]*\{[^}]*background:/);
+  });
+});
+
+describe("TextFlowStaticBlock code fences", () => {
+  it("does not print a wrapping markdown fence at the start of a JS code block", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock
+        block={{
+          type: "codeBlock",
+          id: "code_js",
+          language: "javascript",
+          children: [{ type: "text", text: "const a = 1;" }],
+        }}
+        classNames={{ code: "print-code" }}
+      />,
+    );
+    expect(plainCodeText(markup)).toBe("const a = 1;");
+    expect(plainCodeText(markup).startsWith("```")).toBe(false);
+  });
+
+  it("drops an outer fence from stored code and keeps inner backticks", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock
+        block={{
+          type: "codeBlock",
+          id: "code_fenced",
+          language: "javascript",
+          children: [{ type: "text", text: "```js\nconst fence = \"```\";\n```" }],
+        }}
+        classNames={{ code: "print-code" }}
+      />,
+    );
+    expect(plainCodeText(markup)).toBe("const fence = \"```\";");
+    expect(plainCodeText(markup).startsWith("```")).toBe(false);
+  });
+
+  it("drops a leading opening fence without a closing fence", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock
+        block={{
+          type: "codeBlock",
+          id: "code_open",
+          language: "javascript",
+          children: [{ type: "text", text: "```asdasda\nasdasdasdsaadasdasdas" }],
+        }}
+        classNames={{ code: "print-code" }}
+      />,
+    );
+    expect(plainCodeText(markup)).toBe("asdasda\nasdasdasdsaadasdasdas");
+    expect(plainCodeText(markup).startsWith("```")).toBe(false);
+  });
+});
+
+function plainCodeText(markup: string): string {
+  return markup
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&quot;/g, "\"")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+

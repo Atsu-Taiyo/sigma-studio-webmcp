@@ -1,0 +1,660 @@
+import type { Editor } from "@tiptap/core";
+
+import {
+  buildCaretFragmentTable,
+  nextSurfaceInVisualOrder,
+  resolveCaretSurface,
+  resolveVerticalMove,
+  type CaretFragmentPlacement,
+  type CaretFragmentSourceLayout,
+} from "@/features/rendering/core";
+import type { CaretAddress, TextFlowSelectionBookmark } from "@/features/text-editing";
+
+import type { TextRunEditorHandle } from "./text-run-span";
+
+/**
+ * 本文を編集できる面 (surface) の単一 registry。
+ *
+ * ページや段を跨ぐブロックは、正本の面と断片ごとの複製の面という **N+1 個の編集面**に描かれ、
+ * どれも同じ SigmaDoc id を持つ。以前は用途ごとに別々の Map (跨ぎ選択用・断片選択用) が面を
+ * 覚えていて、面の集合が用途ごとに食い違っていた。ここに 1 本化する。
+ *
+ * **登録は `editor` 1 つにつき 1 回**で、打鍵のたびに変わる情報 (担当ブロック列・並び順・断片の
+ * レイアウト) は登録に含めない。含めると再登録が走り、その解除が跨ぎ選択を消してしまう。
+ * 変わる情報は `updateCaretSurfaceFacets` で書き換える。
+ */
+export interface CaretSurfaceId {
+  kind: "unit" | "fragmentReplica" | "richText";
+  /** 本文チャンクの id (kind: "unit")。 */
+  unitId?: string;
+  /** 複製が見せているブロックの id (kind: "fragmentReplica")。 */
+  blockId?: string;
+  /** 複製が見せている断片の番号。正本は 0。 */
+  fragmentIndex?: number;
+}
+
+export interface CaretSurfaceHandle {
+  editor: Editor;
+  surface: CaretSurfaceId;
+  /** 文書順を表すタプル。空配列は「順番を持たない面」= 上下移動の行き先にしない。 */
+  order: readonly number[];
+  /** この面がそのブロックを見せているか。 */
+  ownsBlock: (blockId: string) => boolean;
+  addressAt: (position: number) => CaretAddress | null;
+  posFor: (address: CaretAddress) => number | null;
+  /**
+   * **分割されたブロックの上端**からの縦位置 (拡大前の紙面 px)。原点を `containerBlockId` に
+   * するので、断片の帯 (`sourceOffsetY`) と同じ原点になる。
+   */
+  localYFor: (address: CaretAddress, containerBlockId: string) => number | null;
+  /**
+   * そのブロックを含んでいる「分割されたブロック」の id。1 つのユニットは複数の分割された
+   * ブロックを持ちうるので、面ごとに 1 つへ潰さずキャレットの位置ごとに解決する。
+   */
+  fragmentBlockIdFor: (blockId: string) => string | null;
+  /** この面が関わる断片ブロックの id 一覧 (正本は複数持ちうる)。 */
+  boxIds: readonly string[];
+  /**
+   * この面へキャレットを適用してフォーカスを取る。適用できなければ false。
+   *
+   * 適用の仕方 (ProseMirror の選択の作り方・書式の張り直し) は面が知っている。ルーターは
+   * **どの面に配るか**だけを決める。
+   */
+  applyCaret: (selection: TextFlowSelectionBookmark) => boolean;
+  /**
+   * 次の行までの送り (拡大前の紙面 px)。キャレット矩形の高さではなく**実測の送り**を返す
+   * — 段落と段落の間には余白があり、矩形の高さで代用すると「次の行はまだ同じ断片」と誤る。
+   */
+  caretLineAdvance: (containerBlockId: string, direction: "up" | "down") => number | null;
+  /**
+   * 分割されたブロックの中の縦位置へキャレットを置いてフォーカスを取る。横位置は画面上の
+   * px (`preferredX`) で、面の可視帯に収める。
+   */
+  focusCaretAtLocalY: (input: {
+    containerBlockId: string;
+    localY: number;
+    preferredX: number;
+  }) => boolean;
+  /** 面の一番上 / 一番下の行へキャレットを置く。 */
+  focusCaretAtEdge: (edge: "top" | "bottom", preferredX: number) => boolean;
+  /** 分割されたブロックの直前 / 直後のブロックへキャレットを置く。 */
+  focusCaretAfterBlock: (
+    containerBlockId: string,
+    direction: "up" | "down",
+    preferredX: number,
+  ) => boolean;
+  /** 同じ doc の、その向きにある次のテキストブロックの位置。無ければ null。 */
+  adjacentTextblockAddress: (direction: "up" | "down") => CaretAddress | null;
+  /** キャレットが可視域の外なら、紙面をスクロールして見える位置へ入れる。 */
+  ensureCaretVisible: () => void;
+  /** 跨ぎ選択・跨ぎ置換が使う面ごとの情報。持たない面 (素材ダイアログ等) は null。 */
+  textRun: TextRunEditorHandle | null;
+}
+
+/** 登録後も変わりうる情報。`registerCaretSurface` には渡さない。 */
+export type CaretSurfaceFacets = Omit<CaretSurfaceHandle, "editor">;
+
+const surfaces = new Map<Editor, CaretSurfaceHandle>();
+const unregisterListeners = new Set<(handle: CaretSurfaceHandle) => void>();
+
+export function registerCaretSurface(handle: CaretSurfaceHandle): () => void {
+  surfaces.set(handle.editor, handle);
+  // 待っていた宛先が現れたかもしれない。タイマーではなくここで消化する。
+  if (pendingCaret) {
+    flushPendingCaret();
+  }
+  return () => {
+    const current = surfaces.get(handle.editor);
+    if (!current) {
+      return;
+    }
+    surfaces.delete(handle.editor);
+    // 実際に面が消えたときだけ通知する。ファセットの書き換えでは通知しないので、
+    // 打鍵のたびに跨ぎ選択が消えることはない。
+    unregisterListeners.forEach((listener) => listener(current));
+  };
+}
+
+/**
+ * 登録済みの面の可変情報を書き換える。**面の登録・解除は起きない**ので、跨ぎ選択も
+ * IME 合成も切れない。
+ */
+export function updateCaretSurfaceFacets(
+  editor: Editor,
+  patch: Partial<CaretSurfaceFacets>,
+): void {
+  const current = surfaces.get(editor);
+  if (!current) {
+    return;
+  }
+  surfaces.set(editor, { ...current, ...patch });
+}
+
+/**
+ * 面が本当に消えたときの後始末を購読する。跨ぎ選択の状態はそれぞれの持ち主が持っている
+ * ので、registry 側から状態を触らずに知らせるだけにする。
+ */
+export function subscribeCaretSurfaceUnregister(
+  listener: (handle: CaretSurfaceHandle) => void,
+): () => void {
+  unregisterListeners.add(listener);
+  return () => {
+    unregisterListeners.delete(listener);
+  };
+}
+
+export function getCaretSurface(editor: Editor): CaretSurfaceHandle | null {
+  return surfaces.get(editor) ?? null;
+}
+
+export function getCaretSurfaces(): CaretSurfaceHandle[] {
+  return [...surfaces.values()].filter((handle) => !handle.editor.isDestroyed);
+}
+
+export function getCaretSurfaceByViewDom(viewDom: Element): CaretSurfaceHandle | null {
+  return getCaretSurfaces().find((handle) => handle.editor.view.dom === viewDom) ?? null;
+}
+
+/** 跨ぎ選択・跨ぎ置換のための面。登録順ではなく文書順 (`textRun.order`) で返す。 */
+export function getTextRunSurfaces(groupId: string): TextRunEditorHandle[] {
+  return getCaretSurfaces()
+    .map((handle) => handle.textRun)
+    .filter((textRun): textRun is TextRunEditorHandle => textRun?.groupId === groupId)
+    .sort((left, right) => left.order - right.order);
+}
+
+export function getTextRunSurface(editor: Editor): TextRunEditorHandle | null {
+  return getCaretSurface(editor)?.textRun ?? null;
+}
+
+export function getTextRunSurfaceByViewDom(viewDom: Element): TextRunEditorHandle | null {
+  return getCaretSurfaceByViewDom(viewDom)?.textRun ?? null;
+}
+
+/**
+ * フォーカス中のユニット id。再チャンクの小チャンク併合はチャンクの先頭ブロック id =
+ * React の key を動かすため、フォーカス中 — 特に IME 合成中 — のエディタに掛かると
+ * unmount で IME セッションごと落ちる。`chunkTextRun` はこの id が関わる併合を見送る。
+ */
+export function getFocusedCaretSurfaceUnitIds(): ReadonlySet<string> {
+  const focused = new Set<string>();
+  for (const handle of getCaretSurfaces()) {
+    if (handle.textRun && handle.editor.isFocused) {
+      focused.add(handle.textRun.unitId);
+    }
+  }
+  return focused;
+}
+
+/** その断片ブロックを見せている面すべて (正本 + 複製)。 */
+export function getCaretSurfacesForBox(boxId: string): CaretSurfaceHandle[] {
+  return getCaretSurfaces().filter((handle) => handle.boxIds.includes(boxId));
+}
+
+
+// --- 配送 -------------------------------------------------------------------
+
+let fragmentSources: Readonly<Record<string, CaretFragmentSourceLayout>> = {};
+let fragmentReplicas: Readonly<Record<string, readonly CaretFragmentPlacement[]>> = {};
+
+interface PendingCaret {
+  selection: TextFlowSelectionBookmark;
+  /** マウント要求を出した宛先。同じ宛先へ何度も要求を投げないための鍵。 */
+  requestedKey: string | null;
+  /** 待っている宛先が属する「分割されたブロック」の id。表から消えたら予約を捨てる。 */
+  requestedContainerId: string | null;
+}
+
+let pendingCaret: PendingCaret | null = null;
+const mountListeners = new Set<(surface: CaretSurfaceId) => void>();
+
+/**
+ * ページ割りが決めた断片の並び。配送はこの表だけを見て宛先を決める。
+ */
+export function setFragmentTables(
+  sources: Readonly<Record<string, CaretFragmentSourceLayout>>,
+  replicas: Readonly<Record<string, readonly CaretFragmentPlacement[]>>,
+): void {
+  fragmentSources = sources;
+  fragmentReplicas = replicas;
+  // 待っていた断片が表から消えたら予約を捨てる (タイマーでは消さない)。鍵はキャレットの
+  // 葉ブロックではなく**分割されたブロック**の id — 表はそちらで引くため。
+  const waitingFor = pendingCaret?.requestedContainerId;
+  if (waitingFor && !(waitingFor in fragmentSources)) {
+    pendingCaret = null;
+  }
+  if (pendingCaret) {
+    // 表が最新になった今なら宛先が決まる。
+    flushPendingCaret();
+    return;
+  }
+  rerouteFocusedCaret();
+}
+
+/**
+ * ページ割りが変わって、今キャレットが載っている面がその位置を見せなくなったとき、見せている
+ * 面へ移す。
+ *
+ * 「箱があふれた最初の打鍵」がこれ: 打った瞬間はまだ正本が見せていた行が、再ページ割りの後は
+ * 次のページの断片に移る。**今の**選択を読み直して配り直すので、その間に打ち足した文字より
+ * 前へ戻ることはない。
+ */
+function rerouteFocusedCaret(): void {
+  const focused = getCaretSurfaces().find((handle) => handle.editor.isFocused);
+  if (!focused || !focused.editor.state.selection.empty) {
+    return;
+  }
+  const address = focused.addressAt(focused.editor.state.selection.head);
+  if (!address || !focused.fragmentBlockIdFor(address.blockId)) {
+    return;
+  }
+  const selection: TextFlowSelectionBookmark = {
+    anchor: address,
+    head: address,
+    preferredX: null,
+  };
+  const owners = getCaretSurfaces().filter((handle) => handle.ownsBlock(address.blockId));
+  const target = resolveTargetSurface(owners, selection);
+  if (target.key === surfaceKey(focused.surface)) {
+    // 面は変わらなくても、ページ割りが変わって紙面上の位置は動いている。見えているかを
+    // 確かめ直す (ここを飛ばすと「改行した瞬間に紙面が別の場所を映したまま」になる)。
+    focused.ensureCaretVisible();
+    return;
+  }
+  if (!target.key) {
+    // どの面もこの位置を持っていない。触らない。
+    return;
+  }
+  if (!target.handle) {
+    rememberPending(selection, target);
+    if (target.surface) {
+      const requested = target.surface;
+      mountListeners.forEach((listener) => listener(requested));
+    }
+    return;
+  }
+  applyToSurface(target.handle, selection, target);
+}
+
+/** 描き直しの後に配る予約。まだ配らない。 */
+export function requestCaret(selection: TextFlowSelectionBookmark): void {
+  pendingCaret = { requestedContainerId: null, requestedKey: null, selection };
+}
+
+/** 予約を消化する。描き直しが終わった後に 1 回だけ呼ぶ。 */
+export function flushPendingCaret(): void {
+  const pending = pendingCaret;
+  if (!pending) {
+    return;
+  }
+  pendingCaret = null;
+  deliverCaret(pending.selection);
+}
+
+/**
+ * キャレットを**ただ 1 つの面**へ配る。
+ *
+ * ページを跨ぐブロックは N+1 個の面に描かれ、どれも同じ論理位置を復元できてしまう。以前は
+ * `window` へブロードキャストして全ての面が復元し、購読順で最後の面がフォーカスを攫っていた。
+ * ここで宛先を 1 つに決め、他の面には dispatch しない。
+ */
+export function deliverCaret(selection: TextFlowSelectionBookmark): boolean {
+  const blockId = selection.head.blockId;
+  const owners = getCaretSurfaces().filter((handle) => handle.ownsBlock(blockId));
+  if (owners.length === 0) {
+    rememberPending(selection, { containerBlockId: null, handle: null, key: null, surface: null });
+    return false;
+  }
+
+  const target = resolveTargetSurface(owners, selection);
+  if (!target.handle) {
+    rememberPending(selection, target);
+    if (target.surface) {
+      const requested = target.surface;
+      mountListeners.forEach((listener) => listener(requested));
+    }
+    return false;
+  }
+
+  return applyToSurface(target.handle, selection, target);
+}
+
+/**
+ * 論理位置ひとつをキャレットとして配る (畳まれた選択)。ブロックの端へ焦点を戻す経路が使う。
+ */
+export function focusCaretAddress(address: CaretAddress): boolean {
+  return deliverCaret({ anchor: address, head: address, preferredX: null });
+}
+
+/**
+ * 断片の複製がマウントされるまで待つ購読。カリングされている複製へ配る必要が出たとき、
+ * 「その複製を出してほしい」とだけ伝える。タイマーは置かない。
+ */
+export function subscribeCaretSurfaceMount(
+  listener: (surface: CaretSurfaceId) => void,
+): () => void {
+  mountListeners.add(listener);
+  return () => {
+    mountListeners.delete(listener);
+  };
+}
+
+function rememberPending(selection: TextFlowSelectionBookmark, target: CaretTarget): void {
+  pendingCaret = {
+    requestedContainerId: target.containerBlockId,
+    requestedKey: target.key,
+    selection,
+  };
+}
+
+function surfaceKey(surface: CaretSurfaceId): string {
+  if (surface.kind === "fragmentReplica") {
+    return `replica:${surface.blockId}:${surface.fragmentIndex}`;
+  }
+  if (surface.kind === "richText") {
+    return `richText:${surface.blockId ?? ""}`;
+  }
+  return `unit:${surface.unitId ?? ""}`;
+}
+
+interface CaretTarget {
+  handle: CaretSurfaceHandle | null;
+  key: string | null;
+  /** マウントを頼める宛先 (断片の複製) のときだけ入る。正本は頼んでも出せない。 */
+  surface: CaretSurfaceId | null;
+  containerBlockId: string | null;
+}
+
+/**
+ * 宛先の面を決める。断片に分かれたブロックなら、**代表の面 1 つだけ**で縦位置を測り
+ * (`doc.descendants` の走査はここ 1 回)、断片の表から番号を出す。
+ */
+function resolveTargetSurface(
+  owners: readonly CaretSurfaceHandle[],
+  selection: TextFlowSelectionBookmark,
+): CaretTarget {
+  const blockId = selection.head.blockId;
+  // 「このキャレットを含む分割されたブロック」を面ごとに聞く。1 ユニットに分割ブロックが
+  // 複数あるとき、面ごとに 1 つへ潰すと別のブロックの表で断片番号を読んでしまう。
+  let containerBlockId: string | null = null;
+  let representative: CaretSurfaceHandle | null = null;
+  for (const handle of owners) {
+    const candidate = handle.fragmentBlockIdFor(blockId);
+    if (!candidate || !(candidate in fragmentSources)) {
+      continue;
+    }
+    containerBlockId = candidate;
+    // 代表は正本 (断片番号 0 を持つ面) を優先する。複製は translate されているだけで
+    // 同じ値を測れるが、正本のほうが常にマウントされている。
+    if (!representative || handle.surface.kind !== "fragmentReplica") {
+      representative = handle;
+    }
+    if (handle.surface.kind !== "fragmentReplica") {
+      break;
+    }
+  }
+
+  if (containerBlockId && representative) {
+    const table = buildCaretFragmentTable(
+      fragmentSources[containerBlockId],
+      fragmentReplicas[containerBlockId] ?? [],
+    );
+    const localY = representative.localYFor(selection.head, containerBlockId);
+    if (localY !== null) {
+      const placement = resolveCaretSurface(localY, table);
+      if (placement.kind === "fragment") {
+        return resolveFragmentTarget(owners, containerBlockId, placement.fragmentIndex);
+      }
+    }
+  }
+
+  const handle = preferredOwner(owners);
+  return {
+    containerBlockId,
+    handle,
+    key: handle ? surfaceKey(handle.surface) : null,
+    surface: null,
+  };
+}
+
+/**
+ * 断片番号から宛先の面を引く。番号 0 は**複製ではない面** (正本) であって、たまたま代表に
+ * 選ばれた面ではない。
+ */
+function resolveFragmentTarget(
+  owners: readonly CaretSurfaceHandle[],
+  containerBlockId: string,
+  fragmentIndex: number,
+): CaretTarget {
+  if (fragmentIndex === 0) {
+    const source = owners.find((handle) => handle.surface.kind !== "fragmentReplica") ?? null;
+    return {
+      containerBlockId,
+      handle: source,
+      key: source ? surfaceKey(source.surface) : `source:${containerBlockId}`,
+      // 正本はカリングされない。出してほしいと頼む相手が居ないので surface は返さない。
+      surface: null,
+    };
+  }
+  const wanted: CaretSurfaceId = {
+    kind: "fragmentReplica",
+    blockId: containerBlockId,
+    fragmentIndex,
+  };
+  const key = surfaceKey(wanted);
+  return {
+    containerBlockId,
+    handle: owners.find((handle) => surfaceKey(handle.surface) === key) ?? null,
+    key,
+    surface: wanted,
+  };
+}
+
+/**
+ * 断片に分かれていないブロックの宛先。同じ id を持つ面が複数あるのは、本文とヘッダ/フッタや
+ * 素材ダイアログが同じブロックを見せている場合。焦点のある面を優先し、無ければ文書順を
+ * 持つ面 (= 本文) を選ぶ。
+ */
+function preferredOwner(owners: readonly CaretSurfaceHandle[]): CaretSurfaceHandle | null {
+  return owners.find((handle) => handle.editor.isFocused)
+    ?? owners.find((handle) => handle.order.length > 0)
+    ?? owners[0]
+    ?? null;
+}
+
+/**
+ * IME 合成中の適用は合成セッションを切り、確定前の文字を失わせる。合成が終わってから
+ * やり直す (`TextFlowEditor` の受動同期と同じガード)。
+ */
+const composingRetries = new WeakSet<Editor>();
+
+function applyToSurface(
+  handle: CaretSurfaceHandle,
+  selection: TextFlowSelectionBookmark,
+  target: CaretTarget,
+): boolean {
+  if (handle.editor.isDestroyed) {
+    return false;
+  }
+  if (handle.editor.view.composing) {
+    // 予約として持ち直す。合成が終わってから **その時点の表で** 配り直すので、合成中に
+    // 確定した文字より前へキャレットが戻らない。待ち受けは面ごとに 1 つだけにする。
+    rememberPending(selection, target);
+    if (!composingRetries.has(handle.editor)) {
+      composingRetries.add(handle.editor);
+      handle.editor.view.dom.addEventListener("compositionend", () => {
+        composingRetries.delete(handle.editor);
+        flushPendingCaret();
+      }, { once: true });
+    }
+    return false;
+  }
+  if (handle.applyCaret(selection)) {
+    return true;
+  }
+  // この面の doc では解決できなかった (再描画の途中など)。捨てずに持ち直す。
+  rememberPending(selection, target);
+  return false;
+}
+
+
+// --- 上下移動 ---------------------------------------------------------------
+
+/**
+ * 1 行ぶんの上下移動を**先回りして**解決する。面をまたぐときだけ介入し、`true` を返したら
+ * 呼び出し側が `preventDefault` する。
+ *
+ * 断片の複製はブロック全体の doc を持つので、断片 3 の 1 行目で ↑ を押してもネイティブ移動は
+ * **同じ doc の中で成功してしまう**。移動先の行は `translateY` で viewport の上へ押し出されて
+ * 見えないだけで、「位置が変わらなかったら隣の面へ」という後追い判定は永久に false になる。
+ * だから `endOfTextblock` を見る前に、断片の表で行き先を決める。
+ */
+export function moveCaretVertically(
+  viewDom: Element,
+  direction: "up" | "down",
+  preferredX: number,
+): boolean {
+  const from = getCaretSurfaceByViewDom(viewDom);
+  if (!from || from.editor.isDestroyed || !from.editor.state.selection.empty) {
+    return false;
+  }
+
+  const address = from.addressAt(from.editor.state.selection.head);
+  const containerBlockId = address ? from.fragmentBlockIdFor(address.blockId) : null;
+  if (address && containerBlockId && containerBlockId in fragmentSources) {
+    const decided = moveWithinFragmentedBlock(from, containerBlockId, direction, preferredX);
+    if (decided !== null) {
+      return decided;
+    }
+  }
+
+  // 分割されていない面。ブロックの縦の端でなければネイティブに任せる。
+  if (!from.editor.view.endOfTextblock(direction)) {
+    return false;
+  }
+  // 同じ doc にまだ次のテキストブロックがあるならネイティブで足りる。ただしその行き先が
+  // **分割されたブロックの中**なら、ネイティブは clip された見えない場所へ入ってしまう。
+  const adjacent = from.adjacentTextblockAddress(direction);
+  if (adjacent) {
+    const adjacentContainer = from.fragmentBlockIdFor(adjacent.blockId);
+    if (adjacentContainer && adjacentContainer in fragmentSources) {
+      const routed = routeToAdjacentFragment(from, adjacent, adjacentContainer, preferredX);
+      if (routed !== null) {
+        return routed;
+      }
+    }
+    return false;
+  }
+  return moveToNeighbourSurface(from, direction, preferredX);
+}
+
+/** 分割されたブロックの中へ入る移動。見せている面まで決めてから配る。 */
+function routeToAdjacentFragment(
+  from: CaretSurfaceHandle,
+  adjacent: CaretAddress,
+  containerBlockId: string,
+  preferredX: number,
+): boolean | null {
+  const localY = from.localYFor(adjacent, containerBlockId);
+  if (localY === null) {
+    return null;
+  }
+  const table = buildCaretFragmentTable(
+    fragmentSources[containerBlockId],
+    fragmentReplicas[containerBlockId] ?? [],
+  );
+  const placement = resolveCaretSurface(localY, table);
+  if (placement.kind !== "fragment") {
+    return null;
+  }
+  const owners = getCaretSurfaces().filter((handle) => handle.ownsBlock(adjacent.blockId));
+  const target = resolveFragmentTarget(owners, containerBlockId, placement.fragmentIndex);
+  if (!target.handle || target.handle === from) {
+    return null;
+  }
+  return target.handle.focusCaretAtLocalY({
+    containerBlockId,
+    localY: placement.localY,
+    preferredX,
+  });
+}
+
+/**
+ * 分割されたブロックの中での移動。介入しないと決めたら `false`、決められなければ `null`。
+ */
+function moveWithinFragmentedBlock(
+  from: CaretSurfaceHandle,
+  containerBlockId: string,
+  direction: "up" | "down",
+  preferredX: number,
+): boolean | null {
+  const address = from.addressAt(from.editor.state.selection.head);
+  const localY = address ? from.localYFor(address, containerBlockId) : null;
+  const lineHeight = from.caretLineAdvance(containerBlockId, direction);
+  if (localY === null || lineHeight === null || lineHeight <= 0) {
+    return null;
+  }
+
+  const table = buildCaretFragmentTable(
+    fragmentSources[containerBlockId],
+    fragmentReplicas[containerBlockId] ?? [],
+  );
+  const move = resolveVerticalMove({ direction, lineHeight, localY, table });
+  if (move.kind === "same") {
+    // 同じ断片の中の移動。折り返し・双方向テキスト・数式ノードビューの中まで自前で持たない。
+    return false;
+  }
+  if (move.kind === "fragment") {
+    const owners = getCaretSurfaces().filter((handle) => handle.ownsBlock(address!.blockId));
+    const target = resolveFragmentTarget(owners, containerBlockId, move.fragmentIndex);
+    if (!target.handle) {
+      // 行き先の複製がまだ出ていない。出してほしいとだけ頼み、この打鍵はネイティブへ渡す
+      // (論理位置は同じ doc の中なので失われない)。1 行ぶんの移動でカリング距離
+      // (rootMargin 1200px) を越えることは実際には起きない。
+      if (target.surface) {
+        const requested = target.surface;
+        mountListeners.forEach((listener) => listener(requested));
+      }
+      return null;
+    }
+    if (target.handle === from) {
+      return false;
+    }
+    return target.handle.focusCaretAtLocalY({
+      containerBlockId,
+      localY: move.localY,
+      preferredX,
+    });
+  }
+
+  // ブロックの外へ出る。続きは**正本の doc**にある (箱の後ろの本文は正本が持っている)。
+  const owners = getCaretSurfaces().filter((handle) => handle.ownsBlock(containerBlockId));
+  const source = owners.find((handle) => handle.surface.kind !== "fragmentReplica") ?? null;
+  if (!source || source === from) {
+    // 既に正本にいる。この doc の中で完結するならネイティブ、doc の端なら隣の面へ —
+    // どちらかは共通の経路が決めるので「未決」で返す (ここで false にすると、分割ブロック
+    // が先頭/末尾にある面だけ隣のユニットへ抜けられなくなる)。
+    return null;
+  }
+  return source.focusCaretAfterBlock(containerBlockId, direction, preferredX);
+}
+
+/**
+ * 文書順で隣の面へ移る。**順番を持たない面 (素材ダイアログ・ヘッダ/フッタ) は候補にしない**
+ * ので、モーダルが開いていても本文の上下移動が漏れない。
+ */
+function moveToNeighbourSurface(
+  from: CaretSurfaceHandle,
+  direction: "up" | "down",
+  preferredX: number,
+): boolean {
+  if (from.order.length === 0) {
+    return false;
+  }
+  const ordered = getCaretSurfaces().filter((handle) => handle.order.length > 0);
+  const next = nextSurfaceInVisualOrder(ordered, from.order, direction);
+  if (!next) {
+    return false;
+  }
+  return next.focusCaretAtEdge(direction === "down" ? "top" : "bottom", preferredX);
+}

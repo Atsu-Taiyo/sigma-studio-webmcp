@@ -1,0 +1,20 @@
+{
+  "name": "sigma-studio-webmcp",
+  "version": "0.393.0",
+  "private": true,
+  "workspaces": ["apps/desktop"],
+  "scripts": {
+    "dev": "npm --workspace @sigma-studio/desktop run dev",
+    "build": "npm --workspace @sigma-studio/desktop run build",
+    "start": "npm --workspace @sigma-studio/desktop run start",
+    "lint": "npm --workspace @sigma-studio/desktop run lint",
+    "test": "npm --workspace @sigma-studio/desktop run test",
+    "test:e2e": "npm --workspace @sigma-studio/desktop run test:e2e",
+    "typecheck": "npm --workspace @sigma-studio/desktop run typecheck",
+    "test:webmcp": "npm --workspace @sigma-studio/desktop exec vitest run src/lib/webmcp-tools.test.ts",
+    "test:e2e:webmcp": "npm --workspace @sigma-studio/desktop exec playwright test tests/e2e/webmcp.spec.ts"
+  },
+  "overrides": {
+    "postcss": "^8.5.14"
+  }
+}

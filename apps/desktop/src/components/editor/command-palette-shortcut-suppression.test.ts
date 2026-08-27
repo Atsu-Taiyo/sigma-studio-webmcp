@@ -1,0 +1,50 @@
+import { readFileSync } from "node:fs";
+
+import { describe, expect, it } from "vitest";
+
+/**
+ * コマンドパレットが開いている間は、本文側のショートカットを止める。
+ *
+ * パレットは検索欄に文字を打ち込む面なので、止めないと `b` や `p` のような
+ * 単キーコマンドが**入力しながら発火する**。EditorShell の 2 つの keydown リスナーは
+ * 「前に出ている面の open フラグを 1 つずつ列挙して降りる」方式なので、
+ * 列挙とその依存配列の両方に載っているかをここで固定する
+ * (`ribbon-backstage-shortcut-suppression.test.ts` と同じ形)。
+ */
+const source = readFileSync(new URL("./EditorShell.tsx", import.meta.url), "utf8");
+
+/** 対象リスナーを登録している useEffect の本文 (条件式 + 依存配列) を切り出す。 */
+function shortcutEffectSource(handlerName: string): string {
+  const start = source.indexOf(`const ${handlerName} = (`);
+  const removal = source.indexOf(`window.removeEventListener("keydown", ${handlerName}`, start);
+  const end = source.indexOf("]);", removal);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
+describe("EditorShell のコマンドパレット中のキー入力抑止", () => {
+  it.each(["handleCommandShortcut", "handleInlineShortcut"])(
+    "%s の抑止条件と依存配列にパレットが入っている",
+    (handlerName) => {
+      const effect = shortcutEffectSource(handlerName);
+      // 条件式で1回、依存配列で1回。並び順や整形には依存させない。
+      expect(effect.split("commandPaletteOpen").length - 1).toBeGreaterThanOrEqual(2);
+    },
+  );
+
+  it("パレットを開くコマンドがパレット自身の候補には出ない", () => {
+    // 開いている状態でもう一度「コマンドパレット」が並ぶのは無意味なうえ、
+    // Enter で自分を開き直して閉じられなくなる。
+    expect(source).toContain('hiddenCommandIds: ["view.commandPalette"]');
+  });
+
+  it("パレットから設定へ飛ぶときは WI-3 の配線を使う", () => {
+    // `focusEntryId` を渡すだけでスクロールとハイライトが動く。
+    expect(source).toContain("setSettingsFocusEntryId(entry.id)");
+    expect(source).toContain("focusEntryId={settingsFocusEntryId}");
+    // anchor id を EditorShell が直接知り始めたら、カタログを唯一の索引源にした意味が消える
+    // (`.page-settings-dialog` のような **class** セレクタは別物なので id 形だけを見る)。
+    expect(source).not.toMatch(/id="(?:desktop-settings|page-settings|ai-settings|command-shortcuts|custom-command|tex-preamble)-/u);
+  });
+});

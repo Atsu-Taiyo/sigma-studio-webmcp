@@ -1,0 +1,167 @@
+import { describe, expect, it } from "vitest";
+
+import { findAiLockedTargetsTouched, hasAiLockedTargetsTouched } from "./locked-target-diff";
+import { EMPTY_AI_LOCKED_TARGETS, mergeAiLockedTargets } from "./locked-targets";
+import type { SigmaDocument } from "@/types/sigma-doc";
+
+function paragraph(id: string, text: string) {
+  return { id, type: "paragraph", children: [{ type: "text", text }] };
+}
+
+function rect(id: string, x: number) {
+  return { id, type: "rect", x, y: 0, w: 10, h: 10 };
+}
+
+function makeDocument(
+  blocks: ReturnType<typeof paragraph>[],
+  shapes: ReturnType<typeof rect>[] = [],
+): SigmaDocument {
+  return {
+    content: blocks,
+    pageLayout: {
+      overlay: { overlaySnapshot: { version: 1, shapes, assets: {} } },
+    },
+  } as unknown as SigmaDocument;
+}
+
+function locked(blockIds: string[], shapeIds: string[] = []) {
+  return mergeAiLockedTargets(blockIds, shapeIds, { blockIds: [], shapeIds: [] });
+}
+
+describe("findAiLockedTargetsTouched", () => {
+  it("reports nothing when no target is locked", () => {
+    const before = makeDocument([paragraph("p1", "before")]);
+    const after = makeDocument([paragraph("p1", "after")]);
+
+    expect(findAiLockedTargetsTouched(before, after, EMPTY_AI_LOCKED_TARGETS))
+      .toEqual({ blockIds: [], shapeIds: [] });
+  });
+
+  it("allows editing a block the AI does not hold", () => {
+    const untouched = paragraph("p1", "AIの対象");
+    const before = makeDocument([untouched, paragraph("p2", "人間が編集")]);
+    const after = makeDocument([untouched, paragraph("p2", "人間が編集した")]);
+
+    const touched = findAiLockedTargetsTouched(before, after, locked(["p1"]));
+
+    expect(touched).toEqual({ blockIds: [], shapeIds: [] });
+    expect(hasAiLockedTargetsTouched(touched)).toBe(false);
+  });
+
+  // A body edit commits blocks round-tripped through Tiptap, which rebuilds
+  // every block in the edited flow and can reorder their JSON keys. Treating
+  // that as a change refused edits to entirely unrelated blocks.
+  it("treats a locked block whose keys were merely reordered as untouched", () => {
+    const before = makeDocument([
+      { id: "p1", type: "paragraph", children: [{ type: "text", text: "同じ内容" }] },
+      paragraph("p2", "編集する段落"),
+    ]);
+    const after = makeDocument([
+      { type: "paragraph", id: "p1", children: [{ text: "同じ内容", type: "text" }] } as unknown as ReturnType<typeof paragraph>,
+      paragraph("p2", "編集した段落"),
+    ]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p1"])))
+      .toEqual({ blockIds: [], shapeIds: [] });
+  });
+
+  it("treats an absent field and an explicitly undefined field as equal", () => {
+    const before = makeDocument([
+      { id: "p1", type: "paragraph", children: [{ type: "text", text: "本文" }] },
+    ]);
+    const after = makeDocument([
+      { id: "p1", type: "paragraph", align: undefined, children: [{ type: "text", text: "本文" }] } as unknown as ReturnType<typeof paragraph>,
+    ]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p1"])).blockIds).toEqual([]);
+  });
+
+  it("still catches a reordering of inline children, which is real content", () => {
+    const before = makeDocument([
+      { id: "p1", type: "paragraph", children: [{ type: "text", text: "A" }, { type: "text", text: "B" }] },
+    ]);
+    const after = makeDocument([
+      { id: "p1", type: "paragraph", children: [{ type: "text", text: "B" }, { type: "text", text: "A" }] },
+    ]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p1"])).blockIds).toEqual(["p1"]);
+  });
+
+  it("refuses a content change to a locked block", () => {
+    const before = makeDocument([paragraph("p1", "元の式")]);
+    const after = makeDocument([paragraph("p1", "書き換えた式")]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p1"])).blockIds).toEqual(["p1"]);
+  });
+
+  it("refuses deleting a locked block", () => {
+    const before = makeDocument([paragraph("p1", "a"), paragraph("p2", "b")]);
+    const after = makeDocument([paragraph("p2", "b")]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p1"])).blockIds).toEqual(["p1"]);
+  });
+
+  it("refuses a change to a locked block nested inside a container", () => {
+    const nest = (childText: string) => ({
+      id: "section-1",
+      type: "layoutSection",
+      columns: 2,
+      children: [paragraph("p-nested", childText)],
+    }) as unknown as ReturnType<typeof paragraph>;
+    const before = makeDocument([nest("元")]);
+    const after = makeDocument([nest("変更後")]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p-nested"])).blockIds)
+      .toEqual(["p-nested"]);
+  });
+
+  it("allows a locked block that merely moved, since approval replays by targetId", () => {
+    const held = paragraph("p1", "AIの対象");
+    const other = paragraph("p2", "別の段落");
+    const before = makeDocument([held, other]);
+    const after = makeDocument([other, held]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p1"])).blockIds).toEqual([]);
+  });
+
+  it("ignores a locked id that does not exist in the previous document", () => {
+    const before = makeDocument([paragraph("p1", "a")]);
+    const after = makeDocument([paragraph("p1", "a"), paragraph("p2", "new")]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p2"])).blockIds).toEqual([]);
+  });
+
+  it("refuses moving a locked shape but allows moving an unlocked one", () => {
+    const before = makeDocument([], [rect("s1", 0), rect("s2", 0)]);
+    const movedLocked = makeDocument([], [rect("s1", 40), rect("s2", 0)]);
+    const movedOther = makeDocument([], [rect("s1", 0), rect("s2", 40)]);
+    const targets = locked([], ["s1"]);
+
+    expect(findAiLockedTargetsTouched(before, movedLocked, targets).shapeIds).toEqual(["s1"]);
+    expect(findAiLockedTargetsTouched(before, movedOther, targets).shapeIds).toEqual([]);
+  });
+
+  it("refuses deleting a locked shape", () => {
+    const before = makeDocument([], [rect("s1", 0)]);
+    const after = makeDocument([], []);
+
+    expect(findAiLockedTargetsTouched(before, after, locked([], ["s1"])).shapeIds).toEqual(["s1"]);
+  });
+
+  it("allows inserting a new shape while another shape is locked", () => {
+    const held = rect("s1", 0);
+    const before = makeDocument([], [held]);
+    const after = makeDocument([], [held, rect("s-new", 100)]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked([], ["s1"])))
+      .toEqual({ blockIds: [], shapeIds: [] });
+  });
+
+  it("reports both kinds when one change straddles a locked block and a locked shape", () => {
+    const before = makeDocument([paragraph("p1", "元")], [rect("s1", 0)]);
+    const after = makeDocument([paragraph("p1", "後")], [rect("s1", 40)]);
+
+    expect(findAiLockedTargetsTouched(before, after, locked(["p1"], ["s1"])))
+      .toEqual({ blockIds: ["p1"], shapeIds: ["s1"] });
+  });
+});

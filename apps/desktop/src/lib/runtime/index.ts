@@ -1,0 +1,27 @@
+export {
+  getDesktopRuntime,
+  isDesktopRuntimeAvailable,
+} from "./desktop-runtime";
+export type {
+  AppRuntime,
+  CreateDocumentInput,
+  CreateFileFromDocumentInput,
+  DesktopAiRuntime,
+  DocumentFileRecord,
+  DocumentLoadFailureKind,
+  DocumentLoadResult,
+  DocumentMetadata,
+  FolderPatch,
+  LocalLibraryRepository,
+  LocalWorkspaceRepository,
+  RuntimeCapabilities,
+  RuntimeTarget,
+  StorageResult,
+  WorkspaceFileSummary,
+  WorkspaceFolderSummary,
+  WorkspaceInitializationResult,
+  WorkspaceOverview,
+  WorkspaceOverviewResult,
+  WorkspaceState,
+  WorkspaceSummary,
+} from "./types";
