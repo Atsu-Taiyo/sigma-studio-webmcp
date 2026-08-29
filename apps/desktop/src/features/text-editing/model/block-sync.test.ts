@@ -244,6 +244,67 @@ describe("text-flow block synchronization", () => {
   });
 });
 
+describe("block space after synchronization keys", () => {
+  /**
+   * 同期キーに載らないフィールドは「保存したのに画面が変わらない」で表に出る:
+   * `setTextFlowContentPreservingSelection` が走らず PM の attrs が古いままになり、
+   * DOM の custom property が更新されない。
+   */
+  function withSpace(block: TextFlowBlock, spaceAfterPx: number): TextFlowBlock {
+    return { ...block, spaceAfterPx } as TextFlowBlock;
+  }
+
+  const CASES: Array<[string, TextFlowBlock]> = [
+    ["paragraph", { type: "paragraph", id: "p", children: [{ type: "text", text: "本文" }] }],
+    ["heading", { type: "heading", id: "h", level: 2, children: [] }],
+    ["section", { type: "section", id: "s", title: "節" }],
+    [
+      "list",
+      { type: "list", id: "l", listType: "bullet", items: [{ type: "listItem", id: "li", children: [] }] },
+    ],
+    ["divider", { type: "divider", id: "d" }],
+    ["quote", { type: "quote", id: "q", blocks: [{ type: "paragraph", id: "qp", children: [] }] }],
+    ["codeBlock", { type: "codeBlock", id: "c", children: [] }],
+    [
+      "boxBlock",
+      { type: "boxBlock", id: "b", styleId: "fancybox", blocks: [{ type: "paragraph", id: "bp", children: [] }] },
+    ],
+    [
+      "layoutSection",
+      {
+        type: "layoutSection",
+        id: "ls",
+        layout: { columnCount: 2 },
+        children: [{ type: "paragraph", id: "lp", children: [] }],
+      },
+    ],
+  ];
+
+  it.each(CASES)("changes the key when %s gains a space below", (_name, block) => {
+    expect(getTextFlowBlocksSyncKey([withSpace(block, 24)]))
+      .not.toBe(getTextFlowBlocksSyncKey([block]));
+  });
+
+  it("changes the key when only the amount of space differs", () => {
+    const block: TextFlowBlock = { type: "paragraph", id: "p", children: [] };
+    expect(getTextFlowBlocksSyncKey([withSpace(block, 24)]))
+      .not.toBe(getTextFlowBlocksSyncKey([withSpace(block, 25)]));
+  });
+
+  it("changes the key when a block nested in a layout section gains a space below", () => {
+    const child: TextFlowBlock = { type: "paragraph", id: "nested_p", children: [] };
+    const section = (inner: TextFlowBlock): TextFlowBlock => ({
+      type: "layoutSection",
+      id: "ls",
+      layout: { columnCount: 2 },
+      children: [inner as never],
+    });
+
+    expect(getTextFlowBlocksSyncKey([section(withSpace(child, 24))]))
+      .not.toBe(getTextFlowBlocksSyncKey([section(child)]));
+  });
+});
+
 describe("comment thread synchronization keys", () => {
   const thread = (overrides: Partial<SigmaCommentThread> = {}): SigmaCommentThread => ({
     id: "thread_1",

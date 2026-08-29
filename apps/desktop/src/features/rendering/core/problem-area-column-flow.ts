@@ -78,6 +78,12 @@ export interface ProblemAreaColumnFlowBlock {
   type?: ProblemAreaColumnFlowBlockType;
   break?: boolean;
   breakOffsets?: number[];
+  /**
+   * `height` のうち末尾のブロック下余白 (`spaceAfterPx`) ぶん。**収まり判定からは除き、
+   * カーソル前進には含める** — 本文フローの `PaginationItem.trailingSpacePx` と同じ規約で、
+   * 「余白を足したらそのブロック自身が次の段へ飛ぶ」逆挙動を避ける。
+   */
+  trailingSpacePx?: number;
 }
 
 export interface ProblemAreaColumnFlowResult {
@@ -152,6 +158,9 @@ export function computeProblemAreaColumnFlow(
   pageStridePx: number,
 ): ProblemAreaColumnFlowResult {
   const heights = blocks.map((block) => Math.max(0, block.height));
+  const fitHeights = blocks.map((block, index) => (
+    Math.max(0, heights[index] - Math.max(0, block.trailingSpacePx ?? 0))
+  ));
   const columns = Math.max(1, columnCount);
 
   if (columns <= 1 || blocks.length === 0) {
@@ -200,7 +209,7 @@ export function computeProblemAreaColumnFlow(
       });
       advanceColumn();
     }
-    if (columnCursorY > 0 && columnCursorY + height > segmentHeight(segmentIndex) + 0.5) {
+    if (columnCursorY > 0 && columnCursorY + fitHeights[i] > segmentHeight(segmentIndex) + 0.5) {
       advanceColumn();
     }
 

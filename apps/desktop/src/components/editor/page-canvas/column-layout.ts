@@ -16,6 +16,7 @@ import {
 import { boxBlockTitleText, boxFragmentMinStartHeightPx, findBoxDecoration, resolveBoxFrame } from "@/lib/box-blocks";
 import { collectBlocksById } from "@/lib/document-tree";
 import {
+  blockSpaceAfterPx,
   mmToPx,
   type PageMetrics,
   type BoxBlockChildBlock,
@@ -679,6 +680,10 @@ export function computeColumnUnitLayouts(
     geometry: FlowColumnGeometry = columnGeometry,
     nextBlock?: { height: number; hasExplicitBreak: boolean },
   ): FlowUnitLayout => {
+    // 実測 height にはブロック下余白 (padding) が入っている。段に「収まるか」は本文だけで
+    // 決め (余白で溢れたら送るのは次のブロック)、カーソルの前進には余白ごと含める。
+    const trailingSpacePx = blockSpaceAfterPx(block);
+    const fitHeight = Math.max(0, height - trailingSpacePx);
     if (block.pagination?.break === true && (cursorY > 0 || columnIndex > 0)) {
       markerLayouts[block.id] = roundFlowUnitLayout({
         x: currentColumnX(geometry),
@@ -688,6 +693,7 @@ export function computeColumnUnitLayouts(
       advanceColumn(geometry);
     }
 
+    // keepWithNext は「2 つが同じ段に載るか」なので、間に挟まる余白は数える。
     const keepWithNextHeight = block.pagination?.keepWithNext === true
       && nextBlock
       && !nextBlock.hasExplicitBreak
@@ -705,8 +711,8 @@ export function computeColumnUnitLayouts(
     if (
       reserveGap > 0.5 &&
       cursorY > pageColumnStartY + 0.5 &&
-      reserveGap + Math.min(height, metrics.content.heightPx) > metrics.content.heightPx - cursorY + 0.5 &&
-      reserveGap + Math.min(height, metrics.content.heightPx) <= metrics.content.heightPx + 0.5
+      reserveGap + Math.min(fitHeight, metrics.content.heightPx) > metrics.content.heightPx - cursorY + 0.5 &&
+      reserveGap + Math.min(fitHeight, metrics.content.heightPx) <= metrics.content.heightPx + 0.5
     ) {
       advanceColumn(geometry);
     }
@@ -721,31 +727,31 @@ export function computeColumnUnitLayouts(
       if (
         block.pagination?.keepTogether === true
         && cursorY > pageColumnStartY + 0.5
-        && height > available + 0.5
-        && height <= metrics.content.heightPx + 0.5
+        && fitHeight > available + 0.5
+        && fitHeight <= metrics.content.heightPx + 0.5
       ) {
         advanceColumn(geometry);
       }
       const nextAvailable = metrics.content.heightPx - cursorY;
       const minStart = boxFragmentMinStartHeightPx(resolveBoxFrame(block), boxBlockTitleText(block).length > 0);
-      if (cursorY > pageColumnStartY + 0.5 && height > nextAvailable + 0.5 && nextAvailable < minStart - 0.5) {
+      if (cursorY > pageColumnStartY + 0.5 && fitHeight > nextAvailable + 0.5 && nextAvailable < minStart - 0.5) {
         advanceColumn(geometry);
       }
     } else if (
       cursorY <= pageColumnStartY + 0.5 &&
       pageColumnStartY > 0.5 &&
       height > 0 &&
-      cursorY + height > metrics.content.heightPx + 0.5
+      cursorY + fitHeight > metrics.content.heightPx + 0.5
     ) {
       placeOnNextPage();
-    } else if (cursorY > pageColumnStartY + 0.5 && height > 0 && cursorY + height > metrics.content.heightPx + 0.5) {
+    } else if (cursorY > pageColumnStartY + 0.5 && height > 0 && cursorY + fitHeight > metrics.content.heightPx + 0.5) {
       advanceColumn(geometry);
     }
 
     const layout = placeLayout(blockLayouts as Record<string, FlowUnitLayout>, block.id, currentColumnX(geometry), geometry.columnWidthPx, height, true);
     // A box always flows across columns; a non-box block is only split when it is
     // taller than a full column (otherwise it is kept whole and moved as needed).
-    const shouldFragment = isFlowBlockFragmentable(block, height, metrics.content.heightPx);
+    const shouldFragment = isFlowBlockFragmentable(block, fitHeight, metrics.content.heightPx);
     const fragmentResult = shouldFragment
       ? createColumnBoxFragments(block.id, height, breakOffsets, geometry)
       : null;

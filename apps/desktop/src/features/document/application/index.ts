@@ -1,4 +1,5 @@
 export * from "./block-rect-estimate";
+export * from "./block-space-after";
 export * from "./comment-operations";
 export * from "./document-block-operations";
 export * from "./document-history";

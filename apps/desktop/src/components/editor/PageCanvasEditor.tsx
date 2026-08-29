@@ -99,6 +99,7 @@ import {
   mmToPx,
   PAGE_GAP_PX,
   type PageMetrics,
+  blockSpaceAfterPx,
   fitRunningRegionToContent,
   type SigmaCommentAnchor,
   type SigmaCommentThread,
@@ -1585,7 +1586,13 @@ function PageCanvasEditorImpl({
           // field of its own — break hints only ever live on the containing list/paragraph/etc.
           const blockPageBreak = block && block.type !== "listItem" ? block.pagination : undefined;
           const isBox = block?.type === "boxBlock" && item.height > 0;
-          const isFragmentable = isFlowBlockFragmentable(block, item.height, contentHeightPx);
+          // 実測 height にはブロック下余白 (padding) が入っている。ページに「収まるか」は
+          // 本文だけで決めたい (余白で溢れたら送るのは次のブロック) ので、判定用の高さから
+          // 余白を除く。ピクセル分割の要否も同じ高さで決める — 余白のせいで分割可能扱いに
+          // なると、収まる本文がフラグメントに切られる。
+          const trailingSpacePx = block ? blockSpaceAfterPx(block) : 0;
+          const fitHeight = Math.max(0, item.height - trailingSpacePx);
+          const isFragmentable = isFlowBlockFragmentable(block, fitHeight, contentHeightPx);
           const measuredLineBreakOffsets = !isBox && isFragmentable
             ? getBlockFragmentBreakOffsetsFromMeasured(blockCanvasRects.get(item.id))
             : undefined;
@@ -1594,6 +1601,7 @@ function PageCanvasEditorImpl({
             gapKey,
             topNat,
             height: item.height,
+            ...(trailingSpacePx > 0 ? { trailingSpacePx } : {}),
             forceBreakBefore: blockPageBreak?.break === true,
             ...(isFragmentable
               ? {
@@ -1681,7 +1689,10 @@ function PageCanvasEditorImpl({
               }
               // 1 ページに収まらない普通のブロックは、箱と同じようにクリップした
               // フラグメントへ分割する。そうしないとページ下端からはみ出したまま流れる。
-              if (item.height > contentHeightPx + 0.5) {
+              // 判定の高さは収まり判定 (`isFragmentable`) と同じ「余白を除いた高さ」— 生の実測で
+              // 見ると、本文は収まるのにブロック下余白で超える段落が分割され、末尾 padding だけの
+              // 空フラグメントが次ページ頭に出る。
+              if (paginationItem.height - (paginationItem.trailingSpacePx ?? 0) > contentHeightPx + 0.5) {
                 const measured = blockCanvasRects.get(item.id);
                 return placeFragments(
                   item.id,

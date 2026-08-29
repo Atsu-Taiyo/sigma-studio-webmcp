@@ -3,6 +3,7 @@
 import { useMemo, type CSSProperties } from "react";
 
 import {
+  blockSpaceAfterStyleVars,
   normalizeCodeBlockTheme,
   type CodeBlockNode,
   type DividerNode,
@@ -119,7 +120,13 @@ export function TextFlowStaticBlock({
   }
 
   if (block.type === "divider") {
-    return <hr data-sigma-doc-id={block.id} className={classNames.divider} />;
+    return (
+      <hr
+        data-sigma-doc-id={block.id}
+        className={classNames.divider}
+        style={blockSpaceAfterStyleVars(block) as CSSProperties | undefined}
+      />
+    );
   }
 
   return (
@@ -153,7 +160,11 @@ function TextFlowStaticHeading({
       data-boxed-run-aligned={aligned ? "true" : undefined}
       data-sigma-doc-id={block.id}
       className={className}
-      style={{ textAlign: block.align ?? "left", lineHeight: block.lineHeight }}
+      style={{
+        textAlign: block.align ?? "left",
+        lineHeight: block.lineHeight,
+        ...blockSpaceAfterStyleVars(block),
+      } as CSSProperties}
     >
       {renderInlineContent(block.children, { alignmentStyles, keyPrefix: block.id, mathFractionSizing, resolveText })}
     </HeadingTag>
@@ -180,7 +191,11 @@ function TextFlowStaticParagraph({
       data-boxed-run-aligned={aligned ? "true" : undefined}
       data-sigma-doc-id={block.id}
       className={className}
-      style={{ textAlign: block.align ?? "left", lineHeight: block.lineHeight }}
+      style={{
+        textAlign: block.align ?? "left",
+        lineHeight: block.lineHeight,
+        ...blockSpaceAfterStyleVars(block),
+      } as CSSProperties}
     >
       {renderInlineContent(block.children, { alignmentStyles, keyPrefix: block.id, mathFractionSizing, resolveText })}
       {!paragraphHasVisibleContent(block.children) && <br key="trailing-break" />}
@@ -385,11 +400,20 @@ function TextFlowStaticList({
         data-list-marker={block.markerStyle === "paren" ? "paren" : undefined}
         className={classNames.list}
         start={block.start}
+        style={blockSpaceAfterStyleVars(block) as CSSProperties | undefined}
       >
         {items}
       </ol>
     )
-    : <ul data-sigma-doc-id={block.id} className={classNames.list}>{items}</ul>;
+    : (
+      <ul
+        data-sigma-doc-id={block.id}
+        className={classNames.list}
+        style={blockSpaceAfterStyleVars(block) as CSSProperties | undefined}
+      >
+        {items}
+      </ul>
+    );
 }
 
 function TextFlowStaticListItemContent({

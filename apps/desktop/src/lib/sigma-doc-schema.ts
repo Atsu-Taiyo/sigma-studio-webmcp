@@ -19,6 +19,7 @@ import {
   type SigmaBlock,
   type SigmaCommentAnchor,
   type SigmaDocument,
+  normalizeBlockSpaceAfterPx,
   normalizeCodeBlockTheme,
   normalizeLineHeight,
   expandMarginsForRunningRegions,
@@ -43,9 +44,22 @@ const PaginationSchema = z
   })
   .optional();
 
+/**
+ * ブロック下余白。壊れた値 (負数 / 非数 / 文字列 / 上限超過) は **issue を上げずに落とす**。
+ * 見た目の微調整 1 つのために教材が開けなくなる方が損害が大きく、落とせば「未指定」= 従来の
+ * 見た目に戻るだけで済む (lineHeight と方針が違うのはそのため — あちらは値が本文の組版を
+ * 決めるので、黙って既定へ戻ると読み手が気づけない)。
+ */
+const BlockSpaceAfterSchema = z
+  .number()
+  .transform((value) => normalizeBlockSpaceAfterPx(value))
+  .catch(() => undefined)
+  .optional();
+
 const BaseNodeSchema = z.object({
   id: z.string().min(1),
   pagination: PaginationSchema,
+  spaceAfterPx: BlockSpaceAfterSchema,
 });
 
 const TextAlignSchema = z.enum(["left", "center", "right", "justify"]).optional();

@@ -585,6 +585,7 @@ function textFlowBlockToRichBlock(block: TextFlowBlock, t: Translate<"editor">):
       align: block.align,
       lineHeight: block.lineHeight,
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -597,6 +598,7 @@ function textFlowBlockToRichBlock(block: TextFlowBlock, t: Translate<"editor">):
       align: block.align,
       lineHeight: block.lineHeight,
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -610,6 +612,7 @@ function textFlowBlockToRichBlock(block: TextFlowBlock, t: Translate<"editor">):
       id: block.id,
       children: block.title?.length ? block.title : [{ type: "text", text: t("block.box") }],
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -619,6 +622,7 @@ function textFlowBlockToRichBlock(block: TextFlowBlock, t: Translate<"editor">):
       id: block.id,
       children: [{ type: "text", text: t("block.columns", { columns: block.layout.columnCount }) }],
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -628,6 +632,7 @@ function textFlowBlockToRichBlock(block: TextFlowBlock, t: Translate<"editor">):
       id: block.id,
       children: [{ type: "text", text: "――――" }],
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -637,6 +642,7 @@ function textFlowBlockToRichBlock(block: TextFlowBlock, t: Translate<"editor">):
       id: block.id,
       children: block.blocks.flatMap(getTextFlowBlockChildren),
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -647,6 +653,7 @@ function textFlowBlockToRichBlock(block: TextFlowBlock, t: Translate<"editor">):
     align: "align" in block ? block.align : undefined,
     lineHeight: "lineHeight" in block ? block.lineHeight : undefined,
     pagination: block.pagination,
+    spaceAfterPx: block.spaceAfterPx,
   };
 }
 

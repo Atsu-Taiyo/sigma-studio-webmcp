@@ -189,3 +189,60 @@ describe("isProblemAreaFlowEligible", () => {
     })).toBe(false);
   });
 });
+
+describe("computeProblemAreaColumnFlow with a space below a block", () => {
+  /** 本文フローと同じ規約 — 余白で溢れたら送るのは次のブロック、そのブロック自身ではない。 */
+  const COLUMN_HEIGHT = 300;
+  const PAGE_STRIDE = COLUMN_HEIGHT + 123;
+
+  function flow(blocks: Array<{ id: string; height: number; trailingSpacePx?: number }>) {
+    return computeProblemAreaColumnFlow(blocks, 2, 100, 10, COLUMN_HEIGHT, COLUMN_HEIGHT, PAGE_STRIDE);
+  }
+
+  // 合計 800px なので 2 段に均しても 1 段に収まらず、必ず flow モードになる。
+  const tail = [
+    { id: "c", height: 50 },
+    { id: "d", height: 200 },
+    { id: "e", height: 200 },
+  ];
+
+  it("keeps the block itself in its column when only its trailing space overflows", () => {
+    const result = flow([
+      { id: "a", height: 200 },
+      { id: "b", height: 150, trailingSpacePx: 100 },
+      ...tail,
+    ]);
+
+    expect(result.mode).toBe("flow");
+    // 本文 50px は 1 段目に収まる (200 + 50 <= 300) ので b は動かない。
+    expect(result.blockLayouts.b).toEqual({ x: 0, y: 200, width: 100 });
+    // 次のブロックは余白ぶんで溢れるので次の段へ。
+    expect(result.blockLayouts.c).toEqual({ x: 110, y: 0, width: 100 });
+  });
+
+  it("moves the same block without the trailing space (the space is what kept it)", () => {
+    const result = flow([
+      { id: "a", height: 200 },
+      { id: "b", height: 150 },
+      ...tail,
+    ]);
+
+    expect(result.blockLayouts.b).toEqual({ x: 110, y: 0, width: 100 });
+  });
+
+  it("still moves the block when its own content does not fit", () => {
+    const result = flow([
+      { id: "a", height: 200 },
+      { id: "b", height: 250, trailingSpacePx: 100 },
+      ...tail,
+    ]);
+
+    expect(result.blockLayouts.b).toEqual({ x: 110, y: 0, width: 100 });
+  });
+
+  it("treats a missing trailing space as 0", () => {
+    const blocks = [{ id: "a", height: 200 }, { id: "b", height: 150 }, ...tail];
+
+    expect(flow(blocks.map((block) => ({ ...block, trailingSpacePx: 0 })))).toEqual(flow(blocks));
+  });
+});

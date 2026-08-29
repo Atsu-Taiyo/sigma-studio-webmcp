@@ -227,3 +227,46 @@ describe("コードブロック", () => {
     });
   });
 });
+
+describe("convertBlockStyle keeps the space below the block", () => {
+  const paragraphWithSpace: ParagraphNode = {
+    type: "paragraph",
+    id: "p-space",
+    children: [{ type: "text", text: "本文" }],
+    spaceAfterPx: 24,
+  };
+  const headingWithSpace: HeadingNode = {
+    type: "heading",
+    id: "h-space",
+    level: 2,
+    children: [{ type: "text", text: "見出し" }],
+    spaceAfterPx: 24,
+  };
+  const sectionWithSpace: SectionNode = {
+    type: "section",
+    id: "s-space",
+    title: "節",
+    spaceAfterPx: 24,
+  };
+
+  it.each([
+    ["paragraph to h2", paragraphWithSpace as BlockStyleTarget, "h2"],
+    ["heading to paragraph", headingWithSpace as BlockStyleTarget, "paragraph"],
+    ["heading to h3", headingWithSpace as BlockStyleTarget, "h3"],
+    ["section to paragraph", sectionWithSpace as BlockStyleTarget, "paragraph"],
+    ["section to h2", sectionWithSpace as BlockStyleTarget, "h2"],
+    ["code block to paragraph", { type: "codeBlock", id: "c-space", children: [], spaceAfterPx: 24 } as BlockStyleTarget, "paragraph"],
+  ])("keeps it when converting %s", (_name, node, style) => {
+    expect(spaceAfterOf(convertBlockStyle(node, style))).toBe(24);
+  });
+
+  it("leaves an untouched block without a space", () => {
+    const plain: ParagraphNode = { type: "paragraph", id: "p-plain", children: [] };
+    expect(spaceAfterOf(convertBlockStyle(plain, "h2"))).toBeUndefined();
+  });
+});
+
+/** `BlockStyleTarget` は `ListItemNode` も含む (それだけが下余白を持たない)。 */
+function spaceAfterOf(node: BlockStyleTarget): number | undefined {
+  return node.type === "listItem" ? undefined : node.spaceAfterPx;
+}

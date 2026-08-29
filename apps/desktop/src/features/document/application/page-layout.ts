@@ -13,6 +13,7 @@ import type {
   SigmaDocument,
 } from "../model";
 import { listItemContinuationInlineNodes, normalizeOrderedListMarkerStyle } from "../model/blocks";
+import { blockSpaceAfterPx } from "./block-space-after";
 import { normalizeOverlaySnapshot } from "../overlay-snapshot";
 import { normalizeLineHeight } from "./line-height";
 import type { SigmaValidationCode } from "../validation-error";
@@ -495,7 +496,18 @@ function createEmptyColumns(columnCount: number): PaginatedColumn[] {
   }));
 }
 
+/**
+ * DOM を持たない経路 (AI 挿入位置の推定・サムネイル・印刷の推定フォールバック) の高さ推定。
+ *
+ * 実測は `getBoundingClientRect` なのでブロック下余白 (`spaceAfterPx` = padding) を含む。
+ * 推定側でも足さないと、余白付きの段落が並ぶほど推定が実測より短くなる。
+ * 下余白を描かない種別は 0 なので、触っていない文書の推定は 1px も変わらない。
+ */
 export function estimateBlockHeightPx(block: SigmaBlock | ProblemAreaBlock, charsPerLine = 54): number {
+  return estimateBlockContentHeightPx(block, charsPerLine) + blockSpaceAfterPx(block);
+}
+
+function estimateBlockContentHeightPx(block: SigmaBlock | ProblemAreaBlock, charsPerLine: number): number {
   if (block.type === "section") {
     return 64;
   }

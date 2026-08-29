@@ -245,3 +245,57 @@ function plainCodeText(markup: string): string {
     .replace(/&amp;/g, "&");
 }
 
+
+describe("TextFlowStaticBlock block space after", () => {
+  it("puts the shared custom property on a paragraph", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock block={{ type: "paragraph", id: "p_1", children: [], spaceAfterPx: 24 }} />,
+    );
+
+    expect(markup).toContain("--sigma-doc-space-after:24px");
+  });
+
+  it("puts it on a list, where the editor writes it on the same ul/ol", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock block={{ ...orderedList(), spaceAfterPx: 24 }} />,
+    );
+
+    expect(markup).toContain("--sigma-doc-space-after:24px");
+  });
+
+  it("puts it on a divider", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock block={{ type: "divider", id: "d_1", spaceAfterPx: 24 }} />,
+    );
+
+    expect(markup).toContain("--sigma-doc-space-after:24px");
+  });
+
+  it("leaves an untouched block without the property", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock block={{ type: "paragraph", id: "p_2", children: [] }} />,
+    );
+
+    expect(markup).not.toContain("--sigma-doc-space-after");
+  });
+
+  it("does not draw it inside a framed block, where padding would stretch the frame", () => {
+    const markup = renderToStaticMarkup(
+      <TextFlowStaticBlock
+        block={{ type: "quote", id: "q_1", blocks: [{ type: "paragraph", id: "q_p", children: [] }], spaceAfterPx: 24 }}
+      />,
+    );
+
+    expect(markup).not.toContain("--sigma-doc-space-after");
+  });
+
+  it("adds the space as padding, so getBoundingClientRect (= pagination) sees it", () => {
+    const css = documentSurfaceCss();
+
+    expect(css).toContain("padding-bottom: var(--sigma-doc-space-after, 0px)");
+    // border-box なので min-height を据え置くと下余白が呑まれる (lineHeight < 1.78 で顕著)。
+    expect(css).toContain("min-height: calc(1.78em + var(--sigma-doc-space-after, 0px))");
+    // 相続がリスト項目の中まで降りないように li で断ち切る。
+    expect(css).toMatch(/\.print-list > li[\s\S]{0,80}--sigma-doc-space-after: 0px/);
+  });
+});

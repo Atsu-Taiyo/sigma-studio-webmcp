@@ -10,7 +10,13 @@ import {
 import type { NodeType } from "@tiptap/pm/model";
 import { NodeSelection, TextSelection, type EditorState, type Transaction } from "@tiptap/pm/state";
 
-import { normalizeCodeBlockTheme } from "@/features/document";
+import {
+  BLOCK_SPACE_AFTER_CSS_VARIABLE,
+  blockSpaceAfterFromStyleValue,
+  blockSpaceAfterStyleAttr,
+  normalizeCodeBlockTheme,
+  rendersBlockSpaceAfter,
+} from "@/features/document";
 import { normalizeCodeLanguage } from "@/features/rendering/adapters";
 import { createId } from "@/lib/id";
 
@@ -347,6 +353,21 @@ function sigmaDocBlockAttributes(sigmaDocType: string) {
       keepOnSplit: false,
       parseHTML: () => null,
       renderHTML: () => ({}),
+    },
+    // ブロック下余白。区切り線だけが DOM へ出す — 引用とコードは枠と背景を持つので
+    // padding が枠の内側に入り「下に余白」ではなく「枠が下に伸びる」になる (今回は描かない)。
+    // 描かない種別でも値そのものは運ぶ: 落とすと編集のたびに attrs から消える。
+    spaceAfterPx: {
+      default: null,
+      keepOnSplit: false,
+      parseHTML: (element: HTMLElement) => (
+        rendersBlockSpaceAfter(sigmaDocType)
+          ? blockSpaceAfterFromStyleValue(element.style.getPropertyValue(BLOCK_SPACE_AFTER_CSS_VARIABLE))
+          : null
+      ),
+      renderHTML: (attributes: Record<string, unknown>) => (
+        rendersBlockSpaceAfter(sigmaDocType) ? blockSpaceAfterStyleAttr(attributes.spaceAfterPx) : {}
+      ),
     },
   };
 }

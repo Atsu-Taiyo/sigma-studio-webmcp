@@ -147,6 +147,14 @@ const CORPUS: Array<{ blocks: TextFlowBlock[]; name: string }> = [
     }],
   },
   {
+    name: "block space after",
+    blocks: [
+      { type: "paragraph", id: "p8", children: [{ type: "text", text: "下に余白" }], spaceAfterPx: 24 },
+      { type: "heading", id: "h3", level: 2, children: [{ type: "text", text: "見出しの下に余白" }], spaceAfterPx: 8 },
+      { type: "paragraph", id: "p9", children: [{ type: "text", text: "余白なし" }] },
+    ],
+  },
+  {
     name: "bullet list",
     blocks: [{
       type: "list",

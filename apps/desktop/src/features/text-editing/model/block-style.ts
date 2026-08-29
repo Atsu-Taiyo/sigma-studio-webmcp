@@ -19,6 +19,7 @@ export function convertBlockStyle(
       id: node.id,
       children: node.children,
       pagination: node.pagination,
+      spaceAfterPx: node.spaceAfterPx,
     };
   }
 
@@ -30,6 +31,7 @@ export function convertBlockStyle(
       align: node.align,
       lineHeight: node.lineHeight,
       pagination: node.pagination,
+      spaceAfterPx: node.spaceAfterPx,
     };
   }
 
@@ -41,6 +43,7 @@ export function convertBlockStyle(
       align: node.align,
       lineHeight: node.lineHeight,
       pagination: node.pagination,
+      spaceAfterPx: node.spaceAfterPx,
     };
   }
 
@@ -61,6 +64,7 @@ export function convertBlockStyle(
       align: node.align,
       lineHeight: node.lineHeight,
       pagination: node.pagination,
+      spaceAfterPx: node.spaceAfterPx,
     };
   }
 
@@ -77,6 +81,7 @@ export function convertBlockStyle(
       align: node.align,
       lineHeight: node.lineHeight,
       pagination: node.pagination,
+      spaceAfterPx: node.spaceAfterPx,
     };
   }
 

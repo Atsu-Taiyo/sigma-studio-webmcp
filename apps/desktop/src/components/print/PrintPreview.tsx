@@ -8,6 +8,8 @@ import { PageRunningRegionView } from "@/components/editor/PageRunningRegionView
 import { PrintableRichBlock } from "@/components/print/PrintableRichBlock";
 import { resolveFlowFragmentStep } from "@/features/rendering/core";
 import {
+  blockSpaceAfterPx,
+  blockSpaceAfterStyleVars,
   normalizeOverlaySnapshot,
   estimateBlockHeightPx,
   getPageMetrics,
@@ -69,7 +71,7 @@ const DEFAULT_PROBLEM_NUMBER_FONT_SIZE = 12;
 const PRINT_CORNERBOX_SELECTOR = ".print-box-block.box-frame--corner[data-box-style='cornerbox']";
 const OVERLAY_PAGE_EXTENT_EPSILON_PX = 12;
 
-type PrintContentUnit =
+export type PrintContentUnit =
   | {
       type: "block";
       id: string;
@@ -753,7 +755,8 @@ function estimatePrintContentUnitHeight(unit: PrintContentUnit): number {
   );
 }
 
-function paginateMeasuredPrintBlocks(
+/** Exported for `PrintPreview.test.tsx`: 紙面のページ割りを DOM 抜きで固定するため。 */
+export function paginateMeasuredPrintBlocks(
   blocks: PrintContentUnit[],
   heights: number[],
   flowHeights: number[],
@@ -1320,6 +1323,14 @@ function paginateMeasuredPrintBlocks(
   blocks.forEach((block, index) => {
     const blockHeight = heights[index] || 0;
     const blockFlowHeight = flowHeights[index] ?? blockHeight;
+    // 実測 (と推定) の高さにはブロック下余白 (padding) が入っている。**収まり判定からは除き、
+    // カーソル前進には含める** — 本文フローの `PaginationItem.trailingSpacePx` と同じ規約。
+    // ここを揃えないと、同じ文書でエディタ/PDF は 1 ページ目に残すブロックを、印刷プレビューと
+    // 埋め込みビューアだけ次ページへ送る。
+    const blockFitHeight = Math.max(
+      0,
+      blockHeight - (block.type === "block" ? blockSpaceAfterPx(block.block) : 0),
+    );
     if (pageHasContent() && block.pagination?.break === true) {
       advanceForExplicitBreak();
     }
@@ -1341,7 +1352,7 @@ function paginateMeasuredPrintBlocks(
         flushPage();
       }
 
-      if (pageHasContent() && currentColumn().estimatedContentHeightPx + blockHeight > currentColumnHeight()) {
+      if (pageHasContent() && currentColumn().estimatedContentHeightPx + blockFitHeight > currentColumnHeight()) {
         flushPage();
       }
 
@@ -1368,7 +1379,7 @@ function paginateMeasuredPrintBlocks(
     const mustSlice = block.type === "block" && (
       block.block.type === "boxBlock"
         ? boxHasOverTallChild(block.block, contentHeightPx, measuredDescendantHeights)
-        : block.block.type !== "layoutSection" && blockHeight > contentHeightPx + 0.5
+        : block.block.type !== "layoutSection" && blockFitHeight > contentHeightPx + 0.5
     );
 
     if (isBreakableBox || mustSlice) {
@@ -1376,17 +1387,17 @@ function paginateMeasuredPrintBlocks(
       // continues, open-edged, on the next. The placer advances columns itself, so
       // we must NOT push the whole block to a fresh page/column here — that would
       // waste the rest of this page.
-    } else if (blockHeight > currentColumnHeight() + 0.5 && pageHasContent()) {
+    } else if (blockFitHeight > currentColumnHeight() + 0.5 && pageHasContent()) {
       flushPage();
     } else if (
       columnHasFlowContent(currentColumn()) &&
-      currentColumn().estimatedContentHeightPx + blockHeight > currentColumnHeight()
+      currentColumn().estimatedContentHeightPx + blockFitHeight > currentColumnHeight()
     ) {
       advanceColumn();
     } else if (
       !columnHasFlowContent(currentColumn()) &&
       currentColumn().estimatedContentHeightPx > 0.5 &&
-      currentColumn().estimatedContentHeightPx + blockHeight > currentColumnHeight()
+      currentColumn().estimatedContentHeightPx + blockFitHeight > currentColumnHeight()
     ) {
       flushPage();
     }
@@ -2079,7 +2090,19 @@ function PrintBlock({
   const { block } = unit;
 
   if (block.type === "section") {
-    return <h1 data-sigma-doc-id={block.id} className="print-section" style={{ textAlign: block.align ?? "left", lineHeight: block.lineHeight }}>{block.title}</h1>;
+    return (
+      <h1
+        data-sigma-doc-id={block.id}
+        className="print-section"
+        style={{
+          textAlign: block.align ?? "left",
+          lineHeight: block.lineHeight,
+          ...blockSpaceAfterStyleVars(block),
+        } as CSSProperties}
+      >
+        {block.title}
+      </h1>
+    );
   }
 
   if (block.type === "heading") {

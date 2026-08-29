@@ -1519,6 +1519,96 @@ describe("SigmaDoc schema", () => {
   });
 });
 
+describe("block space after", () => {
+  function parseWithSpaceAfter(spaceAfterPx: unknown): unknown {
+    const parsed = parseSigmaDocument({
+      ...sampleDocument,
+      content: [{
+        type: "paragraph",
+        id: "p_space_after",
+        children: [{ type: "text", text: "余白付き" }],
+        spaceAfterPx,
+      }],
+    });
+    const block = parsed.content[0];
+    return block.type === "paragraph" ? block.spaceAfterPx : "not-a-paragraph";
+  }
+
+  it("keeps the value instead of stripping it as an unknown key", () => {
+    expect(parseWithSpaceAfter(24)).toBe(24);
+  });
+
+  it("normalizes a fractional value to whole px", () => {
+    expect(parseWithSpaceAfter(24.4)).toBe(24);
+  });
+
+  it("clamps above the maximum rather than refusing the document", () => {
+    expect(parseWithSpaceAfter(10_000)).toBe(400);
+  });
+
+  it("drops a negative value and still opens the document", () => {
+    expect(parseWithSpaceAfter(-1)).toBeUndefined();
+  });
+
+  it("drops a non-numeric value and still opens the document", () => {
+    expect(parseWithSpaceAfter("24")).toBeUndefined();
+  });
+
+  it("drops NaN and still opens the document", () => {
+    expect(parseWithSpaceAfter(Number.NaN)).toBeUndefined();
+  });
+
+  it("does not add the key to an untouched block (the JSON stays identical)", () => {
+    // キーが `undefined` で生えるだけでも、書き出した JSON の差分・ハッシュ・AI 編集の
+    // 鮮度判定に無関係な揺れが出る。「未指定は一切書かない」を固定する。
+    const paragraph = { type: "paragraph", id: "p_plain", children: [{ type: "text", text: "素" }] };
+    const parsed = parseSigmaDocument({ ...sampleDocument, content: [paragraph] });
+
+    expect(Object.keys(parsed.content[0]).sort()).toEqual(["children", "id", "type"]);
+  });
+
+  it("keeps the value on every block family that can carry it", () => {
+    const parsed = parseSigmaDocument({
+      ...sampleDocument,
+      content: [
+        { type: "divider", id: "d_space", spaceAfterPx: 8 },
+        {
+          type: "list",
+          id: "list_space",
+          listType: "bullet",
+          spaceAfterPx: 9,
+          items: [{ type: "listItem", id: "li_space", children: [{ type: "text", text: "項目" }] }],
+        },
+        {
+          type: "problem",
+          id: "problem_space",
+          tags: [],
+          lead: [],
+          prompt: [{ type: "paragraph", id: "p_in_problem", children: [], spaceAfterPx: 10 }],
+          solution: [],
+          hints: [],
+        },
+        {
+          type: "layoutSection",
+          id: "layout_space",
+          layout: { columnCount: 2 },
+          spaceAfterPx: 11,
+          children: [{ type: "paragraph", id: "p_in_layout", children: [], spaceAfterPx: 12 }],
+        },
+      ],
+    });
+
+    const [divider, list, problem, layout] = parsed.content;
+    expect([
+      divider.spaceAfterPx,
+      list.spaceAfterPx,
+      problem.type === "problem" ? problem.prompt[0].spaceAfterPx : undefined,
+      layout.spaceAfterPx,
+      layout.type === "layoutSection" ? layout.children[0].spaceAfterPx : undefined,
+    ]).toEqual([8, 9, 10, 11, 12]);
+  });
+});
+
 describe("recoverSigmaDocument schema failures", () => {
   it("reports every unrecoverable field with the expected and actual value", () => {
     // 別ブランチ/新しいアプリで保存された値 (未知のpreset) は要素の除外では救えない。

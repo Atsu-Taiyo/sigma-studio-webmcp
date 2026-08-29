@@ -1,4 +1,5 @@
 import type { BlockExtent } from "@/components/editor/overlay-canvas/anchor";
+import { blockSpaceAfterPx } from "@/features/document";
 import type { ProblemAreaColumnFlowBlock } from "@/features/rendering/core";
 import { collectTextFlowBlockElements } from "./layout-measure";
 import { getBoxFragmentBreakOffsetsFromElement } from "./column-layout";
@@ -82,6 +83,9 @@ export function collectProblemAreaColumnInputs(
         height: extents.get(block.id)?.height ?? 0,
         type: block.type,
         break: block.pagination?.break === true,
+        // 実測 height にはブロック下余白 (padding) が入っている。本文フローと同じ規約で、
+        // 段に収まるかは本文だけで決め、カーソル前進には余白ごと含める。
+        trailingSpacePx: blockSpaceAfterPx(block),
         breakOffsets: block.type === "boxBlock"
           ? getBoxFragmentBreakOffsetsFromElement(block, blockElements.get(block.id), zoomFactor)
           : undefined,

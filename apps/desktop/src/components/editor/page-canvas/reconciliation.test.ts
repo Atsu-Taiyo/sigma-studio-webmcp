@@ -9,6 +9,7 @@ import type { TextFlowBlock } from "../text-flow/types";
 import {
   replaceLayoutSectionChildren,
   replaceProblemAreaRichBlocks,
+  textFlowBlockToProblemAreaBlock,
 } from "./reconciliation";
 
 describe("page-canvas TextFlow reconciliation", () => {
@@ -135,3 +136,57 @@ function paragraph(
     children: text ? [{ type: "text", text }] : [],
   };
 }
+
+describe("textFlowBlockToProblemAreaBlock keeps the space below every block", () => {
+  /**
+   * 問題エリアの編集結果を SigmaDoc へ書き戻す唯一の経路。ここでフィールドを落とすと
+   * 「問題エリア内で余白を付けても次の打鍵で消える」形で表に出る。
+   */
+  const CASES: Array<[string, TextFlowBlock]> = [
+    ["section", { type: "section", id: "s", title: "節", spaceAfterPx: 24 }],
+    ["heading", { type: "heading", id: "h", level: 2, children: [], spaceAfterPx: 24 }],
+    ["paragraph", { type: "paragraph", id: "p", children: [], spaceAfterPx: 24 }],
+    [
+      "list",
+      {
+        type: "list",
+        id: "l",
+        listType: "bullet",
+        items: [{ type: "listItem", id: "li", children: [] }],
+        spaceAfterPx: 24,
+      },
+    ],
+    ["divider", { type: "divider", id: "d", spaceAfterPx: 24 }],
+    ["quote", { type: "quote", id: "q", blocks: [{ type: "paragraph", id: "qp", children: [] }], spaceAfterPx: 24 }],
+    ["codeBlock", { type: "codeBlock", id: "c", children: [], spaceAfterPx: 24 }],
+    [
+      "boxBlock",
+      {
+        type: "boxBlock",
+        id: "b",
+        styleId: "fancybox",
+        blocks: [{ type: "paragraph", id: "bp", children: [] }],
+        spaceAfterPx: 24,
+      },
+    ],
+    [
+      "layoutSection",
+      {
+        type: "layoutSection",
+        id: "ls",
+        layout: { columnCount: 2 },
+        children: [{ type: "paragraph", id: "lp", children: [] }],
+        spaceAfterPx: 24,
+      },
+    ],
+  ];
+
+  it.each(CASES)("keeps it for %s", (_name, block) => {
+    expect(textFlowBlockToProblemAreaBlock(block).spaceAfterPx).toBe(24);
+  });
+
+  it("leaves an untouched block without a space", () => {
+    expect(textFlowBlockToProblemAreaBlock({ type: "paragraph", id: "p", children: [] }).spaceAfterPx)
+      .toBeUndefined();
+  });
+});

@@ -2,10 +2,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  paginateMeasuredPrintBlocks,
   PrintPreview,
   PrintPreviewPageNavigator,
   PrintPreviewThumbnail,
   translateNestedMeasuredBlock,
+  type PrintContentUnit,
 } from "@/components/print/PrintPreview";
 import { renderMathHtml } from "@/features/rendering/adapters";
 import { createBoxBlock } from "@/lib/box-blocks";
@@ -1506,3 +1508,51 @@ function sectionTagContaining(html: string, marker: string): string {
   const end = html.indexOf(">", markerIndex);
   return html.slice(start, end + 1);
 }
+
+describe("paginateMeasuredPrintBlocks keeps a block whose only overflow is its space below", () => {
+  /**
+   * 紙面のページ割りは本文フロー (`pagination-decisions.ts`) と同じ規約でなければならない:
+   * 収まり判定から末尾のブロック下余白を除き、カーソル前進には含める。ここが揃っていないと、
+   * 同じ文書をエディタと印刷プレビュー/埋め込みビューアで開いたときに改ページ位置だけが食い違う。
+   */
+  function unit(id: string, spaceAfterPx?: number): PrintContentUnit {
+    return {
+      type: "block",
+      id,
+      block: {
+        type: "paragraph",
+        id,
+        children: [{ type: "text", text: id }],
+        ...(spaceAfterPx ? { spaceAfterPx } : {}),
+      },
+    };
+  }
+
+  function paginate(units: PrintContentUnit[], heights: number[]) {
+    return paginateMeasuredPrintBlocks(units, heights, heights, 1, 1000, 0, new Map(), 8);
+  }
+
+  it("leaves the block on its page and sends the next one over", () => {
+    const pages = paginate(
+      [unit("a"), unit("b", 100), unit("c")],
+      [900, 150, 100],
+    );
+
+    expect(pages.map((page) => page.blocks.map((block) => block.id))).toEqual([["a", "b"], ["c"]]);
+  });
+
+  it("moves the same block over once its own content does not fit", () => {
+    const pages = paginate(
+      [unit("a"), unit("b", 100), unit("c")],
+      [900, 250, 100],
+    );
+
+    expect(pages.map((page) => page.blocks.map((block) => block.id))).toEqual([["a"], ["b", "c"]]);
+  });
+
+  it("is unchanged for a document without the field", () => {
+    const pages = paginate([unit("a"), unit("b"), unit("c")], [900, 150, 100]);
+
+    expect(pages.map((page) => page.blocks.map((block) => block.id))).toEqual([["a"], ["b", "c"]]);
+  });
+});

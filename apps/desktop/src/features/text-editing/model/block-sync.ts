@@ -92,6 +92,7 @@ function getTextFlowBlockSyncKey(block: TextFlowBlock): string {
         block.start ?? "",
         block.markerStyle ?? "",
         paginationSyncKey(block.pagination),
+        block.spaceAfterPx ?? "",
         block.items.map(getListItemSyncKey).join("\u0001"),
       ].join(":")
     : block.type === "boxBlock"
@@ -102,6 +103,7 @@ function getTextFlowBlockSyncKey(block: TextFlowBlock): string {
           inlineNodesSyncKey(block.title ?? []),
           boxFrameSyncKey(block.frame),
           paginationSyncKey(block.pagination),
+          block.spaceAfterPx ?? "",
           block.blocks.map(getBoxBlockChildSyncKey).join("\u0001"),
         ].join(":")
       : block.type === "layoutSection"
@@ -111,6 +113,7 @@ function getTextFlowBlockSyncKey(block: TextFlowBlock): string {
             block.layout.columnCount,
             block.layout.columnGapMm ?? "",
             paginationSyncKey(block.pagination),
+            block.spaceAfterPx ?? "",
             block.children.map(getLayoutSectionChildSyncKey).join("\u0001"),
           ].join(":")
         : block.type === "quote"
@@ -118,11 +121,12 @@ function getTextFlowBlockSyncKey(block: TextFlowBlock): string {
             "quote",
             block.id,
             paginationSyncKey(block.pagination),
+            block.spaceAfterPx ?? "",
             block.blocks.map(getTextFlowBlockSyncKey).join("\u0001"),
           ].join(":")
       : block.type === "divider"
-          // 区切り線が持つ状態は id と改ページ指定だけ。
-          ? ["divider", block.id, paginationSyncKey(block.pagination)].join(":")
+          // 区切り線が持つ状態は id と改ページ指定と下余白だけ。
+          ? ["divider", block.id, paginationSyncKey(block.pagination), block.spaceAfterPx ?? ""].join(":")
           : [
               block.type,
               block.id,
@@ -133,6 +137,7 @@ function getTextFlowBlockSyncKey(block: TextFlowBlock): string {
               "align" in block ? block.align ?? "" : "",
               "lineHeight" in block ? block.lineHeight ?? "" : "",
               paginationSyncKey(block.pagination),
+              block.spaceAfterPx ?? "",
             ].join(":");
   textFlowBlockSyncKeyCache.set(block, key);
   return key;
@@ -160,6 +165,7 @@ function getRichBlockSyncKey(block: RichBlock): string {
     block.align ?? "",
     block.lineHeight ?? "",
     paginationSyncKey(block.pagination),
+    block.spaceAfterPx ?? "",
   ].join(":");
 }
 

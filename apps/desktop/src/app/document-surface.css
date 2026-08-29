@@ -1144,7 +1144,7 @@ h2.print-heading {
 }
 
 .print-paragraph {
-  min-height: 1.78em;
+  min-height: calc(1.78em + var(--sigma-doc-space-after, 0px));
   margin: 2px 0;
   line-height: inherit;
   font-size: inherit;
@@ -1590,8 +1590,33 @@ li[data-list-marker-typography]::marker {
 }
 
 .text-flow-editor p {
-  min-height: 1.78em;
+  min-height: calc(1.78em + var(--sigma-doc-space-after, 0px));
   margin: 2px 0;
+}
+
+/* --- ブロック下余白 (SigmaDoc の spaceAfterPx) ---------------------------------------------
+   編集中の ProseMirror・静的描画・印刷/PDF・埋め込みビューアが、ブロックのインライン
+   custom property という **同じ 1 つの出典**から読む。
+   padding にしているのは `getBoundingClientRect()` に含まれる = ページ割りと段組フローの実測が
+   そのまま拾うため (margin だと column-layout.ts の `cursorY += height` が取りこぼし、
+   チャンク境界のマージン相殺が applied-gaps.ts の marginTop 読みとずれて非収束が再発する)。
+   枠や背景を持つ引用・コード・囲み枠には付けない — padding は枠の内側に入るので
+   「ブロックの下に余白」ではなく「枠が下に伸びる」になる。 */
+.text-flow-editor :is(p, h1, h2, h3, ul, ol, hr),
+.print-paragraph,
+.print-heading,
+.print-section,
+.print-list,
+.print-divider {
+  padding-bottom: var(--sigma-doc-space-after, 0px);
+}
+
+/* custom property は相続するので、余白を持つリストの項目の中まで降りてしまう。
+   入れ物と中身の間にある li で断ち切る (項目自身は下余白を持たない。
+   自前の値を持つ子ブロックはインライン指定がこの宣言に勝つので影響を受けない)。 */
+.text-flow-editor :is(ul, ol) > li,
+.print-list > li {
+  --sigma-doc-space-after: 0px;
 }
 
 .text-flow-shell {

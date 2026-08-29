@@ -18,8 +18,14 @@ export interface PaginationItem {
   gapKey: string;
   /** gap を除いた位置 (コンテンツ領域上端からの px)。 */
   topNat: number;
-  /** gap を除いた高さ。 */
+  /** gap を除いた高さ。ブロック下余白 (`spaceAfterPx`) を含む。 */
   height: number;
+  /**
+   * `height` のうち末尾のブロック下余白ぶん。**収まり判定からは除き、カーソル前進には含める**。
+   * 余白を含めて判定すると「余白を足したらその段落自身が次ページへ飛ぶ」= 下げたかったのは
+   * 次の行なのに逆の結果になる。含めないとページ末尾で余白が消える。
+   */
+  trailingSpacePx?: number;
   /** 手動改ページ。 */
   forceBreakBefore?: boolean;
   /** fragmentableBlock: そのページで開始するのに要る最小の残り高さ。 */
@@ -84,6 +90,11 @@ export function occupiedPageCount(height: number, pageStride: number): number {
   return Math.max(1, Math.ceil((height - 0.5) / pageStride));
 }
 
+/** 収まり判定に使う高さ。末尾のブロック下余白は「そこで切ってよい」ので除く。 */
+function fitHeight(item: PaginationItem): number {
+  return Math.max(0, item.height - (item.trailingSpacePx ?? 0));
+}
+
 export function decidePagination(
   items: readonly PaginationItem[],
   env: PaginationEnv,
@@ -146,12 +157,12 @@ export function decidePagination(
       const available = env.contentHeightPx - relTop;
       const minStart = item.minStartHeightPx ?? 0;
       const needsPush = forceBreak
-        || (!isFirstOnPage && item.height > available + 0.5 && available < minStart - 0.5);
+        || (!isFirstOnPage && fitHeight(item) > available + 0.5 && available < minStart - 0.5);
       if (needsPush) {
         gap += pushToNextPage(item.gapKey, item.topNat);
       }
     } else if (item.kind === "block") {
-      if (forceBreak || (!isFirstOnPage && relTop + item.height > env.contentHeightPx + 0.5)) {
+      if (forceBreak || (!isFirstOnPage && relTop + fitHeight(item) > env.contentHeightPx + 0.5)) {
         gap += pushToNextPage(item.gapKey, item.topNat);
       }
     }

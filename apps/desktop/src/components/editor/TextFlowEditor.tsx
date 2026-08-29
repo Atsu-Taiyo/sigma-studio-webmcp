@@ -80,6 +80,9 @@ import {
 } from "@/lib/box-blocks";
 import { createId } from "@/lib/id";
 import {
+  BLOCK_SPACE_AFTER_CSS_VARIABLE,
+  blockSpaceAfterFromStyleValue,
+  blockSpaceAfterStyleAttr,
   MAX_LINE_HEIGHT,
   MIN_LINE_HEIGHT,
   normalizeCodeBlockTheme,
@@ -386,6 +389,18 @@ export const SigmaDocTextAttrs = Extension.create({
               return lineHeight ? { style: `line-height: ${lineHeight}` } : {};
             },
           },
+          // ブロック下余白。`pagination` と違って **DOM へ出す** — 編集面・静的描画・印刷/PDF が
+          // 同じインライン custom property を読んで `document-surface.css` の padding になる。
+          // (`mergeAttributes` は同じ `style` キーを "; " で繋ぐので textAlign / lineHeight と共存する)
+          spaceAfterPx: {
+            default: null,
+            // Enter で割ったとき後半へ複製しない。「このブロックの下の余白」なので前半が持つ。
+            keepOnSplit: false,
+            parseHTML: (element) => blockSpaceAfterFromStyleValue(
+              element.style.getPropertyValue(BLOCK_SPACE_AFTER_CSS_VARIABLE),
+            ),
+            renderHTML: (attributes) => blockSpaceAfterStyleAttr(attributes.spaceAfterPx),
+          },
           sigmaDocId: {
             default: null,
             renderHTML: (attributes) => {
@@ -413,6 +428,19 @@ export const SigmaDocTextAttrs = Extension.create({
             default: null,
             // Enter でブロックを割ったとき、後半へ改ページが複製されないようにする
             // (break は「このブロックの前で改ページ」の意味なので、前半だけが持つ)。
+            keepOnSplit: false,
+            parseHTML: () => null,
+            renderHTML: () => ({}),
+          },
+        },
+      },
+      {
+        // 囲み枠・段組は下余白を **描かない** (padding は枠の内側に入ってしまうため) が、値は
+        // PM の doc に載せて往復させる — 載せないと編集のたびに attrs から落ちて黙って消える。
+        types: ["boxBlock", "layoutSection"],
+        attributes: {
+          spaceAfterPx: {
+            default: null,
             keepOnSplit: false,
             parseHTML: () => null,
             renderHTML: () => ({}),

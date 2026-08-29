@@ -52,6 +52,11 @@ export interface BaseNode {
   type: string;
   id: string;
   pagination?: PaginationHints;
+  /**
+   * ブロック最終行の下に足す CSS px (0..400 の整数、ズーム非依存の論理 px)。
+   * 未指定は 0 と同じ = 従来どおりの間隔。`padding-bottom` として描くので実測の高さに含まれる。
+   */
+  spaceAfterPx?: number;
 }
 
 export interface PaginationHints {

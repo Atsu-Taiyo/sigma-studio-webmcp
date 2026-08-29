@@ -369,6 +369,17 @@ test("本文が複数ページに渡っても、全ブロックが同じペー�
   await runParity(page, document, Array.from({ length: 40 }, (_, i) => `flow_${i + 1}`));
 });
 
+test("ブロック下余白を含む本文が、編集面とPDF面で同じページの同じ位置に出る", async ({ page }) => {
+  // 下余白は編集面・PDF 面とも `document-surface.css` の同じ custom property から出る。
+  // 片側だけに CSS 差分ができると、余白ぶんずつページ割りが食い違ってここが落ちる。
+  test.setTimeout(120_000);
+  const content = paragraphs("space", 40).map((paragraph, index) => (
+    index % 4 === 1 ? { ...paragraph, spaceAfterPx: 18 } : paragraph
+  ));
+  const document = documentWith(content);
+  await runParity(page, document, Array.from({ length: 40 }, (_, i) => `space_${i + 1}`));
+});
+
 test("標準ゴシック・標準明朝を同梱フォントに固定し、編集面とPDF面で共有する", async ({ page }) => {
   test.setTimeout(120_000);
   const document = documentWith([

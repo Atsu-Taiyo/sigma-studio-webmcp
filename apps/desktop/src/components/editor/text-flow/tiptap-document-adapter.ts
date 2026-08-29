@@ -1,6 +1,7 @@
 import { normalizeCodeLanguage } from "@/features/rendering/adapters";
 import { createId } from "@/lib/id";
 import {
+  normalizeBlockSpaceAfterPx,
   normalizeCodeBlockTheme,
   normalizeLineHeight,
   normalizeOrderedListMarkerStyle,
@@ -58,14 +59,26 @@ export function tiptapToTextFlow(doc: TiptapDoc, previousBlocks: TextFlowBlock[]
       // 2 度目に出てくる id は Enter によるブロック分割の後半。PM の `tr.split` は attrs を
       // 両側へ複製するので (Tiptap の `keepOnSplit` は末尾での分割にしか効かない)、そのままだと
       // 「このブロックの前で改ページ」が 2 つに増える。後半からは落とす。
+      //
+      // 下余白 (`spaceAfterPx`) も同じ規約に載せる: 「このブロックの下の余白」なので、割った
+      // ときに残るのは前半。既存 id で SigmaDoc 側を正にするのも同じ理由で、これが無いと
+      // 余白をコミットした直後の onUpdate が古い PM attrs でコミットを巻き戻す。
       const isSplitTail = usedIds.has(block.id);
-      const blockWithPageBreak = isSplitTail
-        ? withPagination(block, undefined)
+      const carried = isSplitTail
+        ? withCarriedBlockFields(block, undefined)
         : previous
-          ? withPagination(block, previous.pagination)
+          ? withCarriedBlockFields(block, previous)
           : block;
-      return ensureUniqueTextFlowBlockIds(blockWithPageBreak, usedIds);
+      return ensureUniqueTextFlowBlockIds(carried, usedIds);
     });
+}
+
+/**
+ * PM の attrs ではなく SigmaDoc 側を正とするフィールドを載せ直す。
+ * `previous` が無い (= 分割後半) ときは両方落とす。
+ */
+function withCarriedBlockFields<T extends TextFlowBlock>(block: T, previous: TextFlowBlock | undefined): T {
+  return withSpaceAfter(withPagination(block, previous?.pagination), previous?.spaceAfterPx);
 }
 
 function withPagination<T extends TextFlowBlock>(block: T, pagination: PaginationHints | undefined): T {
@@ -80,9 +93,31 @@ function withPagination<T extends TextFlowBlock>(block: T, pagination: Paginatio
   return next;
 }
 
+function withSpaceAfter<T extends TextFlowBlock>(block: T, spaceAfterPx: number | undefined): T {
+  const normalized = normalizeBlockSpaceAfterPx(spaceAfterPx);
+  if (normalized !== undefined) {
+    return { ...block, spaceAfterPx: normalized };
+  }
+  if (block.spaceAfterPx === undefined) {
+    return block;
+  }
+  const next = { ...block };
+  delete next.spaceAfterPx;
+  return next;
+}
+
 /** PM の attrs へ載せる搬送用の値。SigmaDoc に無ければ null (attrs の既定値と揃える)。 */
 function paginationAttr(block: { pagination?: PaginationHints | undefined }): PaginationHints | null {
   return block.pagination ?? null;
+}
+
+function spaceAfterAttr(block: { spaceAfterPx?: number | undefined }): number | null {
+  return normalizeBlockSpaceAfterPx(block.spaceAfterPx) ?? null;
+}
+
+/** attrs から戻す。範囲外は clamp、非数は「指定なし」に倒す。 */
+function spaceAfterFromAttrs(node: TiptapNode): number | undefined {
+  return normalizeBlockSpaceAfterPx(node.attrs?.spaceAfterPx);
 }
 
 /** attrs から戻す。壊れた値は無視して「指定なし」に倒す。 */
@@ -115,6 +150,7 @@ export function textFlowBlockToTiptapNode(block: TextFlowBlock): TiptapNode {
         textAlign: block.align ?? null,
         lineHeight: block.lineHeight ?? null,
         pagination: paginationAttr(block),
+        spaceAfterPx: spaceAfterAttr(block),
       },
       content: block.title ? [{ type: "text", text: block.title }] : undefined,
     };
@@ -130,6 +166,7 @@ export function textFlowBlockToTiptapNode(block: TextFlowBlock): TiptapNode {
         textAlign: block.align ?? null,
         lineHeight: block.lineHeight ?? null,
         pagination: paginationAttr(block),
+        spaceAfterPx: spaceAfterAttr(block),
       },
       content: inlineNodesToTiptapNodes(block.children),
     };
@@ -186,12 +223,18 @@ export function textFlowBlockToTiptapNode(block: TextFlowBlock): TiptapNode {
   };
 }
 
-/** どのブロックも同じ形で運ぶ id・種別・改ページ指定。 */
-function blockIdentityAttrs(block: { id: string; type: string; pagination?: PaginationHints | undefined }) {
+/** どのブロックも同じ形で運ぶ id・種別・改ページ指定・下余白。 */
+function blockIdentityAttrs(block: {
+  id: string;
+  type: string;
+  pagination?: PaginationHints | undefined;
+  spaceAfterPx?: number | undefined;
+}) {
   return {
     sigmaDocId: block.id,
     sigmaDocType: block.type,
     pagination: paginationAttr(block),
+    spaceAfterPx: spaceAfterAttr(block),
   };
 }
 
@@ -208,6 +251,7 @@ function boxBlockToTiptapNode(block: BoxBlockNode): TiptapNode {
       styleId: block.styleId,
       frame: block.frame ?? null,
       pagination: paginationAttr(block),
+      spaceAfterPx: spaceAfterAttr(block),
     },
     content: [
       {
@@ -233,6 +277,7 @@ function layoutSectionToTiptapNode(block: LayoutSectionNode): TiptapNode {
       columnCount: normalizeLayoutSectionColumnCount(block.layout.columnCount),
       columnGapMm: block.layout.columnGapMm ?? 8,
       pagination: paginationAttr(block),
+      spaceAfterPx: spaceAfterAttr(block),
     },
     content: block.children.length > 0
       ? block.children.map(layoutSectionChildToTiptapNode)
@@ -258,6 +303,7 @@ function listNodeToTiptapNode(list: ListNode): TiptapNode {
       sigmaDocId: list.id,
       sigmaDocType: "list",
       pagination: paginationAttr(list),
+      spaceAfterPx: spaceAfterAttr(list),
       ...(list.listType === "ordered" && list.start ? { start: list.start } : {}),
       ...(list.listType === "ordered" && list.markerStyle ? { markerStyle: list.markerStyle } : {}),
     },
@@ -305,6 +351,7 @@ function isTiptapListNode(node: TiptapNode): boolean {
  */
 function tiptapQuoteNodeToTextBlock(node: TiptapNode): QuoteBlockNode {
   const pagination = paginationFromAttrs(node);
+  const spaceAfterPx = spaceAfterFromAttrs(node);
   const blocks = (node.content ?? [])
     .filter(isSupportedTiptapBlockNode)
     .map((child) => tiptapNodeToTextBlock(child))
@@ -316,6 +363,7 @@ function tiptapQuoteNodeToTextBlock(node: TiptapNode): QuoteBlockNode {
       ? blocks
       : [{ type: "paragraph", id: createId("p"), children: [] }],
     ...(pagination ? { pagination } : {}),
+    ...(spaceAfterPx ? { spaceAfterPx } : {}),
   };
 }
 
@@ -476,6 +524,7 @@ function tiptapNodeToTextBlock(node: TiptapNode): TextFlowBlock {
 
   if (node.type === "codeBlock") {
     const codePagination = paginationFromAttrs(node);
+    const codeSpaceAfter = spaceAfterFromAttrs(node);
     const theme = normalizeCodeBlockTheme(node.attrs?.theme);
     return {
       type: "codeBlock",
@@ -484,15 +533,18 @@ function tiptapNodeToTextBlock(node: TiptapNode): TextFlowBlock {
       language: normalizeCodeLanguage(node.attrs?.language),
       ...(theme && theme !== "light" ? { theme } : {}),
       ...(codePagination ? { pagination: codePagination } : {}),
+      ...(codeSpaceAfter ? { spaceAfterPx: codeSpaceAfter } : {}),
     };
   }
 
   if (node.type === "divider") {
     const dividerPagination = paginationFromAttrs(node);
+    const dividerSpaceAfter = spaceAfterFromAttrs(node);
     return {
       type: "divider",
       id: typeof node.attrs?.sigmaDocId === "string" ? node.attrs.sigmaDocId : createId("divider"),
       ...(dividerPagination ? { pagination: dividerPagination } : {}),
+      ...(dividerSpaceAfter ? { spaceAfterPx: dividerSpaceAfter } : {}),
     };
   }
 
@@ -501,6 +553,7 @@ function tiptapNodeToTextBlock(node: TiptapNode): TextFlowBlock {
   const children = tiptapNodesToInlineNodes(node.content ?? []);
 
   const pagination = paginationFromAttrs(node);
+  const spaceAfterPx = spaceAfterFromAttrs(node);
 
   // `section` は level 1 の見出しとして描いている。level が動いていたら、それは
   // Tiptap の chain (`setHeading`) で見出しレベルを変えた結果なので、section へ
@@ -513,6 +566,7 @@ function tiptapNodeToTextBlock(node: TiptapNode): TextFlowBlock {
       align: normalizeTextAlign(node.attrs?.textAlign),
       lineHeight: normalizeLineHeight(node.attrs?.lineHeight),
       ...(pagination ? { pagination } : {}),
+      ...(spaceAfterPx ? { spaceAfterPx } : {}),
     };
   }
 
@@ -526,6 +580,7 @@ function tiptapNodeToTextBlock(node: TiptapNode): TextFlowBlock {
       align: normalizeTextAlign(node.attrs?.textAlign),
       lineHeight: normalizeLineHeight(node.attrs?.lineHeight),
       ...(pagination ? { pagination } : {}),
+      ...(spaceAfterPx ? { spaceAfterPx } : {}),
     };
   }
 
@@ -536,6 +591,7 @@ function tiptapNodeToTextBlock(node: TiptapNode): TextFlowBlock {
     align: normalizeTextAlign(node.attrs?.textAlign),
     lineHeight: normalizeLineHeight(node.attrs?.lineHeight),
     ...(pagination ? { pagination } : {}),
+    ...(spaceAfterPx ? { spaceAfterPx } : {}),
   };
 }
 
@@ -555,6 +611,7 @@ function tiptapBoxNodeToTextBlock(node: TiptapNode): BoxBlockNode {
     ...(title.length > 0 ? { title } : {}),
     ...(frame ? { frame } : {}),
     ...(paginationFromAttrs(node) ? { pagination: paginationFromAttrs(node) } : {}),
+    ...(spaceAfterFromAttrs(node) ? { spaceAfterPx: spaceAfterFromAttrs(node) } : {}),
     blocks: blocks.length > 0 ? blocks : [{
       type: "paragraph",
       id: createId("p"),
@@ -573,6 +630,7 @@ function tiptapLayoutSectionNodeToTextBlock(node: TiptapNode): LayoutSectionNode
       columnGapMm: normalizeNonnegativeNumber(node.attrs?.columnGapMm) ?? 8,
     },
     ...(paginationFromAttrs(node) ? { pagination: paginationFromAttrs(node) } : {}),
+    ...(spaceAfterFromAttrs(node) ? { spaceAfterPx: spaceAfterFromAttrs(node) } : {}),
     children: children.length > 0 ? children : [{
       type: "paragraph",
       id: createId("p"),
@@ -618,6 +676,7 @@ function tiptapListNodeToTextBlock(node: TiptapNode): ListNode {
     id: typeof node.attrs?.sigmaDocId === "string" ? node.attrs.sigmaDocId : createId("list"),
     listType: isOrdered ? "ordered" : "bullet",
     ...(paginationFromAttrs(node) ? { pagination: paginationFromAttrs(node) } : {}),
+    ...(spaceAfterFromAttrs(node) ? { spaceAfterPx: spaceAfterFromAttrs(node) } : {}),
     ...(isOrdered && start && start !== 1 ? { start } : {}),
     ...(isOrdered && markerStyle && markerStyle !== "decimal" ? { markerStyle } : {}),
     items: (node.content ?? [])

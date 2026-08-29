@@ -191,3 +191,78 @@ describe("detectGapOscillation", () => {
     expect(detectGapOscillation(["A", "B", "C"], "A")).toBe("progressing");
   });
 });
+
+describe("decidePagination with a space below a block", () => {
+  /**
+   * 「余白を足したらその段落自身が次ページへ飛ぶ」はユーザーの意図と逆 — 下げたいのは
+   * **次の行**。なので収まり判定からは末尾余白を除き、カーソルの前進には含める。
+   */
+  it("keeps the block itself in place when only its trailing space overflows", () => {
+    const result = decidePagination(
+      [
+        block("intro", 0, 900),
+        block("spaced", 900, 150, { trailingSpacePx: 100 }),
+        block("after", 1050, 100),
+      ],
+      ENV,
+      {},
+    );
+
+    // 本文 50px はページに収まる (900 + 50 <= 1000) ので、このブロックは動かない。
+    expect(result.gaps.spaced).toBeUndefined();
+    // 次のブロックは余白ぶんまで含めて溢れるので次ページ頭へ。
+    expect(result.gaps.after).toBe(50);
+  });
+
+  it("still moves the block when its own content does not fit", () => {
+    const result = decidePagination(
+      [block("intro", 0, 900), block("spaced", 900, 250, { trailingSpacePx: 100 })],
+      ENV,
+      {},
+    );
+
+    // 本文 150px がページに収まらない (900 + 150 > 1000) ので、従来どおりブロックごと送る。
+    expect(result.gaps.spaced).toBe(200);
+  });
+
+  it("treats a missing trailing space as 0 (documents without the field are unchanged)", () => {
+    const withoutField = decidePagination(
+      [block("intro", 0, 900), block("spaced", 900, 150), block("after", 1050, 100)],
+      ENV,
+      {},
+    );
+    const withZero = decidePagination(
+      [
+        block("intro", 0, 900),
+        block("spaced", 900, 150, { trailingSpacePx: 0 }),
+        block("after", 1050, 100),
+      ],
+      ENV,
+      {},
+    );
+
+    expect(withZero).toEqual(withoutField);
+  });
+
+  it("does not let the trailing space start a fragmentable block one page early", () => {
+    // 分割可能ブロックは「きれいに始められる残り高さ」で判定する。余白を高さに数えると
+    // 本文が始められるのに次ページへ送られる。
+    const result = decidePagination(
+      [
+        block("intro", 0, 900),
+        {
+          kind: "fragmentableBlock",
+          gapKey: "long",
+          topNat: 900,
+          height: 1200,
+          minStartHeightPx: 60,
+          trailingSpacePx: 100,
+        },
+      ],
+      ENV,
+      {},
+    );
+
+    expect(result.gaps.long).toBeUndefined();
+  });
+});

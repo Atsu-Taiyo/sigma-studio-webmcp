@@ -161,6 +161,7 @@ export function textFlowBlockToProblemAreaBlock(
       align: block.align,
       lineHeight: block.lineHeight,
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -173,6 +174,7 @@ export function textFlowBlockToProblemAreaBlock(
       align: block.align,
       lineHeight: block.lineHeight,
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -191,11 +193,12 @@ export function textFlowBlockToProblemAreaBlock(
       layout: { ...block.layout },
       children: block.children.map(cloneLayoutSectionChild),
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
   if (block.type === "divider") {
-    return { type: "divider", id: block.id, pagination: block.pagination };
+    return { type: "divider", id: block.id, pagination: block.pagination, spaceAfterPx: block.spaceAfterPx };
   }
 
   if (block.type === "quote") {
@@ -204,6 +207,7 @@ export function textFlowBlockToProblemAreaBlock(
       id: block.id,
       blocks: block.blocks,
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -213,6 +217,7 @@ export function textFlowBlockToProblemAreaBlock(
       id: block.id,
       children: block.children,
       pagination: block.pagination,
+      spaceAfterPx: block.spaceAfterPx,
     };
   }
 
@@ -223,5 +228,6 @@ export function textFlowBlockToProblemAreaBlock(
     align: block.align,
     lineHeight: block.lineHeight,
     pagination: block.pagination,
+    spaceAfterPx: block.spaceAfterPx,
   };
 }
