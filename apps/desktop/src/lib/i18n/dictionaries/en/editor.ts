@@ -50,6 +50,8 @@ export const editor = {
     bodyActions: "Body actions",
     problemNumber: "Problem number {{number}}",
     areaHeight: "Area height",
+    spaceAfter: "Space below the block",
+    spaceAfterHint: "Drag down to add space (double-click resets it)",
     areaPrompt: "Q{{number}} Problem text",
   },
   pageMenu: {

@@ -15,6 +15,7 @@ export {
   isColumnWrapTargetBlock,
   isProblemAreaKind,
   setBlockBreakBefore,
+  setBlockSpaceAfter,
   setLayoutSectionColumnCount,
   type BodyEditableBlock,
   type BodyTextFlowBlock,

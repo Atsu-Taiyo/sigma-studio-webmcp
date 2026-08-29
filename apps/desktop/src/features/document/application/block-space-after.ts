@@ -13,6 +13,14 @@ export const MAX_BLOCK_SPACE_AFTER_PX = 400;
 export const BLOCK_SPACE_AFTER_CSS_VARIABLE = "--sigma-doc-space-after";
 
 /**
+ * ドラッグ中のライブプレビューが node decoration で被せる値。**永続値と別名にする**理由:
+ * prosemirror-view は decoration の style を外すとき `prev.style` を舐めて
+ * `dom.style.removeProperty(prop)` するので、同名だとドラッグ終了の瞬間にノード自身の
+ * 永続値まで消える。CSS 側は `var(-draft, var(-永続, 0px))` の 2 段で読む。
+ */
+export const BLOCK_SPACE_AFTER_DRAFT_CSS_VARIABLE = "--sigma-doc-space-after-draft";
+
+/**
  * 下余白を **描く** ブロック種別。
  *
  * 枠や背景を持つ引用・コード・囲み枠は `padding-bottom` が枠の内側に入ってしまい

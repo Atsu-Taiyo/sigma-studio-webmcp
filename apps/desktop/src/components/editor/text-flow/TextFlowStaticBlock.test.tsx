@@ -291,11 +291,23 @@ describe("TextFlowStaticBlock block space after", () => {
 
   it("adds the space as padding, so getBoundingClientRect (= pagination) sees it", () => {
     const css = documentSurfaceCss();
+    // ドラッグ中のドラフト値 → 永続値 → 0 の 2 段。ドラフトを別名にしているのは、
+    // prosemirror-view が decoration 撤去時に `removeProperty` で同名の宣言まで消すため。
+    const resolved = "var(--sigma-doc-space-after-draft, var(--sigma-doc-space-after, 0px))";
 
-    expect(css).toContain("padding-bottom: var(--sigma-doc-space-after, 0px)");
+    expect(css).toContain(`padding-bottom: ${resolved}`);
     // border-box なので min-height を据え置くと下余白が呑まれる (lineHeight < 1.78 で顕著)。
-    expect(css).toContain("min-height: calc(1.78em + var(--sigma-doc-space-after, 0px))");
-    // 相続がリスト項目の中まで降りないように li で断ち切る。
-    expect(css).toMatch(/\.print-list > li[\s\S]{0,80}--sigma-doc-space-after: 0px/);
+    expect(css).toContain(`min-height: calc(1.78em + ${resolved})`);
+  });
+
+  it("stops both variables from being inherited into a list's own items", () => {
+    const css = documentSurfaceCss();
+    const reset = css.match(/\.print-list > li \{[^}]*\}/)?.[0] ?? "";
+
+    // 永続値は 0 に潰す。
+    expect(reset).toContain("--sigma-doc-space-after: 0px");
+    // ドラフトは `initial` (= guaranteed-invalid)。`0px` にすると、自前の永続値を持つ
+    // 継続ブロックの余白まで消える (var() の次段へ落ちなくなる)。
+    expect(reset).toContain("--sigma-doc-space-after-draft: initial");
   });
 });

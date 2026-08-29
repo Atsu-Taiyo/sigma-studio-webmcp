@@ -21,6 +21,7 @@ import {
   isColumnWrapTargetBlock,
   isProblemAreaKind,
   setBlockBreakBefore,
+  setBlockSpaceAfter,
   setLayoutSectionColumnCount,
 } from "./body-block-model";
 
@@ -363,5 +364,48 @@ describe("body block model", () => {
     expect(getNextTopLevelTextFlowBlockId(content, "after-problem")).toBeNull();
     expect(getNextTopLevelTextFlowBlockId(content, "layout")).toBeNull();
     expect(getNextTopLevelTextFlowBlockId(content, "missing")).toBeNull();
+  });
+});
+
+describe("setBlockSpaceAfter", () => {
+  it("stores a whole-pixel space below the block", () => {
+    expect(setBlockSpaceAfter(paragraph("p"), 12).spaceAfterPx).toBe(12);
+  });
+
+  it("rounds to whole CSS px", () => {
+    expect(setBlockSpaceAfter(paragraph("p"), 12.6).spaceAfterPx).toBe(13);
+  });
+
+  it("clamps to the maximum", () => {
+    expect(setBlockSpaceAfter(paragraph("p"), 10_000).spaceAfterPx).toBe(400);
+  });
+
+  it("never goes below 0", () => {
+    expect("spaceAfterPx" in setBlockSpaceAfter(paragraph("p"), -30)).toBe(false);
+  });
+
+  it("removes the field on reset instead of storing 0", () => {
+    const result = setBlockSpaceAfter({ ...paragraph("p"), spaceAfterPx: 24 }, 0);
+
+    expect("spaceAfterPx" in result).toBe(false);
+  });
+
+  it("returns the same reference when nothing changes", () => {
+    const block = { ...paragraph("p"), spaceAfterPx: 24 };
+
+    expect(setBlockSpaceAfter(block, 24)).toBe(block);
+  });
+
+  it("returns the same reference when resetting an untouched block", () => {
+    const block = paragraph("p");
+
+    expect(setBlockSpaceAfter(block, 0)).toBe(block);
+  });
+
+  it("keeps the rest of the block intact", () => {
+    const block: ParagraphNode = { ...paragraph("p"), align: "center", pagination: { break: true } };
+    const result = setBlockSpaceAfter(block, 24);
+
+    expect(result).toEqual({ ...block, spaceAfterPx: 24 });
   });
 });

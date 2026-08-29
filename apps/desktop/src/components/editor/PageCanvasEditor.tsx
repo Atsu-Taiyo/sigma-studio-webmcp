@@ -43,6 +43,7 @@ import {
   isTextFlowBlock,
   resolveTextFlowBoundaryDelete,
   setBlockBreakBefore,
+  setBlockSpaceAfter,
   setLayoutSectionColumnCount,
   type TextFlowBlock,
   type TextFlowSelectionBookmark,
@@ -100,6 +101,8 @@ import {
   PAGE_GAP_PX,
   type PageMetrics,
   blockSpaceAfterPx,
+  MAX_BLOCK_SPACE_AFTER_PX,
+  rendersBlockSpaceAfter,
   fitRunningRegionToContent,
   type SigmaCommentAnchor,
   type SigmaCommentThread,
@@ -275,12 +278,17 @@ import {
   sameUnitLayouts,
 } from "./page-canvas/layout-equality";
 import {
+  clearBlockSpaceAfterDrafts,
+  setBlockSpaceAfterDraft,
+} from "./text-flow/block-space-after-drafts";
+import {
   EMPTY_BLOCK_AFFORDANCE_HOVER,
   resolveBlockAffordanceHover,
   resolveBlockSelectionRange,
   sameBlockAffordanceHover,
   type BlockAffordanceHover,
   type BlockInsertPoint,
+  type BlockSpaceAfterTarget,
   type BlockNeighborKind,
   type HoveredTopLevelBlock,
   type TopLevelBlockBox,
@@ -400,7 +408,7 @@ const EMPTY_RENDER_UNITS: readonly RenderUnit[] = [];
 /** Typing in any of these means the key belongs to the field, not to the selected block. */
 const BLOCK_SELECTION_KEY_IGNORE_SELECTOR = "input, textarea, select, math-field, [contenteditable='true']";
 /** Pressing the handle or its menu is part of the selection, not a click away from it. */
-const BLOCK_SELECTION_KEEP_SELECTOR = ".page-block-handle, .page-context-menu, .problem-context-menu";
+const BLOCK_SELECTION_KEEP_SELECTOR = ".page-block-handle, .page-block-space-handle, .page-context-menu, .problem-context-menu";
 /** Overlay targets which manipulate an existing shape selection in overlay mode. */
 const OVERLAY_SELECTION_KEEP_SELECTOR = "[data-overlay-shape-id], .overlay-selection-box";
 /** Clipped duplicates of a block; measuring them would stretch its box across pages. */
@@ -710,6 +718,23 @@ function PageCanvasEditorImpl({
     bounds: OverlayBounds;
   } | null>(null);
   const [blockAffordance, setBlockAffordance] = useState<BlockAffordanceHover>(EMPTY_BLOCK_AFFORDANCE_HOVER);
+  /** 掴んでいる下端つまみ。描画用の state と、ポインタハンドラが読む ref の 2 本立て。 */
+  const [spaceAfterDrag, setSpaceAfterDrag] = useState<{
+    target: BlockSpaceAfterTarget;
+    startPx: number;
+    px: number;
+  } | null>(null);
+  const spaceAfterDragRef = useRef<{
+    target: BlockSpaceAfterTarget;
+    startClientY: number;
+    startPx: number;
+    px: number;
+    stop: () => void;
+  } | null>(null);
+  /** 直近にホバー解決した位置。文書が変わった後につまみを置き直すのに使う。 */
+  const lastAffordancePointRef = useRef<{ x: number; y: number } | null>(null);
+  /** 下余白を書き込んだ直後だけ、次の文書更新でホバーを取り直す。 */
+  const spaceAfterHoverRefreshRef = useRef(false);
   // Ids and their measured boxes move together: both are captured when the handle is clicked,
   // so the outline can never point at a block the selection no longer holds.
   const [blockSelection, setBlockSelection] = useState<BlockHandleSelection>(EMPTY_BLOCK_SELECTION);
@@ -2452,7 +2477,19 @@ function PageCanvasEditorImpl({
   // Both live in a pointer-events:none layer, so only the two small controls take clicks.
   const blockAffordancesEnabled = !isPagedRender && !isOverlayEditing && !runningRegionEditKind;
 
-  const updateBlockAffordanceHover = useCallback((clientX: number, clientY: number) => {
+  const updateBlockAffordanceHover = useCallback((clientX: number, clientY: number, target?: EventTarget | null) => {
+    // 下端つまみを掴んでいる間はホバー解決を凍結する。ポインタがブロックから離れた瞬間に
+    // affordance が空になり、掴んでいるつまみごと unmount されるのを防ぐ。
+    if (spaceAfterDragRef.current) {
+      return;
+    }
+    // アフォーダンス自身の上では解決し直さない。つまみはブロックの下端を跨いで描かれるので、
+    // 下半分に触れた瞬間に「次のブロック」へ解決が移り、狙ったつまみが逃げる。
+    if (target instanceof Element && target.closest(".page-block-affordance-layer")) {
+      return;
+    }
+    // 書き込み後の取り直しは「次にホバーが動くまで」で十分。ここを通ったら予約は消化済み。
+    spaceAfterHoverRefreshRef.current = false;
     const canvas = canvasRef.current;
     if (!blockAffordancesEnabled || !canvas) {
       setBlockAffordance((current) => (
@@ -2461,18 +2498,128 @@ function PageCanvasEditorImpl({
       return;
     }
 
-    const point = viewportToCanvasAnchor({ left: clientX, top: clientY }, canvas);
+    lastAffordancePointRef.current = { x: clientX, y: clientY };
     const next = resolveBlockAffordanceHover(
       hitTestTopLevelBlock(canvas, pageDocument.content, clientX, clientY, metrics),
-      { x: point.left, y: point.top },
+      toCanvasPoint(canvas, clientX, clientY),
     );
     setBlockAffordance((current) => (sameBlockAffordanceHover(current, next) ? current : next));
   }, [blockAffordancesEnabled, metrics, pageDocument.content]);
 
   const updateLastPagePointerPoint = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     lastPagePointerPointRef.current = getOverlayPointFromClient(event.clientX, event.clientY);
-    updateBlockAffordanceHover(event.clientX, event.clientY);
+    updateBlockAffordanceHover(event.clientX, event.clientY, event.target);
   }, [getOverlayPointFromClient, updateBlockAffordanceHover]);
+
+  /**
+   * ブロックの下端を掴んで下余白を伸ばす。
+   *
+   * 値そのものは `block-space-after-drafts` のストアへ流し、本文の decoration が
+   * `--sigma-doc-space-after-draft` として被せる。文書には離した時に 1 回だけ書く
+   * (ドラッグ中に書くと同期キーが変わって `setContent` が走り、キャレットと選択が飛ぶ)。
+   */
+  const startBlockSpaceAfterResize = useCallback((
+    target: BlockSpaceAfterTarget,
+    event: ReactPointerEvent<HTMLElement>,
+  ) => {
+    // `preventDefault` はここでは呼ばない — pointerdown を止めると互換の mouse イベントごと
+    // 消えてダブルクリックの取り消しが効かなくなる。フォーカスと選択を動かさないのは
+    // `onMouseDown` 側 (既存のブロックグリップと同じ形)。
+    event.stopPropagation();
+
+    // 掴み直し (前のドラッグが pointerup を取り逃していた等) は前のドラッグを畳んでから。
+    // 上書きすると前の `handlePointerUp` が新しいドラッグの値をコミットしてしまう。
+    spaceAfterDragRef.current?.stop();
+    spaceAfterDragRef.current = null;
+
+    // 起点は **いま文書が持っている値**。ホバーの値は前回のコミット後に取り直されていない
+    // ことがあり、そこから足すと 2 回目のドラッグで紙面が前の値まで巻き戻る。
+    const currentBlock = collectBlocksById(pageDocument.content).get(target.blockId);
+    const startPx = currentBlock ? blockSpaceAfterPx(currentBlock) : target.spaceAfterPx;
+    const zoomFactor = zoom / 100;
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const drag = spaceAfterDragRef.current;
+      if (!drag) {
+        return;
+      }
+      const deltaPx = (moveEvent.clientY - drag.startClientY) / zoomFactor;
+      const next = Math.min(MAX_BLOCK_SPACE_AFTER_PX, Math.max(0, Math.round(drag.startPx + deltaPx)));
+      if (next === drag.px) {
+        return;
+      }
+      drag.px = next;
+      setSpaceAfterDrag({ target: drag.target, startPx: drag.startPx, px: next });
+      setBlockSpaceAfterDraft(drag.target.blockId, next);
+    };
+
+    /** ドラッグを畳む。アンマウントで途中終了したときもここを通す (購読とリスナを残さない)。 */
+    const stop = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      // ポインタが失われた (別ウィンドウへ、タッチのキャンセル) ときも必ず畳む。取り逃すと
+      // ホバー解決が凍結したままになり、以後アフォーダンスが一切更新されなくなる。
+      window.removeEventListener("pointercancel", handlePointerUp);
+      clearBlockSpaceAfterDrafts();
+    };
+
+    function handlePointerUp() {
+      const drag = spaceAfterDragRef.current;
+      spaceAfterDragRef.current = null;
+      stop();
+      setSpaceAfterDrag(null);
+
+      if (drag && drag.px !== drag.startPx) {
+        spaceAfterHoverRefreshRef.current = true;
+        onChange(drag.target.blockId, (block) => setBlockSpaceAfter(block, drag.px));
+      }
+    }
+
+    spaceAfterDragRef.current = { target, startClientY: event.clientY, startPx, px: startPx, stop };
+    setSpaceAfterDrag({ target, startPx, px: startPx });
+    setBlockSpaceAfterDraft(target.blockId, startPx);
+    // ポインタを掴んでおく。掴まないと、離した位置に `pointerup` を止める別の UI (コメントの
+    // ドックなど) があるだけで window までイベントが届かず、ドラッグが終われなくなる。
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // 取れなくても window のリスナで拾えるので続行する。
+    }
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+  }, [onChange, pageDocument.content, zoom]);
+
+  /** キーボードからの微調整。ドラッグでは出せない 1px 刻みをここで出す。 */
+  const adjustBlockSpaceAfter = useCallback((blockId: string, deltaPx: number) => {
+    spaceAfterHoverRefreshRef.current = true;
+    onChange(blockId, (block) => setBlockSpaceAfter(block, blockSpaceAfterPx(block) + deltaPx));
+  }, [onChange]);
+
+  // 掴んだままアンマウントされたときの後始末。ストアは紙面ごとではなくモジュール単位なので、
+  // ここで畳まないとドラフト値が残り続ける。
+  useEffect(() => () => {
+    spaceAfterDragRef.current?.stop();
+    spaceAfterDragRef.current = null;
+  }, []);
+
+  // 書き込んだ直後の 1 回だけホバーを取り直す。取り直さないと、つまみが更新前の下端に
+  // 残ったままになる (次のポインタ移動まで)。毎回の文書更新では走らせない (打鍵が重くなる)。
+  useEffect(() => {
+    if (!spaceAfterHoverRefreshRef.current || spaceAfterDragRef.current) {
+      return;
+    }
+    spaceAfterHoverRefreshRef.current = false;
+    const point = lastAffordancePointRef.current;
+    if (point) {
+      updateBlockAffordanceHover(point.x, point.y);
+    }
+  }, [pageDocument.content, updateBlockAffordanceHover]);
+
+  const resetBlockSpaceAfter = useCallback((blockId: string) => {
+    spaceAfterHoverRefreshRef.current = true;
+    onChange(blockId, (block) => setBlockSpaceAfter(block, 0));
+  }, [onChange]);
 
   const selectBlockWithHandle = useCallback((blockId: string, extend: boolean) => {
     const canvas = canvasRef.current;
@@ -2517,6 +2664,13 @@ function PageCanvasEditorImpl({
       ? blockSelection
       : EMPTY_BLOCK_SELECTION
   ), [blockSelection, pageDocument.content]);
+
+  // 掴んでいる間は掴んだ相手に固定する (ホバー解決は凍結済み)。つまみ自体は「動かしている辺」
+  // なので、ドラフト値の増減ぶんだけ下へついていく。
+  const spaceAfterHandle = spaceAfterDrag?.target ?? blockAffordance.spaceAfter;
+  const spaceAfterHandleBottom = spaceAfterDrag
+    ? spaceAfterDrag.target.bottom + (spaceAfterDrag.px - spaceAfterDrag.startPx)
+    : spaceAfterHandle?.bottom ?? 0;
 
   // Clearing on the canvas' own mousedown is not enough: ProseMirror stops the event inside
   // the text, so a click on another block would leave the previous one selected. The capture
@@ -4725,6 +4879,50 @@ function PageCanvasEditorImpl({
                 >
                   <GripVertical size={14} aria-hidden="true" />
                 </button>
+              )}
+              {blockAffordancesEnabled && spaceAfterHandle && (
+                <button
+                  type="button"
+                  className="page-block-space-handle"
+                  // 問題エリアの左ガターには問題番号・サイドノート・エリア高さハンドルが同居する。
+                  // 1 レーン外へ寄せて重なりを構造的に避ける。
+                  data-gutter-lane={spaceAfterHandle.insideProblemArea ? "problem" : undefined}
+                  data-dragging={spaceAfterDrag ? "true" : undefined}
+                  data-block-id={spaceAfterHandle.blockId}
+                  style={{
+                    top: `${spaceAfterHandleBottom}px`,
+                    left: `${spaceAfterHandle.left}px`,
+                  }}
+                  aria-label={tEditorText("pageCanvas.spaceAfter")}
+                  title={tEditorText("pageCanvas.spaceAfterHint")}
+                  onMouseDown={(event) => {
+                    // フォーカスと本文選択を動かさない (キャレットが飛ばない)。pointerdown 側で
+                    // 止めるとダブルクリックごと消えるので、既存のグリップと同じくここで止める。
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onPointerDown={(event) => startBlockSpaceAfterResize(spaceAfterHandle, event)}
+                  onClick={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => {
+                    event.stopPropagation();
+                    resetBlockSpaceAfter(spaceAfterHandle.blockId);
+                  }}
+                  onKeyDown={(event) => {
+                    // ドラッグでは出しにくい 1px 刻み。Shift で 10px、Backspace/Delete で 0 に戻す。
+                    const step = event.shiftKey ? 10 : 1;
+                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      adjustBlockSpaceAfter(spaceAfterHandle.blockId, event.key === "ArrowDown" ? step : -step);
+                      return;
+                    }
+                    if (event.key === "Backspace" || event.key === "Delete") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      resetBlockSpaceAfter(spaceAfterHandle.blockId);
+                    }
+                  }}
+                />
               )}
               {blockAffordancesEnabled && blockAffordance.insertPoint && onInsertBodyBlock && (
                 <div
@@ -7720,7 +7918,101 @@ function hitTestTopLevelBlock(
     aboveKind: neighborKind(index > 0 ? content[index - 1] : null),
     belowKind: neighborKind(content[index + 1] ?? null),
     gapEdge: gapAbove ? "bottom" : gapBelow ? "top" : null,
+    spaceAfterTarget: resolveBlockSpaceAfterTarget(canvas, owner, content[index], box, clientY),
   };
+}
+
+/** 問題エリアの中のブロックを拾うときの許容幅。行間の隙間でつまみが消えないぶんだけ。 */
+const PROBLEM_AREA_INNER_HIT_SLACK_PX = 4;
+/**
+ * 「ポインタより上で最も下のブロック」を救済として採る距離の上限。無制限にすると、
+ * 最低高さで空けてある解答欄の下の方を指したときに、遥か上のブロックにつまみが出る。
+ */
+const PROBLEM_AREA_INNER_FALLBACK_REACH_PX = 24;
+
+/**
+ * 下端つまみの掴み先。**描く種別かどうかは `rendersBlockSpaceAfter` が唯一の出典**
+ * (描画・ページ割りと同じ判定でないと、出ないところにつまみが出る)。
+ *
+ * 問題の中では `resolveTopLevelBlockAtPoint` が必ず問題エリアを返すので、エリアの中から
+ * ポインタの高さにあるフローユニットを幾何で選び直す。x に依存しないので、枠付き問題エリアの
+ * chrome にプローブが落ちても正しいブロックに当たる。
+ */
+function resolveBlockSpaceAfterTarget(
+  canvas: HTMLElement,
+  owner: { id: string; element: HTMLElement; isProblem: boolean },
+  block: SigmaBlock,
+  box: TopLevelBlockBox,
+  clientY: number,
+): BlockSpaceAfterTarget | null {
+  if (!owner.isProblem) {
+    return rendersBlockSpaceAfter(block.type)
+      ? {
+        blockId: block.id,
+        bottom: box.bottom,
+        left: box.left,
+        insideProblemArea: false,
+        spaceAfterPx: blockSpaceAfterPx(block),
+      }
+      : null;
+  }
+
+  if (block.type !== "problem") {
+    return null;
+  }
+  const area = owner.element.getAttribute("data-problem-area");
+  if (!isProblemAreaKind(area)) {
+    return null;
+  }
+  const inner = resolveProblemAreaInnerBlock(owner.element, clientY);
+  const innerBlock = inner ? block[area].find((child) => child.id === inner.id) : undefined;
+  if (!inner || !innerBlock || !rendersBlockSpaceAfter(innerBlock.type)) {
+    return null;
+  }
+  const innerBox = toCanvasBox(inner.id, [inner.element], canvas);
+  return innerBox
+    ? {
+      blockId: innerBlock.id,
+      bottom: innerBox.bottom,
+      left: innerBox.left,
+      insideProblemArea: true,
+      spaceAfterPx: blockSpaceAfterPx(innerBlock),
+    }
+    : null;
+}
+
+/**
+ * 問題エリアの中で、ポインタの高さにあるフローユニット。無ければポインタより上で最も下のもの
+ * (左ガターから狙ったときの救済)。ユニットの定義は `layout-measure.ts` の
+ * `FLOW_UNIT_SELECTOR` と同じ「`.ProseMirror` の直下」。
+ */
+function resolveProblemAreaInnerBlock(
+  areaElement: HTMLElement,
+  clientY: number,
+): { id: string; element: HTMLElement } | null {
+  let fallback: { id: string; element: HTMLElement } | null = null;
+
+  for (const element of areaElement.querySelectorAll<HTMLElement>(".ProseMirror > [data-sigma-doc-id]")) {
+    const id = element.getAttribute("data-sigma-doc-id");
+    if (!id) {
+      continue;
+    }
+    const rect = element.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      continue;
+    }
+    if (
+      clientY >= rect.top - PROBLEM_AREA_INNER_HIT_SLACK_PX
+      && clientY <= rect.bottom + PROBLEM_AREA_INNER_HIT_SLACK_PX
+    ) {
+      return { id, element };
+    }
+    if (rect.bottom <= clientY && clientY - rect.bottom <= PROBLEM_AREA_INNER_FALLBACK_REACH_PX) {
+      fallback = { id, element };
+    }
+  }
+
+  return fallback;
 }
 
 function neighborKind(block: SigmaBlock | null): BlockNeighborKind {
@@ -7794,6 +8086,34 @@ function measureTopLevelBlockBoxes(
   return boxes;
 }
 
+/**
+ * 画面 px → アフォーダンス層の座標 (= 紙面のレイアウト px) の換算率。
+ *
+ * `.page-block-affordance-layer` は紙面の中にあるので、`top`/`left` に渡すのは
+ * **レイアウト px**。一方 `getBoundingClientRect` は画面 px を返す。ページモードの拡大は
+ * `.page-stack` の `transform: scale()` なので `getComputedStyle(...).zoom` は 1 のままで、
+ * それで割っても換算にならない (100% 以外でアフォーダンスが紙面からずれる)。
+ * 実測の比なら transform でも zoom でも同じ 1 本で効く。
+ */
+function canvasLayoutScale(canvas: HTMLElement): number {
+  const width = canvas.getBoundingClientRect().width;
+  return canvas.offsetWidth > 0 && width > 0 ? width / canvas.offsetWidth : 1;
+}
+
+/** ポインタの画面座標を、アフォーダンス層と同じ座標系へ移す。 */
+function toCanvasPoint(
+  canvas: HTMLElement,
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } {
+  const canvasRect = canvas.getBoundingClientRect();
+  const scale = canvasLayoutScale(canvas);
+  return {
+    x: (clientX - canvasRect.left) / scale,
+    y: (clientY - canvasRect.top) / scale,
+  };
+}
+
 /** Union of the given elements' rects, expressed in canvas pixels. */
 function toCanvasBox(
   id: string,
@@ -7801,10 +8121,7 @@ function toCanvasBox(
   canvas: HTMLElement,
 ): TopLevelBlockBox | null {
   const canvasRect = canvas.getBoundingClientRect();
-  const pageStack = canvas.closest<HTMLElement>(".page-stack");
-  const zoomScale = pageStack
-    ? Number.parseFloat(getComputedStyle(pageStack).zoom || "1") || 1
-    : 1;
+  const zoomScale = canvasLayoutScale(canvas);
 
   let top = Number.POSITIVE_INFINITY;
   let bottom = Number.NEGATIVE_INFINITY;

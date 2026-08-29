@@ -1,3 +1,4 @@
+import { normalizeBlockSpaceAfterPx } from "@/features/document";
 import type {
   BoxBlockNode,
   CodeBlockNode,
@@ -219,6 +220,29 @@ export function setBlockBreakBefore<T extends SigmaBlock | ProblemAreaBlock>(
     ...block,
     ...(nextPagination ? { pagination: nextPagination } : { pagination: undefined }),
   };
+}
+
+/**
+ * ブロック下余白を設定する。`0` は保存しない (フィールドごと落とす) ので、リセットした結果が
+ * 「一度も触っていないブロック」と同じ JSON になる。
+ *
+ * 値が変わらないときは **同一参照** を返す — 呼び出し側 (`updateBlockInDocument`) が identity で
+ * 「変わっていない」を見て、ドラッグ中の無駄な文書更新と再描画を止められるように。
+ */
+export function setBlockSpaceAfter<T extends SigmaBlock | ProblemAreaBlock>(
+  block: T,
+  spaceAfterPx: number,
+): T {
+  const next = normalizeBlockSpaceAfterPx(spaceAfterPx);
+  if (next === block.spaceAfterPx) {
+    return block;
+  }
+  if (next === undefined) {
+    const cleared = { ...block };
+    delete cleared.spaceAfterPx;
+    return cleared;
+  }
+  return { ...block, spaceAfterPx: next };
 }
 
 export function findTopLevelBlock(

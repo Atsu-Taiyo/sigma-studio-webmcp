@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   resolveBlockAffordanceHover,
   resolveBlockSelectionRange,
+  sameBlockAffordanceHover,
+  type BlockSpaceAfterTarget,
   type HoveredTopLevelBlock,
 } from "./block-affordances";
 
@@ -36,6 +38,7 @@ describe("resolveBlockAffordanceHover", () => {
     expect(resolveBlockAffordanceHover(problem, { x: 300, y: 120 })).toEqual({
       handle: { blockId: "problem", top: 48, bottom: 200, left: 100 },
       insertPoint: null,
+      spaceAfter: null,
     });
   });
 
@@ -105,10 +108,12 @@ describe("resolveBlockAffordanceHover", () => {
     expect(resolveBlockAffordanceHover(problem, { x: 600, y: 120 })).toEqual({
       handle: null,
       insertPoint: null,
+      spaceAfter: null,
     });
     expect(resolveBlockAffordanceHover(null, { x: 300, y: 120 })).toEqual({
       handle: null,
       insertPoint: null,
+      spaceAfter: null,
     });
   });
 });
@@ -123,5 +128,87 @@ describe("resolveBlockSelectionRange", () => {
 
   it("falls back to the clicked block when the anchor is gone", () => {
     expect(resolveBlockSelectionRange(ids, "missing", "c")).toEqual(["c"]);
+  });
+});
+
+describe("the space-after handle target", () => {
+  const target: BlockSpaceAfterTarget = {
+    blockId: "middle",
+    bottom: 340,
+    left: 100,
+    insideProblemArea: false,
+    spaceAfterPx: 0,
+  };
+  const hovered: HoveredTopLevelBlock = { ...middleParagraph, spaceAfterTarget: target };
+
+  it("comes back for a block that can carry a space below it", () => {
+    expect(resolveBlockAffordanceHover(hovered, { x: 300, y: 320 }).spaceAfter).toEqual(target);
+  });
+
+  it("is null for a block that never draws one (a quote, a box, a column section)", () => {
+    // 呼び出し側が `rendersBlockSpaceAfter` で落とすと `spaceAfterTarget` が付かない。
+    expect(resolveBlockAffordanceHover(middleParagraph, { x: 300, y: 320 }).spaceAfter).toBeNull();
+  });
+
+  it("appears from the left gutter, like the grip", () => {
+    expect(resolveBlockAffordanceHover(hovered, { x: 60, y: 320 }).spaceAfter).toEqual(target);
+  });
+
+  it("disappears when the pointer leaves the block", () => {
+    expect(resolveBlockAffordanceHover(hovered, { x: 600, y: 320 }).spaceAfter).toBeNull();
+  });
+
+  it("carries the current value so the drag can start from it", () => {
+    const withSpace: HoveredTopLevelBlock = {
+      ...middleParagraph,
+      spaceAfterTarget: { ...target, spaceAfterPx: 24 },
+    };
+
+    expect(resolveBlockAffordanceHover(withSpace, { x: 300, y: 320 }).spaceAfter?.spaceAfterPx).toBe(24);
+  });
+});
+
+describe("sameBlockAffordanceHover with a space-after target", () => {
+  const base = resolveBlockAffordanceHover(
+    { ...middleParagraph, spaceAfterTarget: { blockId: "middle", bottom: 340, left: 100, insideProblemArea: false, spaceAfterPx: 0 } },
+    { x: 300, y: 320 },
+  );
+
+  function hoverWith(patch: Partial<BlockSpaceAfterTarget>) {
+    return resolveBlockAffordanceHover(
+      {
+        ...middleParagraph,
+        spaceAfterTarget: {
+          blockId: "middle",
+          bottom: 340,
+          left: 100,
+          insideProblemArea: false,
+          spaceAfterPx: 0,
+          ...patch,
+        },
+      },
+      { x: 300, y: 320 },
+    );
+  }
+
+  it("treats an identical hover as unchanged (no re-render)", () => {
+    expect(sameBlockAffordanceHover(base, hoverWith({}))).toBe(true);
+  });
+
+  it.each([
+    ["bottom", { bottom: 341 }],
+    ["left", { left: 210 }],
+    ["value", { spaceAfterPx: 24 }],
+    ["lane", { insideProblemArea: true }],
+    ["block", { blockId: "other" }],
+  ])("detects a changed %s", (_name, patch) => {
+    expect(sameBlockAffordanceHover(base, hoverWith(patch))).toBe(false);
+  });
+
+  it("detects the target appearing and disappearing", () => {
+    const without = resolveBlockAffordanceHover(middleParagraph, { x: 300, y: 320 });
+
+    expect(sameBlockAffordanceHover(base, without)).toBe(false);
+    expect(sameBlockAffordanceHover(without, base)).toBe(false);
   });
 });

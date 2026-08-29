@@ -70,6 +70,8 @@ export const editor = {
     bodyActions: "本文操作",
     problemNumber: "問題番号 {{number}}",
     areaHeight: "エリアの高さ",
+    spaceAfter: "ブロック下の余白",
+    spaceAfterHint: "下へドラッグで余白を追加（ダブルクリックで 0）",
     /** 問題文だけは何問目かが付く。区分の呼び名そのものは `block.problem*` が出典。 */
     areaPrompt: "問{{number}} 問題文",
   },

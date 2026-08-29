@@ -27,6 +27,12 @@ export type BlockNeighborKind = "none" | "atomic" | "body";
 
 export interface HoveredTopLevelBlock {
   box: TopLevelBlockBox;
+  /**
+   * 下端を伸ばすハンドルの対象。トップレベルのブロック、または問題エリアの中のブロック。
+   * 枠を持つブロック (引用・コード・囲み枠) や入れ物 (段組・問題そのもの) では null —
+   * 判定は描画・計測と同じ `rendersBlockSpaceAfter` を通す。
+   */
+  spaceAfterTarget?: BlockSpaceAfterTarget | null;
   /** The following top-level block, if any. Anchors "insert after" to a stable side. */
   nextBlockId: string | null;
   /** Whether this block is itself a problem or a box. */
@@ -51,6 +57,24 @@ export interface BlockInsertPoint {
   width: number;
 }
 
+/**
+ * 「ブロックの下端を掴んで下余白を伸ばす」つまみの当たり先。
+ *
+ * ブロック本体の box とは別に持つ: 問題の中では box が問題全体でも、掴む相手は
+ * その中の 1 ブロックの下端になる。
+ */
+export interface BlockSpaceAfterTarget {
+  blockId: string;
+  /** 実測のブロック下端 (canvas px)。つまみの y。 */
+  bottom: number;
+  /** 実測のブロック左端。n 段組ではその段の左に一致する。 */
+  left: number;
+  /** 問題エリアの中か。既存のエリア高さハンドル・問題番号と重ねないためのレーン指定。 */
+  insideProblemArea: boolean;
+  /** 現在の下余白 (px)。ドラッグの初期値。 */
+  spaceAfterPx: number;
+}
+
 export interface BlockHandleTarget {
   blockId: string;
   top: number;
@@ -61,6 +85,7 @@ export interface BlockHandleTarget {
 export interface BlockAffordanceHover {
   handle: BlockHandleTarget | null;
   insertPoint: BlockInsertPoint | null;
+  spaceAfter: BlockSpaceAfterTarget | null;
 }
 
 export interface BlockAffordanceHoverOptions {
@@ -73,6 +98,7 @@ export interface BlockAffordanceHoverOptions {
 export const EMPTY_BLOCK_AFFORDANCE_HOVER: BlockAffordanceHover = {
   handle: null,
   insertPoint: null,
+  spaceAfter: null,
 };
 
 export function resolveBlockAffordanceHover(
@@ -127,6 +153,9 @@ export function resolveBlockAffordanceHover(
   return {
     handle: { blockId: box.id, top: box.top, bottom: box.bottom, left: box.left },
     insertPoint,
+    // グリップと同じ条件 (段の中 + ブロックの縦範囲) で出す。掴む相手だけがブロック本体では
+    // なく「その下端」なので、幾何は呼び出し側が実測した値をそのまま運ぶ。
+    spaceAfter: hovered.spaceAfterTarget ?? null,
   };
 }
 
@@ -157,6 +186,17 @@ export function sameBlockAffordanceHover(
   b: BlockAffordanceHover,
 ): boolean {
   if (a.handle?.blockId !== b.handle?.blockId || a.handle?.top !== b.handle?.top) {
+    return false;
+  }
+  // 下端つまみは位置も値も比べる。ここを省くとポインタが動くたびに新しいオブジェクトが
+  // 採用され、紙面全体が 60Hz で再レンダリングされる。
+  if (
+    a.spaceAfter?.blockId !== b.spaceAfter?.blockId
+    || a.spaceAfter?.bottom !== b.spaceAfter?.bottom
+    || a.spaceAfter?.left !== b.spaceAfter?.left
+    || a.spaceAfter?.spaceAfterPx !== b.spaceAfter?.spaceAfterPx
+    || a.spaceAfter?.insideProblemArea !== b.spaceAfter?.insideProblemArea
+  ) {
     return false;
   }
   if (!a.insertPoint || !b.insertPoint) {
