@@ -283,14 +283,17 @@ import {
 } from "./text-flow/block-space-after-drafts";
 import {
   EMPTY_BLOCK_AFFORDANCE_HOVER,
+  blockHitProbeColumnLeftPx,
   resolveBlockAffordanceHover,
   resolveBlockSelectionRange,
+  resolveInnerBlockAt,
   sameBlockAffordanceHover,
   type BlockAffordanceHover,
   type BlockInsertPoint,
   type BlockSpaceAfterTarget,
   type BlockNeighborKind,
   type HoveredTopLevelBlock,
+  type InnerBlockCandidate,
   type TopLevelBlockBox,
 } from "./page-canvas/block-affordances";
 import {
@@ -7877,9 +7880,22 @@ function hitTestTopLevelBlock(
   clientY: number,
   metrics: PageMetrics,
 ): HoveredTopLevelBlock | null {
-  const columnProbeX = canvas.getBoundingClientRect().left
-    + metrics.margins.leftPx
-    + BLOCK_HIT_PROBE_INSET_PX;
+  // プローブは **ポインタが居る段** の中へ、レイアウト px で組んでから画面 px へ換算して打つ。
+  // 常に 1 段目 (かつ換算なし) だと、2 段目のつまみへ近づいた途中の段間で 1 段目のブロックへ
+  // 解決し直されて (ズーム≠100% では左ガターでも空振りして) つまみが消える。
+  const canvasRect = canvas.getBoundingClientRect();
+  const scale = canvasLayoutScale(canvas);
+  const probeColumnLeftPx = blockHitProbeColumnLeftPx(
+    {
+      contentLeftPx: metrics.margins.leftPx,
+      columnCount: metrics.flow.columnCount,
+      columnWidthPx: metrics.flow.columnWidthPx,
+      columnGapPx: metrics.flow.columnGapPx,
+    },
+    (clientX - canvasRect.left) / scale,
+  );
+  const columnProbeX = canvasRect.left + (probeColumnLeftPx + BLOCK_HIT_PROBE_INSET_PX) * scale;
+  const gapProbePx = BLOCK_HIT_GAP_PROBE_PX * scale;
   const direct = resolveTopLevelBlockAtPoint(canvas, clientX, clientY)
     ?? resolveTopLevelBlockAtPoint(canvas, columnProbeX, clientY);
 
@@ -7888,10 +7904,10 @@ function hitTestTopLevelBlock(
   // names the block the gap belongs to and which of its edges the pointer is beside.
   const gapAbove = direct
     ? null
-    : resolveTopLevelBlockAtPoint(canvas, columnProbeX, clientY - BLOCK_HIT_GAP_PROBE_PX);
+    : resolveTopLevelBlockAtPoint(canvas, columnProbeX, clientY - gapProbePx);
   const gapBelow = direct || gapAbove
     ? null
-    : resolveTopLevelBlockAtPoint(canvas, columnProbeX, clientY + BLOCK_HIT_GAP_PROBE_PX);
+    : resolveTopLevelBlockAtPoint(canvas, columnProbeX, clientY + gapProbePx);
   const owner = direct ?? gapAbove ?? gapBelow;
   if (!owner) {
     return null;
@@ -7918,34 +7934,45 @@ function hitTestTopLevelBlock(
     aboveKind: neighborKind(index > 0 ? content[index - 1] : null),
     belowKind: neighborKind(content[index + 1] ?? null),
     gapEdge: gapAbove ? "bottom" : gapBelow ? "top" : null,
-    spaceAfterTarget: resolveBlockSpaceAfterTarget(canvas, owner, content[index], box, clientY),
+    spaceAfterTarget: resolveBlockSpaceAfterTarget(canvas, owner, content[index], box, clientX, clientY),
   };
 }
 
-/** 問題エリアの中のブロックを拾うときの許容幅。行間の隙間でつまみが消えないぶんだけ。 */
-const PROBLEM_AREA_INNER_HIT_SLACK_PX = 4;
+/** 問題エリア・局所段組の中のブロックを拾うときの許容幅。行間の隙間でつまみが消えないぶんだけ。 */
+const FLOW_UNIT_INNER_HIT_SLACK_PX = 4;
 /**
  * 「ポインタより上で最も下のブロック」を救済として採る距離の上限。無制限にすると、
  * 最低高さで空けてある解答欄の下の方を指したときに、遥か上のブロックにつまみが出る。
  */
-const PROBLEM_AREA_INNER_FALLBACK_REACH_PX = 24;
+const FLOW_UNIT_INNER_FALLBACK_REACH_PX = 24;
 
 /**
  * 下端つまみの掴み先。**描く種別かどうかは `rendersBlockSpaceAfter` が唯一の出典**
  * (描画・ページ割りと同じ判定でないと、出ないところにつまみが出る)。
  *
- * 問題の中では `resolveTopLevelBlockAtPoint` が必ず問題エリアを返すので、エリアの中から
- * ポインタの高さにあるフローユニットを幾何で選び直す。x に依存しないので、枠付き問題エリアの
- * chrome にプローブが落ちても正しいブロックに当たる。
+ * 問題エリアと局所段組では `resolveTopLevelBlockAtPoint` がユニットの殻を返すので、
+ * その中からポインタに対応するブロックを幾何で選び直す (段のレーン判定は
+ * `resolveInnerBlockAt`)。問題エリアの中の局所段組はユニット自身が `data-problem-id` を
+ * 持つ別ユニットなので、owner はその段組ユニットになり、SigmaDoc 側は段組の children から引く。
  */
 function resolveBlockSpaceAfterTarget(
   canvas: HTMLElement,
   owner: { id: string; element: HTMLElement; isProblem: boolean },
   block: SigmaBlock,
   box: TopLevelBlockBox,
+  clientX: number,
   clientY: number,
 ): BlockSpaceAfterTarget | null {
   if (!owner.isProblem) {
+    if (block.type === "layoutSection") {
+      const inner = resolveFlowUnitInnerBlock(owner.element, clientX, clientY);
+      const innerBlock = inner
+        ? block.children.find((child) => child.id === inner.id)
+        : undefined;
+      return inner && innerBlock
+        ? toInnerSpaceAfterTarget(canvas, inner, innerBlock, false)
+        : null;
+    }
     return rendersBlockSpaceAfter(block.type)
       ? {
         blockId: block.id,
@@ -7964,9 +7991,33 @@ function resolveBlockSpaceAfterTarget(
   if (!isProblemAreaKind(area)) {
     return null;
   }
-  const inner = resolveProblemAreaInnerBlock(owner.element, clientY);
-  const innerBlock = inner ? block[area].find((child) => child.id === inner.id) : undefined;
-  if (!inner || !innerBlock || !rendersBlockSpaceAfter(innerBlock.type)) {
+  const inner = resolveFlowUnitInnerBlock(owner.element, clientX, clientY);
+  if (!inner) {
+    return null;
+  }
+  const sectionId = owner.element.getAttribute("data-layout-section-id");
+  const section = sectionId
+    ? block[area].find((child) => child.type === "layoutSection" && child.id === sectionId)
+    : undefined;
+  const innerBlock = section && section.type === "layoutSection"
+    ? section.children.find((child) => child.id === inner.id)
+    : block[area].find((child) => child.id === inner.id);
+  // 問題番号・サイドノート・エリア高さハンドルはエリアの左端に固まっている。左端の段の
+  // つまみだけ 1 レーン外へ逃がし、2 段目以降は通常レーンに出す (そこに chrome は無く、
+  // 遠いレーンだと段間を跨いで隣の段のレーンに食い込む)。
+  return innerBlock
+    ? toInnerSpaceAfterTarget(canvas, inner, innerBlock, inner.firstColumn)
+    : null;
+}
+
+/** ユニット内ブロックの掴み先を組む。描かない種別 (入れ子の入れ物・枠付き) は null。 */
+function toInnerSpaceAfterTarget(
+  canvas: HTMLElement,
+  inner: { id: string; element: HTMLElement },
+  innerBlock: { id: string; type: string; spaceAfterPx?: number },
+  insideProblemArea: boolean,
+): BlockSpaceAfterTarget | null {
+  if (!rendersBlockSpaceAfter(innerBlock.type)) {
     return null;
   }
   const innerBox = toCanvasBox(inner.id, [inner.element], canvas);
@@ -7975,24 +8026,25 @@ function resolveBlockSpaceAfterTarget(
       blockId: innerBlock.id,
       bottom: innerBox.bottom,
       left: innerBox.left,
-      insideProblemArea: true,
+      insideProblemArea,
       spaceAfterPx: blockSpaceAfterPx(innerBlock),
     }
     : null;
 }
 
 /**
- * 問題エリアの中で、ポインタの高さにあるフローユニット。無ければポインタより上で最も下のもの
- * (左ガターから狙ったときの救済)。ユニットの定義は `layout-measure.ts` の
- * `FLOW_UNIT_SELECTOR` と同じ「`.ProseMirror` の直下」。
+ * ユニット (問題エリア・局所段組) の中で、ポインタに対応するフローユニット。候補の定義は
+ * `layout-measure.ts` の `FLOW_UNIT_SELECTOR` と同じ「`.ProseMirror` の直下」。段の復元と
+ * レーン帰属は `resolveInnerBlockAt` (純関数) に任せ、ここは DOM の実測を集めるだけ。
  */
-function resolveProblemAreaInnerBlock(
-  areaElement: HTMLElement,
+function resolveFlowUnitInnerBlock(
+  unitElement: HTMLElement,
+  clientX: number,
   clientY: number,
-): { id: string; element: HTMLElement } | null {
-  let fallback: { id: string; element: HTMLElement } | null = null;
-
-  for (const element of areaElement.querySelectorAll<HTMLElement>(".ProseMirror > [data-sigma-doc-id]")) {
+): { id: string; element: HTMLElement; firstColumn: boolean } | null {
+  const elements = new Map<string, HTMLElement>();
+  const candidates: InnerBlockCandidate[] = [];
+  for (const element of unitElement.querySelectorAll<HTMLElement>(".ProseMirror > [data-sigma-doc-id]")) {
     const id = element.getAttribute("data-sigma-doc-id");
     if (!id) {
       continue;
@@ -8001,18 +8053,16 @@ function resolveProblemAreaInnerBlock(
     if (rect.width === 0 && rect.height === 0) {
       continue;
     }
-    if (
-      clientY >= rect.top - PROBLEM_AREA_INNER_HIT_SLACK_PX
-      && clientY <= rect.bottom + PROBLEM_AREA_INNER_HIT_SLACK_PX
-    ) {
-      return { id, element };
-    }
-    if (rect.bottom <= clientY && clientY - rect.bottom <= PROBLEM_AREA_INNER_FALLBACK_REACH_PX) {
-      fallback = { id, element };
-    }
+    elements.set(id, element);
+    candidates.push({ id, top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right });
   }
 
-  return fallback;
+  const hit = resolveInnerBlockAt(candidates, clientX, clientY, {
+    hitSlackPx: FLOW_UNIT_INNER_HIT_SLACK_PX,
+    fallbackReachPx: FLOW_UNIT_INNER_FALLBACK_REACH_PX,
+  });
+  const element = hit ? elements.get(hit.id) : undefined;
+  return hit && element ? { id: hit.id, element, firstColumn: hit.firstColumn } : null;
 }
 
 function neighborKind(block: SigmaBlock | null): BlockNeighborKind {

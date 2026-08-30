@@ -8948,10 +8948,15 @@ code {
 .page-block-space-handle {
   display: flex;
   align-items: center;
-  width: 26px;
+  /* 右の 4px は透明な当たり判定 (padding)。ボタンの右端を本文の左端に密着させる —
+     隙間があると、そこを通ってつまみへ向かう途中でホバーが「継ぎ目の下のブロック」へ
+     解決し直され、つまみが逃げる (段組フローは隣接ブロックの矩形が継ぎ目で 1px 弱
+     重なるので、継ぎ目の高さの直下解決は下のブロックに倒れる)。 */
+  box-sizing: border-box;
+  width: 30px;
   height: 16px;
   margin-left: -30px;
-  padding: 0;
+  padding: 0 4px 0 0;
   border: 0;
   background: transparent;
   color: var(--text-muted, #8a8a8a);

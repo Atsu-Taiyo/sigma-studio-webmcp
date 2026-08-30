@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  blockHitProbeColumnLeftPx,
   resolveBlockAffordanceHover,
   resolveBlockSelectionRange,
+  resolveInnerBlockAt,
   sameBlockAffordanceHover,
   type BlockSpaceAfterTarget,
   type HoveredTopLevelBlock,
@@ -210,5 +212,75 @@ describe("sameBlockAffordanceHover with a space-after target", () => {
 
     expect(sameBlockAffordanceHover(base, without)).toBe(false);
     expect(sameBlockAffordanceHover(without, base)).toBe(false);
+  });
+});
+
+describe("blockHitProbeColumnLeftPx", () => {
+  // 本文左端 100、段幅 300、段間 30 の 2 段組。2 段目の左端は 430。
+  const layout = { contentLeftPx: 100, columnCount: 2, columnWidthPx: 300, columnGapPx: 30 };
+
+  it("always probes the content column when there is a single column", () => {
+    expect(blockHitProbeColumnLeftPx({ ...layout, columnCount: 1 }, 20)).toBe(100);
+    expect(blockHitProbeColumnLeftPx({ ...layout, columnCount: 1 }, 900)).toBe(100);
+  });
+
+  it("keeps the left margin and the first column on the first column", () => {
+    expect(blockHitProbeColumnLeftPx(layout, 10)).toBe(100);
+    expect(blockHitProbeColumnLeftPx(layout, 100)).toBe(100);
+    expect(blockHitProbeColumnLeftPx(layout, 399)).toBe(100);
+  });
+
+  it("assigns the inter-column gap to the column on its right (the handle lane)", () => {
+    expect(blockHitProbeColumnLeftPx(layout, 401)).toBe(430);
+    expect(blockHitProbeColumnLeftPx(layout, 429)).toBe(430);
+    expect(blockHitProbeColumnLeftPx(layout, 600)).toBe(430);
+  });
+
+  it("clamps past the last column", () => {
+    expect(blockHitProbeColumnLeftPx(layout, 2000)).toBe(430);
+  });
+});
+
+describe("resolveInnerBlockAt", () => {
+  // 局所 2 段組: 左段に a(上)/b(下)、右段に c(上)/d(下)。段間は 400〜430。
+  const twoColumns = [
+    { id: "a", top: 100, bottom: 140, left: 100, right: 400 },
+    { id: "b", top: 150, bottom: 190, left: 100, right: 400 },
+    { id: "c", top: 100, bottom: 140, left: 430, right: 730 },
+    { id: "d", top: 150, bottom: 190, left: 430, right: 730 },
+  ];
+
+  it("resolves the block under the pointer in each column", () => {
+    expect(resolveInnerBlockAt(twoColumns, 200, 120)).toEqual({ id: "a", firstColumn: true });
+    expect(resolveInnerBlockAt(twoColumns, 500, 170)).toEqual({ id: "d", firstColumn: false });
+  });
+
+  it("assigns the inter-column gap to the right column, where its handles are drawn", () => {
+    expect(resolveInnerBlockAt(twoColumns, 410, 120)).toEqual({ id: "c", firstColumn: false });
+  });
+
+  it("assigns the area left of every column to the first column", () => {
+    expect(resolveInnerBlockAt(twoColumns, 40, 170)).toEqual({ id: "b", firstColumn: true });
+  });
+
+  it("ignores the pointer x entirely with a single column, like the problem-area gutter", () => {
+    const single = [
+      { id: "a", top: 100, bottom: 140, left: 100, right: 700 },
+      { id: "b", top: 150, bottom: 190, left: 100, right: 700 },
+    ];
+
+    // 問題 chrome の上 (ブロックよりずっと左) にプローブが落ちても当たる。
+    expect(resolveInnerBlockAt(single, 5, 120)).toEqual({ id: "a", firstColumn: true });
+  });
+
+  it("falls back to the lowest block above the pointer, within reach, per lane", () => {
+    expect(resolveInnerBlockAt(twoColumns, 200, 200)).toEqual({ id: "b", firstColumn: true });
+    expect(resolveInnerBlockAt(twoColumns, 500, 200)).toEqual({ id: "d", firstColumn: false });
+    // 手の届かない遠くには出ない。
+    expect(resolveInnerBlockAt(twoColumns, 200, 400)).toBeNull();
+  });
+
+  it("returns null with no candidates", () => {
+    expect(resolveInnerBlockAt([], 100, 100)).toBeNull();
   });
 });

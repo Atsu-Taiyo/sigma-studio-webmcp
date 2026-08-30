@@ -189,10 +189,136 @@ test("the handle follows the column a block sits in", async ({ page }) => {
     };
   }, secondColumnId);
 
-  // 用紙左端ではなく、その段の左のすぐ外。
-  expect(proof.columnLeftDelta).toBeLessThanOrEqual(0);
+  // 用紙左端ではなく、その段の左のすぐ外 (右端の透明な当たり判定は本文左端に密着する)。
+  expect(proof.columnLeftDelta).toBeLessThanOrEqual(0.5);
   expect(proof.columnLeftDelta).toBeGreaterThan(-60);
   expect(Math.abs(proof.bottomDelta)).toBeLessThan(3);
+});
+
+test("the handle survives the pointer's approach in every column and zoom", async ({ page }) => {
+  test.setTimeout(120_000);
+
+  await installDesktopRuntimeMock(page, createTwoColumnDocument());
+  await page.goto("/");
+  await page.waitForTimeout(1500);
+  await expect.poll(async () => page.locator(".page-column-guides span").count()).toBeGreaterThan(0);
+
+  const pickColumnBlocks = () => page.evaluate(() => {
+    const blocks = Array.from(document.querySelectorAll<HTMLElement>('.page-flow [data-sigma-doc-id^="p_col_"]'));
+    const lefts = blocks.map((block) => block.getBoundingClientRect().left);
+    const firstLeft = Math.min(...lefts);
+    return {
+      first: blocks.find((block) => Math.abs(block.getBoundingClientRect().left - firstLeft) < 5)
+        ?.getAttribute("data-sigma-doc-id") ?? null,
+      second: blocks.find((block) => block.getBoundingClientRect().left > firstLeft + 50)
+        ?.getAttribute("data-sigma-doc-id") ?? null,
+    };
+  });
+
+  // ブロック中央からつまみまで、実ユーザーのように少しずつポインタを寄せる。ガターと段間の
+  // 救済プローブが「ポインタの居る段」を探らないと、この途中でホバーが隣の段や空振りへ
+  // 解決し直され、つまみが unmount されて掴めない (これが直したバグの形)。
+  const approach = async (blockId: string) => {
+    const block = page.locator(`.page-flow [data-sigma-doc-id="${blockId}"]`).first();
+    const box = await block.boundingBox();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    const handle = page.locator(`.page-block-space-handle[data-block-id="${blockId}"]`);
+    await expect(handle).toBeVisible();
+    const target = await handle.boundingBox();
+    const [sx, sy] = [box!.x + box!.width / 2, box!.y + box!.height / 2];
+    const [tx, ty] = [target!.x + target!.width / 2, target!.y + target!.height / 2];
+    for (let step = 1; step <= 12; step += 1) {
+      await page.mouse.move(sx + ((tx - sx) * step) / 12, sy + ((ty - sy) * step) / 12);
+      await expect(handle).toBeVisible();
+    }
+  };
+
+  const setZoom = async (value: string) => {
+    await page.evaluate((zoom) => {
+      const select = document.querySelector<HTMLSelectElement>('select[aria-label="ズーム"]');
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(select!, zoom);
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    }, value);
+    await page.waitForTimeout(800);
+  };
+
+  for (const zoom of ["100", "150"]) {
+    await setZoom(zoom);
+    const picks = await pickColumnBlocks();
+    expect(picks.first).not.toBeNull();
+    expect(picks.second).not.toBeNull();
+    await approach(picks.first!);
+    await approach(picks.second!);
+  }
+
+  // 寄せた後のつまみはそのまま掴めて、その段のブロックへ効く。
+  await setZoom("100");
+  const picks = await pickColumnBlocks();
+  const handle = await hoverBlock(page, picks.second!);
+  await dragHandle(page, handle, DRAG_PX);
+  await expect.poll(async () => page.evaluate((id) => {
+    const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${id}"]`);
+    return element ? Number.parseFloat(getComputedStyle(element).paddingBottom || "0") : -1;
+  }, picks.second)).toBeGreaterThanOrEqual(DRAG_PX - 2);
+});
+
+test("partial columns offer the handle for each block inside, per column", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await installDesktopRuntimeMock(page, createPartialColumnsDocument());
+  await page.goto("/");
+  await page.waitForTimeout(1500);
+  await expect(page.locator('.page-flow [data-sigma-doc-id="p_in_1"]')).toBeVisible();
+
+  // 局所段組の中の各ブロックに、そのブロックを対象にしたつまみが出る (入れ物の
+  // layoutSection で止まらない)。グリップ (ブロック選択) はセクション単位のまま出続ける。
+  for (const id of ["p_in_1", "p_in_3"]) {
+    const handle = await hoverBlock(page, id);
+    await expect(handle).toBeVisible();
+    await expect(page.locator(".page-block-handle")).toBeVisible();
+  }
+
+  // 2 段目のブロックを掴んで引くと、そのブロックの下余白として文書に保存される。
+  const scale = await readScale(page, "p_in_1");
+  const rightColumnId = await page.evaluate(() => {
+    const blocks = Array.from(document.querySelectorAll<HTMLElement>('[data-sigma-doc-id^="p_in_"]'));
+    const lefts = blocks.map((block) => block.getBoundingClientRect().left);
+    const firstLeft = Math.min(...lefts);
+    return blocks.find((block) => block.getBoundingClientRect().left > firstLeft + 50)
+      ?.getAttribute("data-sigma-doc-id") ?? null;
+  });
+  expect(rightColumnId).not.toBeNull();
+
+  const handle = await hoverBlock(page, rightColumnId!);
+  await dragHandle(page, handle, DRAG_PX * scale);
+
+  await expect.poll(async () => page.evaluate((id) => {
+    const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${id}"]`);
+    return element ? Number.parseFloat(getComputedStyle(element).paddingBottom || "0") : -1;
+  }, rightColumnId)).toBeGreaterThanOrEqual(DRAG_PX - 2);
+  await expect.poll(async () => page.evaluate(
+    () => window.localStorage.getItem("sigma-studio:e2e-document") ?? "",
+  )).toContain("spaceAfterPx");
+});
+
+test("partial columns inside a problem reach both columns, on the right gutter lanes", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await installDesktopRuntimeMock(page, createProblemPartialColumnsDocument());
+  await page.goto("/");
+  await page.waitForTimeout(1500);
+  await expect(page.locator('.page-flow [data-sigma-doc-id="q_1"]')).toBeVisible();
+
+  // 左の段は問題番号・エリア高さハンドルと同居するので 1 レーン外 (problem)。
+  const leftHandle = await hoverBlock(page, "q_1");
+  await expect(leftHandle).toBeVisible();
+  await expect(leftHandle).toHaveAttribute("data-gutter-lane", "problem");
+
+  // 右の段の左に問題 chrome は無い。通常レーンに出て、段間から掴める。
+  const rightHandle = await hoverBlock(page, "q_3");
+  await expect(rightHandle).toBeVisible();
+  await expect(rightHandle).not.toHaveAttribute("data-gutter-lane", "problem");
 });
 
 test("the handle lands on the block edge at 150% zoom too", async ({ page }) => {
@@ -232,7 +358,8 @@ test("the handle lands on the block edge at 150% zoom too", async ({ page }) => 
 
   // つまみは拡大率が変わってもブロックの下端の線に乗る。
   expect(Math.abs(placement.bottomDelta)).toBeLessThan(4);
-  expect(placement.leftDelta).toBeLessThanOrEqual(0);
+  // 右端の透明な当たり判定は本文左端に密着する (拡大率ぶんの誤差を許す)。
+  expect(placement.leftDelta).toBeLessThanOrEqual(1);
 
   // 換算も拡大率に追従する: 論理 30px ぶん引いたら 30px ぶん下がる。
   const before = await blockTop(page, "p_after");
@@ -404,6 +531,54 @@ function createTwoColumnDocument(): SigmaDocument {
     marginsMm: { top: 10, right: 16, bottom: 10, left: 16 },
     flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
   });
+  return document;
+}
+
+function createPartialColumnsDocument(): SigmaDocument {
+  const document = baseDocument("doc_e2e_space_after_partial_columns");
+  document.content = [
+    { type: "paragraph", id: "p_head", children: [{ type: "text", text: "段組の前の段落" }] },
+    {
+      type: "layoutSection",
+      id: "section_1",
+      layout: { columnCount: 2 },
+      children: [
+        { type: "paragraph", id: "p_in_1", children: [{ type: "text", text: "局所段組の段落 1" }] },
+        { type: "paragraph", id: "p_in_2", children: [{ type: "text", text: "局所段組の段落 2" }] },
+        { type: "paragraph", id: "p_in_3", children: [{ type: "text", text: "局所段組の段落 3" }] },
+        { type: "paragraph", id: "p_in_4", children: [{ type: "text", text: "局所段組の段落 4" }] },
+      ],
+    },
+    { type: "paragraph", id: "p_tail", children: [{ type: "text", text: "段組の後の段落" }] },
+  ];
+  return document;
+}
+
+function createProblemPartialColumnsDocument(): SigmaDocument {
+  const document = baseDocument("doc_e2e_space_after_problem_partial_columns");
+  document.content = [{
+    type: "problem",
+    id: "problem_columns",
+    tags: [],
+    lead: [],
+    prompt: [
+      { type: "paragraph", id: "p_intro", children: [{ type: "text", text: "問題文の導入" }] },
+      {
+        type: "layoutSection",
+        id: "section_p",
+        layout: { columnCount: 2 },
+        children: [
+          { type: "paragraph", id: "q_1", children: [{ type: "text", text: "(1) 左の設問" }] },
+          { type: "paragraph", id: "q_2", children: [{ type: "text", text: "(2) 左の設問の続き" }] },
+          { type: "paragraph", id: "q_3", children: [{ type: "text", text: "(3) 右の設問" }] },
+          { type: "paragraph", id: "q_4", children: [{ type: "text", text: "(4) 右の設問の続き" }] },
+        ],
+      },
+    ],
+    solution: [],
+    hints: [],
+    numbering: { enabled: true, value: 1 },
+  }];
   return document;
 }
 

@@ -28,8 +28,9 @@ export type BlockNeighborKind = "none" | "atomic" | "body";
 export interface HoveredTopLevelBlock {
   box: TopLevelBlockBox;
   /**
-   * 下端を伸ばすハンドルの対象。トップレベルのブロック、または問題エリアの中のブロック。
-   * 枠を持つブロック (引用・コード・囲み枠) や入れ物 (段組・問題そのもの) では null —
+   * 下端を伸ばすハンドルの対象。トップレベルのブロック、または問題エリア・局所段組の中の
+   * ブロック (入れ物ではなく、その中のポインタに対応する 1 ブロックへ降ろす)。
+   * 枠を持つブロック (引用・コード・囲み枠) や入れ物そのもの (段組・問題) では null —
    * 判定は描画・計測と同じ `rendersBlockSpaceAfter` を通す。
    */
   spaceAfterTarget?: BlockSpaceAfterTarget | null;
@@ -80,6 +81,112 @@ export interface BlockHandleTarget {
   top: number;
   bottom: number;
   left: number;
+}
+
+/**
+ * 左ガター・段間からのホバー救済プローブを打つ x (レイアウト px)。
+ *
+ * 1 段では常に本文の左端。n 段組ページでは **ポインタが居る段** の左端 — つまみとグリップは
+ * 段の左の外へ描かれるので、段間と各段の左ガターはその右にある段のレーンとして帰属させる。
+ * ここを常に 1 段目にすると、2 段目のつまみへ近づいた瞬間にホバーが 1 段目のブロックへ
+ * 解決し直され、つまみが消えて掴めない。
+ */
+export function blockHitProbeColumnLeftPx(
+  layout: {
+    contentLeftPx: number;
+    columnCount: number;
+    columnWidthPx: number;
+    columnGapPx: number;
+  },
+  layoutX: number,
+): number {
+  const { contentLeftPx, columnCount, columnWidthPx, columnGapPx } = layout;
+  if (columnCount <= 1) {
+    return contentLeftPx;
+  }
+  const stride = columnWidthPx + columnGapPx;
+  const index = Math.floor((layoutX - contentLeftPx + columnGapPx) / stride);
+  return contentLeftPx + Math.min(columnCount - 1, Math.max(0, index)) * stride;
+}
+
+/** フローユニット内のブロック候補。座標系は呼び出し側で揃っていれば何でもよい (client px 等)。 */
+export interface InnerBlockCandidate {
+  id: string;
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+export interface InnerBlockHit {
+  id: string;
+  /** 候補集合の最左の段に居るか。問題エリアの左ガター chrome を避けるレーン選びに使う。 */
+  firstColumn: boolean;
+}
+
+/** 同じ段と見なす左端のゆらぎ。リストと段落の描画差・小数丸めを吸収する程度。 */
+const INNER_COLUMN_CLUSTER_TOLERANCE_PX = 4;
+
+/**
+ * フローユニットの中 (問題エリア・局所段組) で、ポインタ位置に対応するブロックを選ぶ。
+ *
+ * y だけでは決まらない: 局所段組では同じ高さに段の数だけブロックが並ぶ。段は候補の左端を
+ * クラスタして復元し、ポインタの x をどれか 1 つの段 (レーン) に帰属させる — 段間と段の
+ * 左ガターは **右側の段のレーン** (つまみは段の左の外へ描かれる)。どの段の右端よりも左は
+ * 第 1 段なので、1 段しかないユニットでは従来どおり x に依存しない (問題エリアの chrome に
+ * プローブが落ちても正しいブロックに当たる)。
+ *
+ * レーン内では、まずポインタの高さにあるブロック。無ければポインタより上で最も下のもの
+ * (左ガターから狙ったときの救済) を `fallbackReachPx` の範囲で採る。
+ */
+export function resolveInnerBlockAt(
+  candidates: readonly InnerBlockCandidate[],
+  x: number,
+  y: number,
+  options: { hitSlackPx?: number; fallbackReachPx?: number } = {},
+): InnerBlockHit | null {
+  const hitSlackPx = options.hitSlackPx ?? 4;
+  const fallbackReachPx = options.fallbackReachPx ?? 24;
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const columns: Array<{ left: number; right: number }> = [];
+  for (const candidate of [...candidates].sort((a, b) => a.left - b.left)) {
+    const last = columns[columns.length - 1];
+    if (last && candidate.left - last.left <= INNER_COLUMN_CLUSTER_TOLERANCE_PX) {
+      last.right = Math.max(last.right, candidate.right);
+    } else {
+      columns.push({ left: candidate.left, right: candidate.right });
+    }
+  }
+
+  let lane = 0;
+  for (let index = 1; index < columns.length; index += 1) {
+    if (x >= columns[index - 1].right) {
+      lane = index;
+    }
+  }
+  const laneLeft = columns[lane].left;
+  const inLane = candidates.filter(
+    (candidate) => Math.abs(candidate.left - laneLeft) <= INNER_COLUMN_CLUSTER_TOLERANCE_PX,
+  );
+
+  let fallback: InnerBlockCandidate | null = null;
+  for (const candidate of inLane) {
+    if (y >= candidate.top - hitSlackPx && y <= candidate.bottom + hitSlackPx) {
+      return { id: candidate.id, firstColumn: lane === 0 };
+    }
+    if (
+      candidate.bottom <= y
+      && y - candidate.bottom <= fallbackReachPx
+      && (!fallback || candidate.bottom > fallback.bottom)
+    ) {
+      fallback = candidate;
+    }
+  }
+
+  return fallback ? { id: fallback.id, firstColumn: lane === 0 } : null;
 }
 
 export interface BlockAffordanceHover {
