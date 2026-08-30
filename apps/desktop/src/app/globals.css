@@ -8966,6 +8966,24 @@ code {
   touch-action: none;
 }
 
+/* 掴んでいる間は、動かしている辺そのものとしてポインタへ追従する。追従するブロックと
+   同じ 1 本の custom property を読むので、つまみと紙面がずれることが原理的に無い
+   (`top` を毎フレーム React で書き換えていた頃は、そのたびに紙面全体が再レンダーされた)。 */
+.page-block-space-handle[data-dragging="true"] {
+  transform: translateY(calc(-50% + var(--sigma-doc-space-after-preview, 0px)));
+}
+
+/* ドラッグ中に「掴んだブロックより下」を平行移動させる印。ProseMirror の node decoration と
+   フローユニットの className の両方が同じ 1 つのクラスを付け、値は紙面の親 (.page-canvas) に
+   書かれた custom property 1 本から読む。
+   transform なのは寸法を 1px も変えないため — padding を伸ばすと ResizeObserver が鳴り、
+   pointermove のたびに全体の計測とページ割りが走る (それが「まとめて瞬間移動」に見えていた
+   原因)。class は継承しないので、リスト項目や段の中身へ勝手に降りることもない。
+   ここは編集面だけの一時表示なので、共有の document-surface.css には置かない。 */
+.sigma-space-after-follower {
+  transform: translateY(var(--sigma-doc-space-after-preview, 0px));
+}
+
 /* `>--` のつまみ側: 下向きのシェブロン。ドラッグの向きを形で伝える。 */
 .page-block-space-handle::before {
   content: "";

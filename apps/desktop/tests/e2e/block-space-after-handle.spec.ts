@@ -7,6 +7,8 @@ import type { SigmaDocument } from "@/types/sigma-doc";
 import { installDesktopRuntimeMock } from "./desktop-runtime-mock";
 
 const DRAG_PX = 30;
+/** 紙面の「余白のダブルタップ」判定窓 (`PageCanvasEditor` の PAGE_DOUBLE_TAP_MS) を越える待ち。 */
+const PAGE_MARGIN_DOUBLE_TAP_WINDOW_MS = 500;
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => window.localStorage.clear());
@@ -50,6 +52,121 @@ async function dragHandle(page: Page, handle: ReturnType<Page["locator"]>, delta
   await page.mouse.down();
   await page.mouse.move(x, y + deltaScreenPx, { steps: 6 });
   await page.mouse.up();
+}
+
+/**
+ * 実ユーザーのように、フレームを跨ぎながら少しずつ引く。離さないまま返るので、掴んだ
+ * ままの状態を観測できる。
+ */
+async function grabAndDrag(
+  page: Page,
+  handle: ReturnType<Page["locator"]>,
+  deltaScreenPx: number,
+  steps = 16,
+): Promise<{ x: number; y: number }> {
+  const box = await handle.boundingBox();
+  const x = box!.x + box!.width / 2;
+  const y = box!.y + box!.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (let step = 1; step <= steps; step += 1) {
+    await page.mouse.move(x, y + (deltaScreenPx * step) / steps);
+    // 1 フレーム以上空ける。まとめて投げるとブラウザ側で 1 フレームに畳まれ、
+    // 「追従しているか」を観測できなくなる (poll と同じ盲点)。
+    await page.waitForTimeout(24);
+  }
+  return { x, y };
+}
+
+interface DragSample {
+  handleTop: number;
+  tops: Record<string, number>;
+}
+
+/**
+ * `action` の間、**毎フレーム** 幾何を記録する。
+ *
+ * `expect.poll` は 1 フレームの往復も「まとめて瞬間移動」も吸収してしまう (最終位置しか
+ * 見えない) ので、この spec の追従・継ぎ目の判定には使わない。
+ */
+async function sampleFramesDuring(
+  page: Page,
+  blockIds: readonly string[],
+  action: () => Promise<void>,
+  settleMs = 0,
+): Promise<DragSample[]> {
+  await page.evaluate(`(() => {
+    const ids = ${JSON.stringify(blockIds)};
+    const read = () => {
+      const handle = document.querySelector(".page-block-space-handle");
+      const tops = {};
+      for (const id of ids) {
+        const element = document.querySelector('.page-flow [data-sigma-doc-id="' + id + '"]');
+        tops[id] = element ? element.getBoundingClientRect().top : NaN;
+      }
+      return {
+        handleTop: handle ? handle.getBoundingClientRect().top : NaN,
+        tops,
+      };
+    };
+    const samples = [];
+    window.__spaceAfterSamples = samples;
+    window.__spaceAfterSampling = true;
+    const step = () => {
+      samples.push(read());
+      if (window.__spaceAfterSampling) {
+        window.requestAnimationFrame(step);
+      }
+    };
+    window.requestAnimationFrame(step);
+  })()`);
+
+  await action();
+  if (settleMs > 0) {
+    await page.waitForTimeout(settleMs);
+  }
+
+  return page.evaluate(`(() => {
+    window.__spaceAfterSampling = false;
+    return window.__spaceAfterSamples ?? [];
+  })()`) as Promise<DragSample[]>;
+}
+
+/** 記録した系列が「ポインタに連続で追従した」と言える形かどうかを見る。 */
+function expectContinuousDescent(series: readonly number[], totalTravelPx: number): void {
+  const values = series.filter((value) => Number.isFinite(value));
+  expect(values.length).toBeGreaterThan(10);
+
+  // (a) 途中の相異なる値。「まとめて瞬間移動」だと 2〜3 種類しか出ない。
+  expect(new Set(values.map((value) => Math.round(value))).size).toBeGreaterThanOrEqual(8);
+
+  // (b) 単調。戻るフレームがあれば継ぎ目のちらつき (プレビューを先に外した形)。
+  let maxJump = 0;
+  for (let index = 1; index < values.length; index += 1) {
+    const delta = values[index] - values[index - 1];
+    expect(delta).toBeGreaterThan(-1);
+    maxJump = Math.max(maxJump, Math.abs(delta));
+  }
+
+  // (c) 1 フレームの跳躍が総移動量の 1/3 未満。追いつかずに飛んでいれば必ずここで落ちる。
+  expect(maxJump).toBeLessThan(totalTravelPx / 3);
+}
+
+async function readPerformanceCounters(page: Page): Promise<Record<string, number>> {
+  const counters = await page.evaluate(
+    () => window.__SIGMA_STUDIO_PERFORMANCE__?.counters ?? null,
+  );
+  expect(
+    counters,
+    "計測が無効なビルドです (window.__SIGMA_STUDIO_PERFORMANCE__ にカウンタがありません)。",
+  ).not.toBeNull();
+  return counters ?? {};
+}
+
+async function openDocument(page: Page, document: SigmaDocument): Promise<void> {
+  await installDesktopRuntimeMock(page, document);
+  await page.goto("/");
+  await page.waitForTimeout(1500);
 }
 
 test("the handle appears on hover and drags the space below the block", async ({ page }) => {
@@ -411,41 +528,322 @@ test("the handle reaches blocks inside a problem area without covering its own g
   expect(overlap!.hitsSideNote).toBe(false);
 });
 
-test("a list's live preview does not leak into its own items", async ({ page }) => {
+test("a list's live preview moves what is below it, never its own items", async ({ page }) => {
   test.setTimeout(60_000);
 
-  await installDesktopRuntimeMock(page, createListDocument());
-  await page.goto("/");
-  await page.waitForTimeout(1500);
+  await openDocument(page, createListDocument());
 
   const scale = await readScale(page, "list_spaced");
   const handle = await hoverBlock(page, "list_spaced");
   await expect(handle).toBeVisible();
 
-  // ドラッグの途中で測る (ドラフト値が custom property として乗っている状態)。
-  const box = await handle.boundingBox();
-  const x = box!.x + box!.width / 2;
-  const y = box!.y + box!.height / 2;
-  await page.mouse.move(x, y);
-  await page.mouse.down();
-  await page.mouse.move(x, y + 60 * scale, { steps: 6 });
+  // ドラッグの途中で測る (プレビューが乗っている状態)。
+  await grabAndDrag(page, handle, 60 * scale, 8);
 
   const midDrag = await page.evaluate(() => {
     const list = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="list_spaced"]');
-    const items = Array.from(list?.querySelectorAll<HTMLElement>("li > p") ?? []);
+    const items = Array.from(list?.querySelectorAll<HTMLElement>("li") ?? []);
+    const after = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="p_list_after"]');
+    const translated = (element: HTMLElement | null) => {
+      if (!element) {
+        return "none";
+      }
+      return getComputedStyle(element).transform;
+    };
     return {
+      // 掴んだブロック自身の寸法は 1px も変わらない (padding を伸ばすと再ページ割りが走る)。
       listPaddingBottom: list ? Number.parseFloat(getComputedStyle(list).paddingBottom || "0") : -1,
-      itemPaddings: items.map((item) => Number.parseFloat(getComputedStyle(item).paddingBottom || "0")),
+      listTransform: translated(list),
+      itemCount: items.length,
+      // 印は class なので相続しない — 項目まで降りる経路が構造的に無い。
+      itemsMarked: items.filter((item) => item.classList.contains("sigma-space-after-follower")).length,
+      itemTransforms: items.map((item) => translated(item)),
+      afterTransform: translated(after),
     };
   });
 
   await page.mouse.up();
 
-  expect(midDrag.listPaddingBottom).toBeGreaterThan(50);
-  expect(midDrag.itemPaddings.length).toBeGreaterThan(1);
-  // custom property は相続するので、断ち切りが無いと項目ごとに同じ余白が付いて紙面が壊れる。
-  expect(midDrag.itemPaddings.every((padding) => padding < 0.5)).toBe(true);
+  expect(midDrag.listPaddingBottom).toBeLessThan(0.5);
+  expect(midDrag.listTransform).toBe("none");
+  expect(midDrag.itemCount).toBeGreaterThan(1);
+  expect(midDrag.itemsMarked).toBe(0);
+  expect(midDrag.itemTransforms.every((transform) => transform === "none")).toBe(true);
+  // 動くのは下のブロックだけ。二重に動くと項目側にも transform が乗る。
+  expect(midDrag.afterTransform).not.toBe("none");
 });
+
+test("the handle and the block below it follow the pointer frame by frame", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  await openDocument(page, createDocument());
+  await expect(page.locator('.page-flow [data-sigma-doc-id="p_after"]')).toBeVisible();
+
+  const scale = await readScale(page, "p_spaced");
+  const before = await blockTop(page, "p_after");
+  const handle = await hoverBlock(page, "p_spaced");
+  await expect(handle).toBeVisible();
+  const travel = 90 * scale;
+
+  // 離すところまで含めてサンプリングする。継ぎ目 (プレビュー → 確定) で 1 フレームでも
+  // 元の位置へ戻れば、下の単調性の判定が落ちる。
+  const samples = await sampleFramesDuring(page, ["p_after"], async () => {
+    await grabAndDrag(page, handle, travel, 20);
+    await page.mouse.up();
+  }, 700);
+
+  expectContinuousDescent(samples.map((sample) => sample.tops.p_after), travel);
+  expectContinuousDescent(samples.map((sample) => sample.handleTop), travel);
+
+  // 最後は引いた分だけ下がって落ち着く。
+  const last = samples[samples.length - 1];
+  expect(Math.abs(last.tops.p_after - (before + travel))).toBeLessThan(4 * scale);
+});
+
+test("the document is untouched until the pointer is released", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await openDocument(page, createDocument());
+  const scale = await readScale(page, "p_spaced");
+  const handle = await hoverBlock(page, "p_spaced");
+  await grabAndDrag(page, handle, DRAG_PX * scale, 10);
+
+  const midDrag = await page.evaluate(() => {
+    const block = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="p_spaced"]');
+    return {
+      // 正本が変わっていれば、その値は必ず padding として描かれる。
+      paddingBottom: block ? Number.parseFloat(getComputedStyle(block).paddingBottom || "0") : -1,
+      inlineValue: block?.style.getPropertyValue("--sigma-doc-space-after") ?? "?",
+      storage: window.localStorage.getItem("sigma-studio:e2e-document") ?? "",
+    };
+  });
+
+  expect(midDrag.paddingBottom).toBeLessThan(0.5);
+  expect(midDrag.inlineValue).toBe("");
+  expect(midDrag.storage).not.toContain("spaceAfterPx");
+
+  await page.mouse.up();
+
+  await expect.poll(async () => page.evaluate(() => {
+    const block = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="p_spaced"]');
+    return block ? Number.parseFloat(getComputedStyle(block).paddingBottom || "0") : -1;
+  })).toBeGreaterThanOrEqual(DRAG_PX - 2);
+  await expect.poll(async () => page.evaluate(
+    () => window.localStorage.getItem("sigma-studio:e2e-document") ?? "",
+  )).toContain("spaceAfterPx");
+});
+
+test("dragging freezes the page walk instead of re-running it per pointermove", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await openDocument(page, createDocument());
+  const scale = await readScale(page, "p_spaced");
+  const handle = await hoverBlock(page, "p_spaced");
+  await expect(handle).toBeVisible();
+  // ホバー解決が予約した再計測を消化してから測り始める。
+  await page.waitForTimeout(800);
+
+  const before = await readPerformanceCounters(page);
+  await grabAndDrag(page, handle, DRAG_PX * scale, 14);
+  const during = await readPerformanceCounters(page);
+  await page.mouse.up();
+
+  const delta = (name: string) => (during[name] ?? 0) - (before[name] ?? 0);
+  // ドラッグ中はページ割りを取り直さない。ここが増えると、答えが途中で差し替わって
+  // 後続ブロックが「別のページへ一気に移る」ように見える。
+  expect(delta("PageCanvasEditor.deferredRecompute")).toBe(0);
+  // 装飾の打ち直しは掴んだ瞬間の 1 本だけ (移動量は custom property が運ぶ)。
+  expect(delta("TextFlowEditor.refreshDispatch")).toBeLessThanOrEqual(2);
+});
+
+test("the whole drag is one undo step", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await openDocument(page, createDocument());
+  const scale = await readScale(page, "p_spaced");
+  const before = await blockTop(page, "p_after");
+
+  await dragHandle(page, await hoverBlock(page, "p_spaced"), DRAG_PX * scale);
+  await expect.poll(async () => Math.round((await blockTop(page, "p_after") - before) / scale))
+    .toBeGreaterThanOrEqual(DRAG_PX - 2);
+
+  await page.keyboard.press("ControlOrMeta+Z");
+
+  await expect.poll(async () => Math.round(Math.abs(await blockTop(page, "p_after") - before) / scale))
+    .toBeLessThanOrEqual(2);
+});
+
+test("Escape throws the drag away and leaves nothing behind", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await openDocument(page, createDocument());
+  const scale = await readScale(page, "p_spaced");
+  const before = await blockTop(page, "p_after");
+
+  const handle = await hoverBlock(page, "p_spaced");
+  await grabAndDrag(page, handle, 60 * scale, 8);
+  expect(await blockTop(page, "p_after")).toBeGreaterThan(before + 20 * scale);
+
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+
+  // 表示が元へ戻り、文書にも入っていない。
+  await expect.poll(async () => Math.round(Math.abs(await blockTop(page, "p_after") - before)))
+    .toBeLessThanOrEqual(2);
+  expect(await page.evaluate(
+    () => window.localStorage.getItem("sigma-studio:e2e-document") ?? "",
+  )).not.toContain("spaceAfterPx");
+
+  // リスナも凍結も残っていない: もう一度掴んで引ける。
+  //
+  // 同じ画素をすぐもう一度押すと、紙面側の「余白のダブルタップ」(PAGE_DOUBLE_TAP_MS = 450ms /
+  // PAGE_DOUBLE_TAP_DISTANCE_PX = 28px) が 2 回目の押下を横取りする。これは本件と無関係の
+  // 既存の経路なので、その窓を越えてから掴み直す (人手でも 0.5 秒は空く)。
+  await page.waitForTimeout(PAGE_MARGIN_DOUBLE_TAP_WINDOW_MS);
+  const again = await hoverBlock(page, "p_spaced");
+  await expect(again).toBeVisible();
+  await dragHandle(page, again, DRAG_PX * scale);
+  await expect.poll(async () => Math.round((await blockTop(page, "p_after") - before) / scale))
+    .toBeGreaterThanOrEqual(DRAG_PX - 2);
+});
+
+test("a cancelled pointer discards the drag and unfreezes hover resolution", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await openDocument(page, createDocument());
+  const scale = await readScale(page, "p_spaced");
+  const before = await blockTop(page, "p_after");
+
+  const handle = await hoverBlock(page, "p_spaced");
+  await grabAndDrag(page, handle, 60 * scale, 8);
+
+  // タッチのキャンセル / 別ウィンドウへポインタが移ったときに来るイベント。
+  await page.evaluate(() => window.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true })));
+  await page.mouse.up();
+
+  await expect.poll(async () => Math.round(Math.abs(await blockTop(page, "p_after") - before)))
+    .toBeLessThanOrEqual(2);
+  expect(await page.evaluate(
+    () => window.localStorage.getItem("sigma-studio:e2e-document") ?? "",
+  )).not.toContain("spaceAfterPx");
+
+  // ホバー解決が復活している (凍結が残っていれば別ブロックのつまみは二度と出ない)。
+  await expect(await hoverBlock(page, "p_before")).toBeVisible();
+});
+
+test("in page columns only the dragged column moves", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  await openDocument(page, createTwoColumnDocument());
+  await expect.poll(async () => page.locator(".page-column-guides span").count()).toBeGreaterThan(0);
+
+  const picks = await pickColumnNeighbours(page, "p_col_");
+  expect(picks.dragged).not.toBeNull();
+  expect(picks.sameColumnBelow).not.toBeNull();
+  expect(picks.otherColumn).not.toBeNull();
+
+  const handle = await hoverBlock(page, picks.dragged!);
+  await expect(handle).toBeVisible();
+  const ids = [picks.sameColumnBelow!, picks.otherColumn!];
+  const beforeTops = await topsOf(page, ids);
+
+  const samples = await sampleFramesDuring(page, ids, async () => {
+    await grabAndDrag(page, handle, 40, 14);
+  });
+  await page.mouse.up();
+
+  const followerSeries = samples.map((sample) => sample.tops[picks.sameColumnBelow!]);
+  expectContinuousDescent(followerSeries, 40);
+
+  const neighbourSeries = samples
+    .map((sample) => sample.tops[picks.otherColumn!])
+    .filter((value) => Number.isFinite(value));
+  // 隣の段は 1px も動かない。
+  expect(Math.max(...neighbourSeries) - Math.min(...neighbourSeries)).toBeLessThan(1);
+  expect(Math.abs(neighbourSeries[neighbourSeries.length - 1] - beforeTops[picks.otherColumn!]))
+    .toBeLessThan(1);
+});
+
+test("in a problem's own columns only the dragged column moves", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  await openDocument(page, createProblemPartialColumnsDocument());
+  await expect(page.locator('.page-flow [data-sigma-doc-id="q_1"]')).toBeVisible();
+
+  const handle = await hoverBlock(page, "q_1");
+  await expect(handle).toBeVisible();
+  const ids = ["q_2", "q_3"];
+  const beforeTops = await topsOf(page, ids);
+
+  const samples = await sampleFramesDuring(page, ids, async () => {
+    await grabAndDrag(page, handle, 40, 14);
+  });
+  await page.mouse.up();
+
+  expectContinuousDescent(samples.map((sample) => sample.tops.q_2), 40);
+
+  const neighbourSeries = samples.map((sample) => sample.tops.q_3).filter((value) => Number.isFinite(value));
+  expect(Math.max(...neighbourSeries) - Math.min(...neighbourSeries)).toBeLessThan(1);
+  expect(Math.abs(neighbourSeries[neighbourSeries.length - 1] - beforeTops.q_3)).toBeLessThan(1);
+});
+
+test("the drag stays continuous at 150% zoom", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  await openDocument(page, createDocument());
+  await selectUiOptionInPage(page, "ズーム", "150");
+  await page.waitForTimeout(800);
+
+  const scale = await readScale(page, "p_spaced");
+  expect(scale).toBeGreaterThan(1.4);
+  const before = await blockTop(page, "p_after");
+  const handle = await hoverBlock(page, "p_spaced");
+  const travel = 60 * scale;
+
+  const samples = await sampleFramesDuring(page, ["p_after"], async () => {
+    await grabAndDrag(page, handle, travel, 16);
+    await page.mouse.up();
+  }, 700);
+
+  expectContinuousDescent(samples.map((sample) => sample.tops.p_after), travel);
+  // 画面 px で引いた分だけ画面 px で下がる (ズーム換算が両側で一致している)。
+  const last = samples[samples.length - 1];
+  expect(Math.abs(last.tops.p_after - (before + travel))).toBeLessThan(5 * scale);
+});
+
+async function topsOf(page: Page, blockIds: readonly string[]): Promise<Record<string, number>> {
+  return page.evaluate((ids) => Object.fromEntries(ids.map((id) => {
+    const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${id}"]`);
+    return [id, element ? element.getBoundingClientRect().top : Number.NaN];
+  })), blockIds as string[]);
+}
+
+/**
+ * 段組の中から「掴む段落」「その直下 (同じ段)」「隣の段の段落」を選ぶ。
+ * 段の割り当てはブラウザが決めるので、id からは決め打ちできない。
+ */
+async function pickColumnNeighbours(page: Page, idPrefix: string): Promise<{
+  dragged: string | null;
+  sameColumnBelow: string | null;
+  otherColumn: string | null;
+}> {
+  return page.evaluate((prefix) => {
+    const blocks = Array.from(
+      document.querySelectorAll<HTMLElement>(`.page-flow [data-sigma-doc-id^="${prefix}"]`),
+    ).map((element) => ({
+      id: element.getAttribute("data-sigma-doc-id") ?? "",
+      rect: element.getBoundingClientRect(),
+    }));
+    const firstLeft = Math.min(...blocks.map((block) => block.rect.left));
+    const firstColumn = blocks.filter((block) => Math.abs(block.rect.left - firstLeft) < 5);
+    const otherColumn = blocks.filter((block) => block.rect.left > firstLeft + 50);
+    return {
+      dragged: firstColumn[0]?.id ?? null,
+      sameColumnBelow: firstColumn[1]?.id ?? null,
+      otherColumn: otherColumn[0]?.id ?? null,
+    };
+  }, idPrefix);
+}
 
 test("the handle stays put while dragging, even when the pointer leaves the block", async ({ page }) => {
   test.setTimeout(60_000);

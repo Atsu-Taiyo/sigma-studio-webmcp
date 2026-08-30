@@ -13,12 +13,23 @@ export const MAX_BLOCK_SPACE_AFTER_PX = 400;
 export const BLOCK_SPACE_AFTER_CSS_VARIABLE = "--sigma-doc-space-after";
 
 /**
- * ドラッグ中のライブプレビューが node decoration で被せる値。**永続値と別名にする**理由:
- * prosemirror-view は decoration の style を外すとき `prev.style` を舐めて
- * `dom.style.removeProperty(prop)` するので、同名だとドラッグ終了の瞬間にノード自身の
- * 永続値まで消える。CSS 側は `var(-draft, var(-永続, 0px))` の 2 段で読む。
+ * ドラッグ中のプレビューが運ぶ **平行移動量** (px)。紙面の親 (`.page-canvas`) に 1 本だけ
+ * 書き、追従するブロックとつまみが `transform: translateY()` でそれを読む。
+ *
+ * 下余白そのものを decoration で被せていた頃は、永続値と別名にしたうえで
+ * `var(-draft, var(-永続, 0px))` の 2 段で読む必要があった (prosemirror-view は decoration の
+ * style を外すとき `dom.style.removeProperty(prop)` するので、同名だとドラッグ終了の瞬間に
+ * ノード自身の永続値まで消える)。いまは px を decoration に載せないので、その罠ごと無い。
  */
-export const BLOCK_SPACE_AFTER_DRAFT_CSS_VARIABLE = "--sigma-doc-space-after-draft";
+export const BLOCK_SPACE_AFTER_PREVIEW_CSS_VARIABLE = "--sigma-doc-space-after-preview";
+
+/**
+ * ドラッグ中に平行移動する側 (掴んだブロックより下の、同じページ・同じ段のもの) に付く印。
+ *
+ * 値ではなく **印だけ** を decoration / className で配るので、pointermove ごとに動くのは
+ * 上の custom property 1 本きり。寸法は 1px も変わらないので `ResizeObserver` は鳴らない。
+ */
+export const BLOCK_SPACE_AFTER_FOLLOWER_CLASS = "sigma-space-after-follower";
 
 /**
  * 下余白を **描く** ブロック種別。

@@ -25,6 +25,11 @@ function documentSurfaceCss(): string {
   return readFileSync(new URL("../../../app/document-surface.css", import.meta.url), "utf8");
 }
 
+/** 編集面だけのスタイル (ビューアや印刷が読まない側)。 */
+function editorCss(): string {
+  return readFileSync(new URL("../../../app/globals.css", import.meta.url), "utf8");
+}
+
 describe("TextFlowStaticBlock ordered list markers", () => {
   it("marks a paren list so print, PDF, and the viewer draw (1)", () => {
     expect(renderToStaticMarkup(<TextFlowStaticBlock block={orderedList("paren")} />))
@@ -291,23 +296,33 @@ describe("TextFlowStaticBlock block space after", () => {
 
   it("adds the space as padding, so getBoundingClientRect (= pagination) sees it", () => {
     const css = documentSurfaceCss();
-    // ドラッグ中のドラフト値 → 永続値 → 0 の 2 段。ドラフトを別名にしているのは、
-    // prosemirror-view が decoration 撤去時に `removeProperty` で同名の宣言まで消すため。
-    const resolved = "var(--sigma-doc-space-after-draft, var(--sigma-doc-space-after, 0px))";
+    // 出典は永続値 1 本きり。ドラッグ中もここは動かない (追従は平行移動が受け持つ)。
+    const resolved = "var(--sigma-doc-space-after, 0px)";
 
     expect(css).toContain(`padding-bottom: ${resolved}`);
     // border-box なので min-height を据え置くと下余白が呑まれる (lineHeight < 1.78 で顕著)。
     expect(css).toContain(`min-height: calc(1.78em + ${resolved})`);
+    // ドラッグ中の値を padding へ被せる 2 段目は廃止済み。復活させると pointermove ごとに
+    // 寸法が変わり、ResizeObserver → 全体計測 → 再ページ割りの連鎖が戻る。
+    expect(css).not.toContain("--sigma-doc-space-after-draft");
   });
 
-  it("stops both variables from being inherited into a list's own items", () => {
+  it("stops the variable from being inherited into a list's own items", () => {
     const css = documentSurfaceCss();
     const reset = css.match(/\.print-list > li \{[^}]*\}/)?.[0] ?? "";
 
-    // 永続値は 0 に潰す。
     expect(reset).toContain("--sigma-doc-space-after: 0px");
-    // ドラフトは `initial` (= guaranteed-invalid)。`0px` にすると、自前の永続値を持つ
-    // 継続ブロックの余白まで消える (var() の次段へ落ちなくなる)。
-    expect(reset).toContain("--sigma-doc-space-after-draft: initial");
+  });
+
+  it("moves the blocks below a dragged handle without changing any size", () => {
+    // ドラッグ中の一時表示は編集面だけの話なので、共有の document surface には置かない
+    // (ビューアや印刷にはこのクラスが出る経路が無い)。
+    expect(documentSurfaceCss()).not.toContain("sigma-space-after-follower");
+
+    const follower = editorCss().match(/\.sigma-space-after-follower \{[^}]*\}/)?.[0] ?? "";
+    // 平行移動だけ。padding/margin/height を触った瞬間に紙面の寸法が変わり、ドラッグ中の
+    // 再計測 → 再ページ割りの連鎖が戻る。
+    expect(follower).toContain("transform: translateY(var(--sigma-doc-space-after-preview, 0px))");
+    expect(follower).not.toMatch(/padding|margin|height/);
   });
 });

@@ -101,7 +101,7 @@ import {
   PAGE_GAP_PX,
   type PageMetrics,
   blockSpaceAfterPx,
-  MAX_BLOCK_SPACE_AFTER_PX,
+  BLOCK_SPACE_AFTER_FOLLOWER_CLASS,
   rendersBlockSpaceAfter,
   fitRunningRegionToContent,
   type SigmaCommentAnchor,
@@ -278,9 +278,16 @@ import {
   sameUnitLayouts,
 } from "./page-canvas/layout-equality";
 import {
-  clearBlockSpaceAfterDrafts,
-  setBlockSpaceAfterDraft,
-} from "./text-flow/block-space-after-drafts";
+  beginBlockSpaceAfterPreview,
+  endBlockSpaceAfterPreview,
+  registerBlockSpaceAfterPreviewRoot,
+  setBlockSpaceAfterPreviewDeltaPx,
+} from "./text-flow/block-space-after-preview";
+import {
+  resolveSpaceAfterDragPx,
+  resolveSpaceAfterPreviewCohort,
+  type SpaceAfterPreviewCohort,
+} from "./page-canvas/space-after-preview";
 import {
   EMPTY_BLOCK_AFFORDANCE_HOVER,
   blockHitProbeColumnLeftPx,
@@ -721,19 +728,39 @@ function PageCanvasEditorImpl({
     bounds: OverlayBounds;
   } | null>(null);
   const [blockAffordance, setBlockAffordance] = useState<BlockAffordanceHover>(EMPTY_BLOCK_AFFORDANCE_HOVER);
-  /** 掴んでいる下端つまみ。描画用の state と、ポインタハンドラが読む ref の 2 本立て。 */
+  /**
+   * 掴んでいる下端つまみ。描画用の state と、ポインタハンドラが読む ref の 2 本立て。
+   *
+   * **px は state に持たない**。移動量は `block-space-after-preview` のストアが CSS の
+   * custom property 1 本として運び、追従するブロックとつまみが transform で読む。ここに
+   * 持つと pointermove ごとに 8000 行の紙面が丸ごと再レンダーされる (それが「ポインタに
+   * 追いつかず、まとめて瞬間移動する」の直接の原因だった)。掴んだ瞬間に 1 回だけ決まる
+   * 追従集合 (cohort) だけを持つ。
+   */
   const [spaceAfterDrag, setSpaceAfterDrag] = useState<{
     target: BlockSpaceAfterTarget;
-    startPx: number;
-    px: number;
+    /** 殻ごと動かすユニット。中のブロックへの印はストア経由で各編集面が付ける。 */
+    followerUnitIds: ReadonlySet<string>;
   } | null>(null);
   const spaceAfterDragRef = useRef<{
     target: BlockSpaceAfterTarget;
     startClientY: number;
     startPx: number;
     px: number;
+    clientY: number;
+    zoomFactor: number;
+    frame: number | null;
     stop: () => void;
   } | null>(null);
+  /**
+   * 離した後、コミットが紙面に反映されるまでプレビューを外さないための予約。
+   *
+   * 先に外すと「元の位置へ戻ってから、新しい余白ぶん下がる」フレームが 1 枚描かれる
+   * (継ぎ目のちらつき)。外すのは {@link releaseSpaceAfterPreviewWhenPainted}。
+   */
+  const spaceAfterCommitRef = useRef<{ blockId: string; px: number; deltaPx: number } | null>(null);
+  /** ドラッグ中に握りつぶした再計測の予約。凍結を解いたら 1 回だけ走らせる。 */
+  const recomputeDeferredWhileFrozenRef = useRef(false);
   /** 直近にホバー解決した位置。文書が変わった後につまみを置き直すのに使う。 */
   const lastAffordancePointRef = useRef<{ x: number; y: number } | null>(null);
   /** 下余白を書き込んだ直後だけ、次の文書更新でホバーを取り直す。 */
@@ -1981,6 +2008,13 @@ function PageCanvasEditorImpl({
   /** Consecutive refused measurements, capped by `MAX_CONSECUTIVE_STALE_SKIPS`. */
   const staleSkipCountRef = useRef(0);
   const scheduleRecompute = useCallback((updatePrevMeasure = false) => {
+    // 下端つまみを掴んでいる間はページ割りを凍らせる。プレビューは平行移動なので寸法は
+    // 変わらず ResizeObserver は鳴らないが、フォントの遅延ロードのような外因はここへ来る。
+    // ドラッグ中に答えが変わると、後続ブロックが「別のページへ一気に移る」ように見える。
+    if (spaceAfterDragRef.current || spaceAfterCommitRef.current) {
+      recomputeDeferredWhileFrozenRef.current = true;
+      return;
+    }
     if (updatePrevMeasure) {
       recomputeUpdatesPrevMeasureRef.current = true;
     }
@@ -2008,6 +2042,157 @@ function PageCanvasEditorImpl({
   useLayoutEffect(() => {
     scheduleRecomputeRef.current = scheduleRecompute;
   }, [scheduleRecompute]);
+
+  /**
+   * ドラッグ中に凍らせていた再計測を解く。
+   *
+   * `force` はコミットした側で立てる — 確定した余白は実際に紙面の寸法を変えるので、
+   * 凍結中に予約が来ていなくても必ず 1 回測り直す。
+   */
+  const thawSpaceAfterRecompute = useCallback((force = false) => {
+    if (!force && !recomputeDeferredWhileFrozenRef.current) {
+      return;
+    }
+    recomputeDeferredWhileFrozenRef.current = false;
+    markFullMeasureDirty("spaceAfterDragEnd");
+    scheduleRecomputeRef.current();
+  }, [markFullMeasureDirty]);
+
+  /**
+   * 下端つまみのプレビューを即座に畳んで元へ戻す。文書には **書かない**。
+   *
+   * Escape・pointercancel (別ウィンドウへ移った / タッチのキャンセル)・アンマウントの受け口。
+   * pointercancel にコミット側 (`handlePointerUp`) を貼っていた頃は、キャンセルが確定に
+   * なっていた。
+   */
+  const cancelBlockSpaceAfterDrag = useCallback(() => {
+    const drag = spaceAfterDragRef.current;
+    spaceAfterDragRef.current = null;
+    spaceAfterCommitRef.current = null;
+    drag?.stop();
+    endBlockSpaceAfterPreview();
+    setSpaceAfterDrag(null);
+    thawSpaceAfterRecompute();
+  }, [thawSpaceAfterRecompute]);
+  const cancelBlockSpaceAfterDragRef = useRef(cancelBlockSpaceAfterDrag);
+  useLayoutEffect(() => {
+    cancelBlockSpaceAfterDragRef.current = cancelBlockSpaceAfterDrag;
+  }, [cancelBlockSpaceAfterDrag]);
+
+  /**
+   * 確定した余白が本文の面に **乗ったその瞬間** にプレビューを外す。
+   *
+   * コミットは React の props を通って ProseMirror の面まで運ばれるが、面がノードの
+   * `--sigma-doc-space-after` を書き戻すのは commit のレイアウトフェーズより後 (実測で
+   * 1 フレーム遅れる)。継ぎ目で描かれてはいけない中間状態が 2 つある:
+   *
+   * - 早すぎる解除 → 「余白 0 × 平行移動なし」= ドラッグ前の位置へ 1 フレーム戻る。
+   * - 遅すぎる解除 → 「余白あり × 平行移動あり」= 2 倍下がったフレームが 1 枚出る。
+   *
+   * どちらも避けるには、**余白が DOM に書かれたのと同じ描画前のタイミング**で外すしかない。
+   * MutationObserver のコールバックは書き換えた task の直後 (microtask) に走り、そのフレーム
+   * の描画より前なので、そこで外せば、どちらの中間状態も一度も描かれない。rAF 側は
+   * 保険 (コミットが弾かれた / 面が無い) の打ち切りだけを担う。
+   */
+  const releaseSpaceAfterPreviewWhenPainted = useCallback(() => {
+    let frames = 0;
+    let observer: MutationObserver | null = null;
+    let frame: number | null = null;
+
+    const cleanup = () => {
+      observer?.disconnect();
+      observer = null;
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+    };
+
+    const isPainted = (blockId: string, px: number): boolean => {
+      const element = canvasRef.current?.querySelector<HTMLElement>(
+        `.page-flow [data-sigma-doc-id="${CSS.escape(blockId)}"]`,
+      );
+      return element
+        ? Math.abs(Number.parseFloat(window.getComputedStyle(element).paddingBottom || "0") - px) < 1
+        : false;
+    };
+
+    const finish = (
+      pending: { blockId: string; px: number; deltaPx: number },
+      painted: boolean,
+    ) => {
+      cleanup();
+      spaceAfterCommitRef.current = null;
+      if (painted) {
+        // つまみは「動かしている辺」そのもの。ホバーの取り直し (次のポインタ移動) を待つと、
+        // 1 フレームだけ元の下端へ跳ね返って見える。
+        setBlockAffordance((current) => (
+          current.spaceAfter?.blockId === pending.blockId
+            ? {
+              ...current,
+              spaceAfter: {
+                ...current.spaceAfter,
+                bottom: current.spaceAfter.bottom + pending.deltaPx,
+                spaceAfterPx: pending.px,
+              },
+            }
+            : current
+        ));
+      }
+      endBlockSpaceAfterPreview();
+      setSpaceAfterDrag(null);
+      // 確定ぶんは寸法を変えたので、凍結を解いて測り直す。
+      thawSpaceAfterRecompute(true);
+    };
+
+    const check = () => {
+      const pending = spaceAfterCommitRef.current;
+      if (!pending) {
+        cleanup();
+        return;
+      }
+      if (isPainted(pending.blockId, pending.px)) {
+        finish(pending, true);
+      }
+    };
+
+    const flow = flowRef.current;
+    if (flow && typeof MutationObserver !== "undefined") {
+      observer = new MutationObserver(check);
+      // 面がノードごと作り直すこともあるので、属性だけでなく子の入れ替えも見る。
+      observer.observe(flow, {
+        attributeFilter: ["style"],
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    }
+
+    const step = () => {
+      frame = null;
+      const pending = spaceAfterCommitRef.current;
+      if (!pending) {
+        cleanup();
+        return;
+      }
+      frames += 1;
+      if (isPainted(pending.blockId, pending.px)) {
+        finish(pending, true);
+        return;
+      }
+      if (frames >= MAX_SPACE_AFTER_COMMIT_FRAMES) {
+        // 届かないまま終わった (AI ロック等でコミットが弾かれた)。プレビューは残さない。
+        finish(pending, false);
+        return;
+      }
+      frame = window.requestAnimationFrame(step);
+    };
+    frame = window.requestAnimationFrame(step);
+  }, [thawSpaceAfterRecompute]);
+  const releaseSpaceAfterPreviewWhenPaintedRef = useRef(releaseSpaceAfterPreviewWhenPainted);
+  useLayoutEffect(() => {
+    releaseSpaceAfterPreviewWhenPaintedRef.current = releaseSpaceAfterPreviewWhenPainted;
+  }, [releaseSpaceAfterPreviewWhenPainted]);
 
   // Tracks the layout-structural inputs from the previous render so we can tell
   // a pure text edit (typing) apart from a change that reshapes the page.
@@ -2037,6 +2222,12 @@ function PageCanvasEditorImpl({
     };
 
     if (structuralChanged) {
+      // 掴んだままズーム・余白・用紙・フォント・undo が動いた。ドラッグの起点 (px と拡大率) は
+      // pointerdown で固定しているので、続行すると換算が合わない値をコミットしてしまう。
+      // 可逆な側 = 破棄に倒す。
+      if (spaceAfterDragRef.current || spaceAfterCommitRef.current) {
+        cancelBlockSpaceAfterDragRef.current();
+      }
       // 構造 (ズーム・余白・フォント・undo) が変われば前の署名列は無意味になる。
       paginationInputRef.current = null;
       paginationSignatureHistoryRef.current = [];
@@ -2515,11 +2706,33 @@ function PageCanvasEditorImpl({
   }, [getOverlayPointFromClient, updateBlockAffordanceHover]);
 
   /**
+   * 掴んだ瞬間に「何が追従するか」を 1 回だけ決める。
+   *
+   * ドラッグ中はページ割りを凍らせるので、この答えは離すまで変わらない。実測 (`blockRects`)
+   * は今まさに描かれている紙面そのものなので、ページ段組・局所段組・問題エリア段組の
+   * どれでも同じ 1 つの判定で済む。
+   */
+  const resolveBlockSpaceAfterCohort = useCallback((blockId: string): SpaceAfterPreviewCohort => (
+    resolveSpaceAfterPreviewCohort({
+      units: units.map((unit) => ({ id: unit.id, blockIds: getFlowUnitBlockIds(unit) })),
+      blockRects: layoutViewStateRef.current.blockRects,
+      pageStride: pageHeightPx + PAGE_GAP_PX,
+      draggedBlockId: blockId,
+    })
+  ), [pageHeightPx, units]);
+
+  /**
    * ブロックの下端を掴んで下余白を伸ばす。
    *
-   * 値そのものは `block-space-after-drafts` のストアへ流し、本文の decoration が
-   * `--sigma-doc-space-after-draft` として被せる。文書には離した時に 1 回だけ書く
-   * (ドラッグ中に書くと同期キーが変わって `setContent` が走り、キャレットと選択が飛ぶ)。
+   * ドラッグ中は **紙面の寸法を一切変えない**。追従するブロック (掴んだブロックより下で、
+   * 同じページ・同じ段にあるもの) は `transform: translateY()` で平行移動するだけで、値は
+   * `block-space-after-preview` のストアが custom property 1 本として運ぶ。つまり
+   * pointermove 1 回のコストは `setProperty` 1 回きり — React 再レンダーも ProseMirror の
+   * transaction も 0。寸法が変わらないので ResizeObserver も鳴らず、再ページ割りの連鎖が
+   * そもそも起きない。
+   *
+   * 文書には離した時に 1 回だけ書く (ドラッグ中に書くと同期キーが変わって `setContent` が
+   * 走り、キャレットと選択が飛ぶ)。
    */
   const startBlockSpaceAfterResize = useCallback((
     target: BlockSpaceAfterTarget,
@@ -2534,53 +2747,131 @@ function PageCanvasEditorImpl({
     // 上書きすると前の `handlePointerUp` が新しいドラッグの値をコミットしてしまう。
     spaceAfterDragRef.current?.stop();
     spaceAfterDragRef.current = null;
+    // 前の確定待ちが残っていても、掴み直しの側が勝つ (待ちのまま新しい cohort を被せない)。
+    spaceAfterCommitRef.current = null;
 
     // 起点は **いま文書が持っている値**。ホバーの値は前回のコミット後に取り直されていない
     // ことがあり、そこから足すと 2 回目のドラッグで紙面が前の値まで巻き戻る。
     const currentBlock = collectBlocksById(pageDocument.content).get(target.blockId);
     const startPx = currentBlock ? blockSpaceAfterPx(currentBlock) : target.spaceAfterPx;
     const zoomFactor = zoom / 100;
+    const cohort = resolveBlockSpaceAfterCohort(target.blockId);
+    // ハンドラは全部この 1 つの状態を閉じ込めて読む。ref 越しに読むと、掴み直しや破棄で
+    // ref が差し替わった後に古いハンドラが新しいドラッグを畳んでしまう。
+    const drag = {
+      target,
+      startClientY: event.clientY,
+      startPx,
+      px: startPx,
+      clientY: event.clientY,
+      zoomFactor,
+      frame: null as number | null,
+      stop,
+    };
 
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      const drag = spaceAfterDragRef.current;
-      if (!drag) {
-        return;
-      }
-      const deltaPx = (moveEvent.clientY - drag.startClientY) / zoomFactor;
-      const next = Math.min(MAX_BLOCK_SPACE_AFTER_PX, Math.max(0, Math.round(drag.startPx + deltaPx)));
+    /** 1 フレームに 1 回だけ、溜めた clientY からプレビュー値を出して custom property を書く。 */
+    function applyPreviewFrame() {
+      drag.frame = null;
+      const next = resolveSpaceAfterDragPx({
+        startPx: drag.startPx,
+        startClientY: drag.startClientY,
+        clientY: drag.clientY,
+        zoomFactor: drag.zoomFactor,
+      });
       if (next === drag.px) {
         return;
       }
       drag.px = next;
-      setSpaceAfterDrag({ target: drag.target, startPx: drag.startPx, px: next });
-      setBlockSpaceAfterDraft(drag.target.blockId, next);
-    };
-
-    /** ドラッグを畳む。アンマウントで途中終了したときもここを通す (購読とリスナを残さない)。 */
-    const stop = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      // ポインタが失われた (別ウィンドウへ、タッチのキャンセル) ときも必ず畳む。取り逃すと
-      // ホバー解決が凍結したままになり、以後アフォーダンスが一切更新されなくなる。
-      window.removeEventListener("pointercancel", handlePointerUp);
-      clearBlockSpaceAfterDrafts();
-    };
-
-    function handlePointerUp() {
-      const drag = spaceAfterDragRef.current;
-      spaceAfterDragRef.current = null;
-      stop();
-      setSpaceAfterDrag(null);
-
-      if (drag && drag.px !== drag.startPx) {
-        spaceAfterHoverRefreshRef.current = true;
-        onChange(drag.target.blockId, (block) => setBlockSpaceAfter(block, drag.px));
-      }
+      // ここが pointermove 1 回あたりの全コスト。
+      setBlockSpaceAfterPreviewDeltaPx(next - drag.startPx);
     }
 
-    spaceAfterDragRef.current = { target, startClientY: event.clientY, startPx, px: startPx, stop };
-    setSpaceAfterDrag({ target, startPx, px: startPx });
-    setBlockSpaceAfterDraft(target.blockId, startPx);
+    function handlePointerMove(moveEvent: PointerEvent) {
+      // 溜めるだけ。ポインタは 1 フレームに何度も来るので、描く仕事は rAF 1 回に畳む。
+      drag.clientY = moveEvent.clientY;
+      if (drag.frame !== null) {
+        return;
+      }
+      drag.frame = window.requestAnimationFrame(applyPreviewFrame);
+    }
+
+    function handleKeyDown(keyEvent: KeyboardEvent) {
+      if (keyEvent.key !== "Escape") {
+        return;
+      }
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      cancelBlockSpaceAfterDragRef.current();
+    }
+
+    /** ドラッグを畳む。アンマウントで途中終了したときもここを通す (予約とリスナを残さない)。 */
+    function stop() {
+      if (drag.frame !== null) {
+        window.cancelAnimationFrame(drag.frame);
+        drag.frame = null;
+      }
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+      window.removeEventListener("keydown", handleKeyDown, true);
+      // プレビューはここでは外さない。確定を待ってから、同じレイアウトフェーズで外す
+      // (先に外すと「戻ってから下がる」フレームが 1 枚描かれる)。破棄側は
+      // `cancelBlockSpaceAfterDrag` が即座に外す。
+    }
+
+    /**
+     * ポインタが失われた (別ウィンドウへ、タッチのキャンセル)。**破棄** であって確定ではない。
+     * ここに `handlePointerUp` を貼っていた頃は、キャンセルが文書への書き込みになっていた。
+     */
+    function handlePointerCancel() {
+      cancelBlockSpaceAfterDragRef.current();
+    }
+
+    function handlePointerUp(upEvent: PointerEvent) {
+      if (spaceAfterDragRef.current !== drag) {
+        // 既に畳まれている (Escape / pointercancel / 掴み直し)。何も確定しない。
+        return;
+      }
+      spaceAfterDragRef.current = null;
+      stop();
+
+      // 確定値は **離した位置** から出し直す。rAF の間引きに任せると、最後の pointermove の
+      // 次のフレームが来る前に離した速いドラッグで、動かした分がまるごと落ちる。
+      drag.clientY = upEvent.clientY;
+      drag.px = resolveSpaceAfterDragPx({
+        startPx: drag.startPx,
+        startClientY: drag.startClientY,
+        clientY: drag.clientY,
+        zoomFactor: drag.zoomFactor,
+      });
+      // 確定するまでは平行移動が見た目を担う。ここを飛ばすと、離した瞬間だけ元へ戻る。
+      setBlockSpaceAfterPreviewDeltaPx(drag.px - drag.startPx);
+
+      if (drag.px === drag.startPx) {
+        // 動いていない (クリックだけ)。文書は触らず、プレビューだけ畳む。
+        endBlockSpaceAfterPreview();
+        setSpaceAfterDrag(null);
+        thawSpaceAfterRecompute();
+        return;
+      }
+
+      spaceAfterHoverRefreshRef.current = true;
+      spaceAfterCommitRef.current = {
+        blockId: drag.target.blockId,
+        px: drag.px,
+        deltaPx: drag.px - drag.startPx,
+      };
+      onChange(drag.target.blockId, (block) => setBlockSpaceAfter(block, drag.px));
+      // プレビューはここでは外さない。確定した余白が実際に描かれたフレームまで待ってから
+      // 外す (コミットが弾かれても数フレームで必ず畳む)。
+      releaseSpaceAfterPreviewWhenPaintedRef.current();
+    }
+
+    spaceAfterDragRef.current = drag;
+    // 順序が意味を持つ: 先に cohort をストアへ渡して各面へ印を配り (PM transaction 1 本)、
+    // その後で React に 1 レンダーだけさせる。以後ドラッグが終わるまでどちらも動かない。
+    beginBlockSpaceAfterPreview({ blockId: target.blockId, followerBlockIds: cohort.followerBlockIds });
+    setSpaceAfterDrag({ target, followerUnitIds: new Set(cohort.followerUnitIds) });
     // ポインタを掴んでおく。掴まないと、離した位置に `pointerup` を止める別の UI (コメントの
     // ドックなど) があるだけで window までイベントが届かず、ドラッグが終われなくなる。
     try {
@@ -2588,10 +2879,12 @@ function PageCanvasEditorImpl({
     } catch {
       // 取れなくても window のリスナで拾えるので続行する。
     }
-    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
     window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerUp);
-  }, [onChange, pageDocument.content, zoom]);
+    window.addEventListener("pointercancel", handlePointerCancel);
+    // capture で拾う: 本文やポップオーバーが Escape を先に食べても、掴んでいる間はこちらが勝つ。
+    window.addEventListener("keydown", handleKeyDown, true);
+  }, [onChange, pageDocument.content, resolveBlockSpaceAfterCohort, thawSpaceAfterRecompute, zoom]);
 
   /** キーボードからの微調整。ドラッグでは出せない 1px 刻みをここで出す。 */
   const adjustBlockSpaceAfter = useCallback((blockId: string, deltaPx: number) => {
@@ -2600,11 +2893,19 @@ function PageCanvasEditorImpl({
   }, [onChange]);
 
   // 掴んだままアンマウントされたときの後始末。ストアは紙面ごとではなくモジュール単位なので、
-  // ここで畳まないとドラフト値が残り続ける。
+  // ここで畳まないとプレビューの印と平行移動が残り続ける。
   useEffect(() => () => {
-    spaceAfterDragRef.current?.stop();
-    spaceAfterDragRef.current = null;
+    cancelBlockSpaceAfterDragRef.current();
   }, []);
+
+  // 平行移動を運ぶ custom property の書き込み先。`.page-stack` の `transform: scale()` の
+  // **内側**なので、canvas px のまま書けばズームは自動で乗る。
+  useEffect(() => {
+    if (!canvasElement) {
+      return;
+    }
+    return registerBlockSpaceAfterPreviewRoot(canvasElement);
+  }, [canvasElement]);
 
   // 書き込んだ直後の 1 回だけホバーを取り直す。取り直さないと、つまみが更新前の下端に
   // 残ったままになる (次のポインタ移動まで)。毎回の文書更新では走らせない (打鍵が重くなる)。
@@ -2669,11 +2970,19 @@ function PageCanvasEditorImpl({
   ), [blockSelection, pageDocument.content]);
 
   // 掴んでいる間は掴んだ相手に固定する (ホバー解決は凍結済み)。つまみ自体は「動かしている辺」
-  // なので、ドラフト値の増減ぶんだけ下へついていく。
+  // だが、追従は CSS (`[data-dragging]` の translate) がやるので **ここは動かさない** —
+  // 毎フレーム `top` を書き換えると、そのたびに紙面全体が React で再レンダーされる。
   const spaceAfterHandle = spaceAfterDrag?.target ?? blockAffordance.spaceAfter;
-  const spaceAfterHandleBottom = spaceAfterDrag
-    ? spaceAfterDrag.target.bottom + (spaceAfterDrag.px - spaceAfterDrag.startPx)
-    : spaceAfterHandle?.bottom ?? 0;
+  const spaceAfterHandleBottom = spaceAfterHandle?.bottom ?? 0;
+  /**
+   * 殻ごと平行移動するユニット。問題枠・サイドノート・問題番号は殻が持っているので、
+   * 中身だけ動かすと枠が置き去りになる。殻を動かすユニットの中身には印を付けない
+   * (二重に translate されるのを構造的に防ぐ = cohort が保証している)。
+   */
+  const spaceAfterFollowerUnitIds = spaceAfterDrag?.followerUnitIds ?? EMPTY_SPACE_AFTER_FOLLOWER_UNITS;
+  const spaceAfterFollowerUnitClass = (unitId: string): string => (
+    spaceAfterFollowerUnitIds.has(unitId) ? BLOCK_SPACE_AFTER_FOLLOWER_CLASS : ""
+  );
 
   // Clearing on the canvas' own mousedown is not enough: ProseMirror stops the event inside
   // the text, so a click on another block would leave the previous one selected. The capture
@@ -4669,7 +4978,7 @@ function PageCanvasEditorImpl({
               unit.type === "textFlow" ? (
                 <div
                   key={isColumnFlow ? `column-${unit.id}` : unit.id}
-                  className={isColumnFlow ? "page-flow-unit" : undefined}
+                  className={`${isColumnFlow ? "page-flow-unit" : ""} ${spaceAfterFollowerUnitClass(unit.id)}`.trim() || undefined}
                   data-flow-unit-id={unit.id}
                   data-text-run-group={textRunGroupByUnitId.get(unit.id)?.groupId}
                   style={getFlowUnitStyle(unit, isColumnFlow, unitLayouts, metrics)}
@@ -4723,6 +5032,7 @@ function PageCanvasEditorImpl({
                   columnLayout={problemAreaColumnLayouts[unit.id]}
                   boxFragmentSourceLayouts={boxFragmentSourceLayouts}
                   layoutStyle={getFlowUnitStyle(unit, isColumnFlow, unitLayouts, metrics)}
+                  spaceAfterFollowerClass={spaceAfterFollowerUnitClass(unit.id)}
                   pageColumnGapPx={metrics.flow.columnGapPx}
                   pageColumnGapMm={metrics.flow.columnGapMm}
                   sideNoteOffsetPx={getProblemAreaSideNoteOffsetPx(unit, isColumnFlow, unitLayouts, metrics)}
@@ -4751,6 +5061,7 @@ function PageCanvasEditorImpl({
                   columnFlowBlockLayouts={isColumnFlow ? pickTextFlowColumnBlockLayouts(unit.blocks, textFlowBlockLayouts) : undefined}
                   frameFragments={isColumnFlow ? frameFragmentLayouts[unit.id] : undefined}
                   layoutStyle={getFlowUnitStyle(unit, isColumnFlow, unitLayouts, metrics)}
+                  spaceAfterFollowerClass={spaceAfterFollowerUnitClass(unit.id)}
                   sideNoteOffsetPx={getProblemAreaSideNoteOffsetPx(unit, isColumnFlow, unitLayouts, metrics, textFlowBlockLayouts)}
                   draftMinHeightMm={problemAreaHeightDrafts[problemAreaDraftKey(unit.problem.id, unit.area)]}
                   onSelect={onSelect}
@@ -4776,7 +5087,7 @@ function PageCanvasEditorImpl({
                   id={unit.block.id}
                   data-page-block=""
                   data-flow-unit-id={unit.id}
-                  className={isColumnFlow ? "page-flow-unit" : undefined}
+                  className={`${isColumnFlow ? "page-flow-unit" : ""} ${spaceAfterFollowerUnitClass(unit.id)}`.trim() || undefined}
                   key={isColumnFlow ? `column-${unit.id}` : unit.block.id}
                   style={getFlowUnitStyle(unit, isColumnFlow, unitLayouts, metrics) ??
                     (gaps[unit.block.id] ? { marginTop: `${gaps[unit.block.id]}px` } : undefined)}
@@ -4802,6 +5113,11 @@ function PageCanvasEditorImpl({
             )}
           </div>
 
+          {/*
+            下端つまみのドラッグ中、この層に印は付かない。断片は「ページ (段) をまたいだ続き」
+            なので、掴んだブロックと同じページ・同じ段には原理的に存在しない = 追従集合に
+            入らない (`resolveSpaceAfterPreviewCohort`)。
+          */}
           {editorBoxBlockFragments.length > 0 && (
             <div className="page-box-fragment-layer">
               {editorBoxBlockFragments.map((fragment) => {
@@ -5915,6 +6231,7 @@ function LayoutSectionFlowUnit({
   columnLayout,
   boxFragmentSourceLayouts,
   layoutStyle,
+  spaceAfterFollowerClass,
   pageColumnGapPx,
   pageColumnGapMm,
   sideNoteOffsetPx,
@@ -5939,6 +6256,8 @@ function LayoutSectionFlowUnit({
   columnLayout: ProblemAreaColumnLayout | undefined;
   boxFragmentSourceLayouts: Record<string, TextFlowBoxFragmentSourceLayout>;
   layoutStyle: CSSProperties | undefined;
+  /** 下端つまみのドラッグ中、このユニットを殻ごと平行移動させる印 (該当しなければ空文字)。 */
+  spaceAfterFollowerClass: string;
   pageColumnGapPx: number;
   pageColumnGapMm: number;
   sideNoteOffsetPx: number | undefined;
@@ -6022,7 +6341,7 @@ function LayoutSectionFlowUnit({
       data-problem-area={isProblemAreaSection ? unit.area : undefined}
       data-problem-id={isProblemAreaSection ? unit.problem.id : undefined}
       data-flow-unit-id={unit.id}
-      className={`layout-section-flow-unit ${selected ? "selected" : ""} ${isColumnFlow ? "page-flow-unit" : ""} ${isProblemAreaSection ? "in-problem-area" : ""}`}
+      className={`layout-section-flow-unit ${selected ? "selected" : ""} ${isColumnFlow ? "page-flow-unit" : ""} ${isProblemAreaSection ? "in-problem-area" : ""} ${spaceAfterFollowerClass}`}
       style={style}
       onClick={(event) => {
         event.stopPropagation();
@@ -6095,6 +6414,7 @@ function ProblemAreaFlowUnit({
   columnFlowBlockLayouts,
   frameFragments,
   layoutStyle,
+  spaceAfterFollowerClass,
   sideNoteOffsetPx,
   draftMinHeightMm,
   onSelect,
@@ -6122,6 +6442,8 @@ function ProblemAreaFlowUnit({
   columnFlowBlockLayouts: Record<string, TextFlowColumnBlockLayout> | undefined;
   frameFragments: ProblemAreaFrameFragmentLayout[] | undefined;
   layoutStyle: CSSProperties | undefined;
+  /** 下端つまみのドラッグ中、このユニットを殻ごと平行移動させる印 (該当しなければ空文字)。 */
+  spaceAfterFollowerClass: string;
   sideNoteOffsetPx: number | undefined;
   draftMinHeightMm: number | undefined;
   onSelect: (blockId: string | null) => void;
@@ -6209,7 +6531,7 @@ function ProblemAreaFlowUnit({
       data-problem-id={problem.id}
       data-flow-unit-id={unit.id}
       data-problem-frame-style={frameStyleId}
-      className={`problem-area-flow-unit ${selected ? "selected" : ""} ${isColumnFlow ? "page-flow-unit" : ""} ${columnBlockFlowed ? "column-block-flowed" : ""} ${outerFrameClasses} ${outerFirstFrameClass} ${outerLastFrameClass}`}
+      className={`problem-area-flow-unit ${selected ? "selected" : ""} ${isColumnFlow ? "page-flow-unit" : ""} ${columnBlockFlowed ? "column-block-flowed" : ""} ${outerFrameClasses} ${outerFirstFrameClass} ${outerLastFrameClass} ${spaceAfterFollowerClass}`}
       style={style}
       onClick={(event) => {
         event.stopPropagation();
@@ -7730,6 +8052,24 @@ interface ProblemAreaResizeState {
   area: ProblemAreaKind;
   startClientY: number;
   startHeightMm: number;
+}
+
+/**
+ * そのフローユニットの面が **自分で描く** ブロックの id。
+ *
+ * 定義は下端つまみのホバー解決 (`resolveFlowUnitInnerBlock` の `.ProseMirror > [data-sigma-doc-id]`)
+ * と同じ「編集面の直下」。ここが食い違うと、掴めるのに追従しないブロックが出る。
+ */
+const EMPTY_SPACE_AFTER_FOLLOWER_UNITS: ReadonlySet<string> = new Set();
+
+/**
+ * 確定した余白が描かれるのを待つ上限 (フレーム)。実測では 1〜2 フレームで届く。ここまで
+ * 待って届かないときは弾かれた (AI ロック等) とみなし、プレビューを残さず畳む。
+ */
+const MAX_SPACE_AFTER_COMMIT_FRAMES = 12;
+
+function getFlowUnitBlockIds(unit: RenderUnit): string[] {
+  return unit.type === "block" ? [unit.block.id] : unit.blocks.map((block) => block.id);
 }
 
 function createInitialPageLayoutViewState(pageHeightPx: number): PageLayoutViewState {

@@ -17,6 +17,7 @@ describe("page canvas pure-model dependency boundary", () => {
     const problemAreaModel = readSiblingSource("./problem-area-model.ts");
     const inlineContentComposition = readSiblingSource("./inline-content-composition.ts");
     const visibilityModel = readSiblingSource("./virtualization.ts");
+    const spaceAfterPreview = readSiblingSource("./space-after-preview.ts");
     const sources = [
       readSiblingSource("./body-text-flow-transition.ts"),
       readSiblingSource("./reconciliation.ts"),
@@ -26,6 +27,7 @@ describe("page canvas pure-model dependency boundary", () => {
       problemAreaModel,
       runningRegionTextModel,
       visibilityModel,
+      spaceAfterPreview,
     ];
     const invalidImports = sources.flatMap(importSpecifiers).filter((specifier) => (
       specifier === "react"
@@ -53,6 +55,11 @@ describe("page canvas pure-model dependency boundary", () => {
     expect(visibilityModel).not.toMatch(
       /\b(?:window|HTMLElement|DOMRect|ResizeObserver|IntersectionObserver|performance)\b|\bdocument\s*\./,
     );
+    // ドラッグ中プレビューの「誰が追従するか」は幾何だけで決まる。DOM を覗くと、掴んで
+    // いる最中に実測が動いて答えが揺れる (cohort は pointerdown で 1 回きり決める約束)。
+    expect(spaceAfterPreview).not.toMatch(
+      /\b(?:window|HTMLElement|DOMRect|PointerEvent|ResizeObserver)\b|\bdocument\s*\./,
+    );
   });
 
   it("keeps the page controller as the one-way composition entrypoint", () => {
@@ -66,6 +73,10 @@ describe("page canvas pure-model dependency boundary", () => {
     expect(pageCanvas).toContain('from "./page-canvas/virtualization"');
     expect(pageCanvas).toContain('from "./page-canvas/applied-gaps"');
     expect(pageCanvas).toContain('from "./page-canvas/pagination-decisions"');
+    expect(pageCanvas).toContain('from "./page-canvas/space-after-preview"');
+    // ドラッグ中の換算と追従集合はページ制御側で書き直さない (純関数側の 1 箇所だけ)。
+    expect(pageCanvas).not.toMatch(/\bfunction resolveSpaceAfterDragPx\s*\(/);
+    expect(pageCanvas).not.toMatch(/\bfunction resolveSpaceAfterPreviewCohort\s*\(/);
     expect(pageCanvas).not.toContain('from "./page-canvas/reconciliation"');
     expect(pageCanvas).not.toMatch(/\bfunction collectReservedProblemAreaIds\s*\(/);
     expect(pageCanvas).not.toMatch(/\bfunction collectReservedLayoutSectionIds\s*\(/);

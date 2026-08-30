@@ -1144,7 +1144,7 @@ h2.print-heading {
 }
 
 .print-paragraph {
-  min-height: calc(1.78em + var(--sigma-doc-space-after-draft, var(--sigma-doc-space-after, 0px)));
+  min-height: calc(1.78em + var(--sigma-doc-space-after, 0px));
   margin: 2px 0;
   line-height: inherit;
   font-size: inherit;
@@ -1590,7 +1590,7 @@ li[data-list-marker-typography]::marker {
 }
 
 .text-flow-editor p {
-  min-height: calc(1.78em + var(--sigma-doc-space-after-draft, var(--sigma-doc-space-after, 0px)));
+  min-height: calc(1.78em + var(--sigma-doc-space-after, 0px));
   margin: 2px 0;
 }
 
@@ -1602,26 +1602,23 @@ li[data-list-marker-typography]::marker {
    チャンク境界のマージン相殺が applied-gaps.ts の marginTop 読みとずれて非収束が再発する)。
    枠や背景を持つ引用・コード・囲み枠には付けない — padding は枠の内側に入るので
    「ブロックの下に余白」ではなく「枠が下に伸びる」になる。
-   `-draft` はドラッグ中のライブプレビューが node decoration で被せる値。永続値と別名なのは、
-   prosemirror-view が decoration 撤去時に `removeProperty` で同名の宣言まで消すため。 */
+   ドラッグ中はここを一切動かさない: 追従は編集面だけの平行移動 (globals.css) が受け持つので、
+   寸法が変わらず ResizeObserver → 再ページ割りの連鎖が起きない。 */
 .text-flow-editor :is(p, h1, h2, h3, ul, ol, hr),
 .print-paragraph,
 .print-heading,
 .print-section,
 .print-list,
 .print-divider {
-  padding-bottom: var(--sigma-doc-space-after-draft, var(--sigma-doc-space-after, 0px));
+  padding-bottom: var(--sigma-doc-space-after, 0px);
 }
 
 /* custom property は相続するので、余白を持つリストの項目の中まで降りてしまう。
    入れ物と中身の間にある li で断ち切る (項目自身は下余白を持たない。
-   自前の値を持つ子ブロックはインライン指定がこの宣言に勝つので影響を受けない)。
-   `-draft` を `0px` ではなく `initial` (= guaranteed-invalid) にするのは、相続だけを断って
-   var() の次段へ落とすため。`0px` だと、自前の永続値を持つ継続ブロックの余白まで消える。 */
+   自前の値を持つ子ブロックはインライン指定がこの宣言に勝つので影響を受けない)。 */
 .text-flow-editor :is(ul, ol) > li,
 .print-list > li {
   --sigma-doc-space-after: 0px;
-  --sigma-doc-space-after-draft: initial;
 }
 
 .text-flow-shell {

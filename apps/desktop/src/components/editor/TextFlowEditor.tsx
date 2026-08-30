@@ -79,14 +79,13 @@ import {
   setBoxStyle,
 } from "@/lib/box-blocks";
 import {
-  getBlockSpaceAfterDrafts,
-  subscribeBlockSpaceAfterDrafts,
-  type BlockSpaceAfterDrafts,
-} from "@/components/editor/text-flow/block-space-after-drafts";
+  getBlockSpaceAfterPreview,
+  subscribeBlockSpaceAfterPreview,
+} from "@/components/editor/text-flow/block-space-after-preview";
+import { createSpaceAfterPreviewDecorations } from "@/components/editor/text-flow/space-after-preview-decorations";
 import { createId } from "@/lib/id";
 import {
   BLOCK_SPACE_AFTER_CSS_VARIABLE,
-  BLOCK_SPACE_AFTER_DRAFT_CSS_VARIABLE,
   blockSpaceAfterFromStyleValue,
   blockSpaceAfterStyleAttr,
   MAX_LINE_HEIGHT,
@@ -252,7 +251,7 @@ const selectedTextBlockKey = new PluginKey("selectedTextBlock");
 const changeDecorationKey = new PluginKey("textFlowChangeDecoration");
 const commentDecorationKey = new PluginKey("commentDecorations");
 const columnFlowLayoutKey = new PluginKey("columnFlowLayout");
-const spaceAfterDraftKey = new PluginKey("spaceAfterDraft");
+const spaceAfterPreviewKey = new PluginKey("spaceAfterPreview");
 const SPACE_AFTER_REFRESH_KINDS: ReadonlySet<TextFlowDecorationRefreshKind> = new Set(["spaceAfter"]);
 const DIRECT_CONTROL_SELECTOR = "input, textarea, select, button, math-field";
 const TEXT_FLOW_EDITOR_SELECTOR = ".text-flow-editor";
@@ -1209,53 +1208,23 @@ function createColumnFlowLayoutDecorations(
 }
 
 /**
- * ドラッグ中のブロック下余白のライブプレビュー。
- *
- * 文書には触らない (`pageDocument` に混ぜると同期キーが変わって `setContent` が走り、
- * キャレットと選択が飛ぶ)。DOM を直接触るのも不可 (ProseMirror のノード再描画で消える)。
- * decoration なら doc を変えずに DOM だけ変わり、高さの変化は `PageCanvasEditor` の
- * ResizeObserver が拾ってページ割りが追随する ＝「実描画から読む」原則を守れる唯一の形。
+ * ドラッグ中のブロック下余白プレビュー。掴んだブロックの後続に「追従する」印を配るだけで、
+ * 移動量そのものは紙面の親に書かれた custom property から読む ({@link createSpaceAfterPreviewDecorations})。
  */
-const SpaceAfterDraftExtension = Extension.create({
-  name: "spaceAfterDraft",
+const SpaceAfterPreviewExtension = Extension.create({
+  name: "spaceAfterPreview",
 
   addProseMirrorPlugins() {
     return [
       new Plugin({
-        key: spaceAfterDraftKey,
+        key: spaceAfterPreviewKey,
         props: {
-          decorations: (state) => createSpaceAfterDraftDecorations(state.doc, getBlockSpaceAfterDrafts()),
+          decorations: (state) => createSpaceAfterPreviewDecorations(state.doc, getBlockSpaceAfterPreview()),
         },
       }),
     ];
   },
 });
-
-function createSpaceAfterDraftDecorations(
-  doc: ProseMirrorModelNode,
-  drafts: BlockSpaceAfterDrafts,
-): DecorationSet {
-  // 掴んでいない間はここが毎 transaction の全コスト。doc を走査しない。
-  if (Object.keys(drafts).length === 0) {
-    return DecorationSet.empty;
-  }
-
-  const decorations: Decoration[] = [];
-  doc.forEach((node, offset) => {
-    const blockId = typeof node.attrs?.sigmaDocId === "string" ? node.attrs.sigmaDocId : "";
-    const px = blockId ? drafts[blockId] : undefined;
-    if (px === undefined) {
-      return;
-    }
-    decorations.push(
-      Decoration.node(offset, offset + node.nodeSize, {
-        style: `${BLOCK_SPACE_AFTER_DRAFT_CSS_VARIABLE}:${px}px`,
-      }),
-    );
-  });
-
-  return decorations.length ? DecorationSet.create(doc, decorations) : DecorationSet.empty;
-}
 
 function styleVarsToInlineCss(vars: Record<string, string>): string[] {
   return Object.entries(vars).map(([property, value]) => `${property}:${value}`);
@@ -1641,7 +1610,7 @@ function TextFlowEditorImpl({
         getLayouts: getColumnFlowBlockLayouts,
         getBoxFragmentSourceLayouts,
       }),
-      SpaceAfterDraftExtension,
+      SpaceAfterPreviewExtension,
       // These stable callbacks are read by the decoration plugin when it runs,
       // not during React render.
       // eslint-disable-next-line react-hooks/refs
@@ -2330,23 +2299,25 @@ function TextFlowEditorImpl({
   }, [editor, columnFlowBlockLayoutsKey, boxFragmentSourceLayoutsKey, requestSyncDecorationRefresh]);
 
   // ドラッグ中の下余白プレビュー。`requestSyncDecorationRefresh` は「この commit の最後に打つ」
-  // 予約なので、React の外 (pointermove) から来るこの合図はその場で打つ。
+  // 予約なので、React の外 (pointerdown / pointerup) から来るこの合図はその場で打つ。
   //
-  // 合図はドラフトを **描いている面だけ** に絞る。ストアは全 `TextFlowEditor` が共有するので、
-  // 素通りさせると 1 フレームごとに紙面上のすべてのエディタで装飾プラグインが全部走り直す
-  // (30 ページの文書ではそれが 60Hz の全面再描画そのものになる)。
-  const drawsSpaceAfterDraftRef = useRef(false);
-  useEffect(() => subscribeBlockSpaceAfterDrafts(() => {
+  // 合図が来るのは 1 ドラッグにつき 2 回だけ (掴んだ瞬間と離した瞬間)。移動量は custom
+  // property で運ぶので、pointermove ごとにここへ来ることはない。
+  //
+  // それでも **印を付ける面だけ** に絞る。ストアは全 `TextFlowEditor` が共有するので、
+  // 素通りさせると掴むたびに紙面上のすべてのエディタで装飾プラグインが走り直す。
+  const drawsSpaceAfterPreviewRef = useRef(false);
+  useEffect(() => subscribeBlockSpaceAfterPreview(() => {
     if (!editor || editor.isDestroyed) {
       return;
     }
-    const draftIds = Object.keys(getBlockSpaceAfterDrafts());
-    const draws = draftIds.some((id) => previousIdsRef.current.includes(id));
+    const followerIds = getBlockSpaceAfterPreview()?.followerBlockIds ?? [];
+    const draws = followerIds.some((id) => previousIdsRef.current.includes(id));
     // 直前まで描いていた面は「外す」ために 1 回だけ打つ必要がある。
-    if (!draws && !drawsSpaceAfterDraftRef.current) {
+    if (!draws && !drawsSpaceAfterPreviewRef.current) {
       return;
     }
-    drawsSpaceAfterDraftRef.current = draws;
+    drawsSpaceAfterPreviewRef.current = draws;
     dispatchTextFlowDecorationRefresh(editor.view, SPACE_AFTER_REFRESH_KINDS);
   }), [editor]);
 
@@ -4018,7 +3989,7 @@ function dispatchTextFlowDecorationRefresh(
     transaction.setMeta(columnFlowLayoutKey, stamp);
   }
   if (kinds.has("spaceAfter")) {
-    transaction.setMeta(spaceAfterDraftKey, stamp);
+    transaction.setMeta(spaceAfterPreviewKey, stamp);
   }
   if (kinds.has("comments")) {
     transaction.setMeta(commentDecorationKey, stamp);
