@@ -20,7 +20,7 @@ test.beforeEach(async ({ page }) => {
  */
 async function readScale(page: Page, blockId: string): Promise<number> {
   return page.evaluate((id) => {
-    const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${id}"]`);
+    const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${CSS.escape(id)}"]`);
     if (!element || element.offsetWidth === 0) {
       return 1;
     }
@@ -30,7 +30,7 @@ async function readScale(page: Page, blockId: string): Promise<number> {
 
 async function blockTop(page: Page, blockId: string): Promise<number> {
   return page.evaluate((id) => {
-    const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${id}"]`);
+    const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${CSS.escape(id)}"]`);
     return element ? element.getBoundingClientRect().top : Number.NaN;
   }, blockId);
 }
@@ -83,6 +83,12 @@ interface DragSample {
   tops: Record<string, number>;
 }
 
+/** サンプリング中だけ紙面側に置く受け皿。 */
+type SamplingWindow = Window & {
+  __spaceAfterSamples?: DragSample[];
+  __spaceAfterSampling?: boolean;
+};
+
 /**
  * `action` の間、**毎フレーム** 幾何を記録する。
  *
@@ -95,41 +101,44 @@ async function sampleFramesDuring(
   action: () => Promise<void>,
   settleMs = 0,
 ): Promise<DragSample[]> {
-  await page.evaluate(`(() => {
-    const ids = ${JSON.stringify(blockIds)};
-    const read = () => {
-      const handle = document.querySelector(".page-block-space-handle");
-      const tops = {};
+  await page.evaluate((ids) => {
+    const samples: DragSample[] = [];
+    const read = (): DragSample => {
+      const handle = document.querySelector<HTMLElement>(".page-block-space-handle");
+      const tops: Record<string, number> = {};
       for (const id of ids) {
-        const element = document.querySelector('.page-flow [data-sigma-doc-id="' + id + '"]');
-        tops[id] = element ? element.getBoundingClientRect().top : NaN;
+        const element = document.querySelector<HTMLElement>(
+          `.page-flow [data-sigma-doc-id="${CSS.escape(id)}"]`,
+        );
+        tops[id] = element ? element.getBoundingClientRect().top : Number.NaN;
       }
       return {
-        handleTop: handle ? handle.getBoundingClientRect().top : NaN,
+        handleTop: handle ? handle.getBoundingClientRect().top : Number.NaN,
         tops,
       };
     };
-    const samples = [];
-    window.__spaceAfterSamples = samples;
-    window.__spaceAfterSampling = true;
+    const window_ = window as SamplingWindow;
+    window_.__spaceAfterSamples = samples;
+    window_.__spaceAfterSampling = true;
     const step = () => {
       samples.push(read());
-      if (window.__spaceAfterSampling) {
+      if (window_.__spaceAfterSampling) {
         window.requestAnimationFrame(step);
       }
     };
     window.requestAnimationFrame(step);
-  })()`);
+  }, blockIds as string[]);
 
   await action();
   if (settleMs > 0) {
     await page.waitForTimeout(settleMs);
   }
 
-  return page.evaluate(`(() => {
-    window.__spaceAfterSampling = false;
-    return window.__spaceAfterSamples ?? [];
-  })()`) as Promise<DragSample[]>;
+  return page.evaluate(() => {
+    const window_ = window as SamplingWindow;
+    window_.__spaceAfterSampling = false;
+    return window_.__spaceAfterSamples ?? [];
+  });
 }
 
 /** 記録した系列が「ポインタに連続で追従した」と言える形かどうかを見る。 */
@@ -150,6 +159,21 @@ function expectContinuousDescent(series: readonly number[], totalTravelPx: numbe
 
   // (c) 1 フレームの跳躍が総移動量の 1/3 未満。追いつかずに飛んでいれば必ずここで落ちる。
   expect(maxJump).toBeLessThan(totalTravelPx / 3);
+}
+
+/**
+ * 「字体が 1 つ増えて読み込みが終わった」を紙面へ知らせる。
+ *
+ * 紙面はこれを受けて全体を測り直す予約を出す (`fonts.ready` / `loadingdone` の購読)。
+ * ドラッグ中の凍結を **外因で** 試すための、いちばん安い実物の引き金。判定は
+ * `${fonts.status}:${fonts.size}` の変化なので、毎回別の family で足す。
+ */
+async function announceFontLoad(page: Page, family: string): Promise<void> {
+  await page.evaluate((name) => {
+    // 実体は要らない (読み込みは走らせない)。`fonts.size` が動けば紙面は測り直しにくる。
+    document.fonts.add(new FontFace(name, "local('Helvetica')"));
+    document.fonts.dispatchEvent(new Event("loadingdone"));
+  }, family);
 }
 
 async function readPerformanceCounters(page: Page): Promise<Record<string, number>> {
@@ -541,36 +565,79 @@ test("a list's live preview moves what is below it, never its own items", async 
   await grabAndDrag(page, handle, 60 * scale, 8);
 
   const midDrag = await page.evaluate(() => {
+    /**
+     * いま効いている縦の平行移動 (px)。`transform` 文字列を「"none" かどうか」で見ると
+     * `translateY(0)` の `matrix(1, 0, 0, 1, 0, 0)` でも通ってしまい、何も証明できない。
+     */
+    const translateY = (element: HTMLElement | null): number => {
+      if (!element) {
+        return Number.NaN;
+      }
+      const transform = window.getComputedStyle(element).transform;
+      return !transform || transform === "none" ? 0 : new DOMMatrixReadOnly(transform).f;
+    };
     const list = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="list_spaced"]');
     const items = Array.from(list?.querySelectorAll<HTMLElement>("li") ?? []);
     const after = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="p_list_after"]');
-    const translated = (element: HTMLElement | null) => {
-      if (!element) {
-        return "none";
-      }
-      return getComputedStyle(element).transform;
-    };
     return {
       // 掴んだブロック自身の寸法は 1px も変わらない (padding を伸ばすと再ページ割りが走る)。
       listPaddingBottom: list ? Number.parseFloat(getComputedStyle(list).paddingBottom || "0") : -1,
-      listTransform: translated(list),
+      listTranslateY: translateY(list),
       itemCount: items.length,
       // 印は class なので相続しない — 項目まで降りる経路が構造的に無い。
       itemsMarked: items.filter((item) => item.classList.contains("sigma-space-after-follower")).length,
-      itemTransforms: items.map((item) => translated(item)),
-      afterTransform: translated(after),
+      itemTranslateYs: items.map((item) => translateY(item)),
+      afterTranslateY: translateY(after),
     };
   });
 
   await page.mouse.up();
 
   expect(midDrag.listPaddingBottom).toBeLessThan(0.5);
-  expect(midDrag.listTransform).toBe("none");
+  expect(midDrag.listTranslateY).toBe(0);
   expect(midDrag.itemCount).toBeGreaterThan(1);
   expect(midDrag.itemsMarked).toBe(0);
-  expect(midDrag.itemTransforms.every((transform) => transform === "none")).toBe(true);
-  // 動くのは下のブロックだけ。二重に動くと項目側にも transform が乗る。
-  expect(midDrag.afterTransform).not.toBe("none");
+  expect(midDrag.itemTranslateYs.every((offset) => offset === 0)).toBe(true);
+  // 動くのは下のブロックだけ。しかも「引いた向きに、引いた分だけ」動く
+  // (transform 文字列の有無で見ると translateY(0) でも通ってしまい何も証明できない)。
+  expect(midDrag.afterTranslateY).toBeGreaterThan(50 * scale);
+});
+
+test("a page-crossing block below the drag keeps its continuation still", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  await openDocument(page, createSplitBlockDocument());
+  await expect(page.locator('.page-flow [data-sigma-doc-id="p_tall"]').first()).toBeVisible();
+  // 続きの複製が出るまで待つ (この文書のためのフィクスチャ条件そのもの)。
+  await expect(page.locator(".editor-box-fragment-viewport").first()).toBeVisible();
+
+  const scale = await readScale(page, "p_head");
+  const handle = await hoverBlock(page, "p_head");
+  await expect(handle).toBeVisible();
+
+  const before = await page.evaluate(() => {
+    const replica = document.querySelector<HTMLElement>(".editor-box-fragment-viewport .ProseMirror");
+    return replica ? replica.getBoundingClientRect().top : Number.NaN;
+  });
+  await grabAndDrag(page, handle, 60 * scale, 10);
+
+  const midDrag = await page.evaluate(() => {
+    const replicaEditor = document.querySelector<HTMLElement>(
+      ".editor-box-fragment-viewport .ProseMirror",
+    );
+    const replicaBlock = replicaEditor?.querySelector<HTMLElement>("[data-sigma-doc-id]") ?? null;
+    return {
+      // 印はモジュールのストアからブロック id で配られる。複製の面が素通しだと、
+      // 掴んだページとは別のページのクリップ窓の中身がドラッグ中に一緒に動く。
+      marked: replicaBlock?.classList.contains("sigma-space-after-follower") ?? null,
+      top: replicaEditor ? replicaEditor.getBoundingClientRect().top : Number.NaN,
+    };
+  });
+
+  await page.mouse.up();
+
+  expect(midDrag.marked).toBe(false);
+  expect(Math.abs(midDrag.top - before)).toBeLessThan(1);
 });
 
 test("the handle and the block below it follow the pointer frame by frame", async ({ page }) => {
@@ -643,8 +710,20 @@ test("dragging freezes the page walk instead of re-running it per pointermove", 
   // ホバー解決が予約した再計測を消化してから測り始める。
   await page.waitForTimeout(800);
 
+  // 対照実験: まず掴んでいない状態で外因 (字体の遅延ロード) を起こし、それが本当に
+  // 再ページ割りの予約まで届くことを確かめる。これが無いと、下の「増えていない」は
+  // 「そもそも何も起きない条件だった」でも通ってしまい、凍結を一切証明できない。
+  const idle = await readPerformanceCounters(page);
+  await announceFontLoad(page, "SigmaE2EProbeIdle");
+  await expect.poll(async () => (
+    (await readPerformanceCounters(page))["PageCanvasEditor.deferredRecompute"] ?? 0
+  )).toBeGreaterThan(idle["PageCanvasEditor.deferredRecompute"] ?? 0);
+
   const before = await readPerformanceCounters(page);
   await grabAndDrag(page, handle, DRAG_PX * scale, 14);
+  // 同じ外因を、今度は掴んだまま起こす。
+  await announceFontLoad(page, "SigmaE2EProbeDragging");
+  await page.waitForTimeout(250);
   const during = await readPerformanceCounters(page);
   await page.mouse.up();
 
@@ -654,6 +733,11 @@ test("dragging freezes the page walk instead of re-running it per pointermove", 
   expect(delta("PageCanvasEditor.deferredRecompute")).toBe(0);
   // 装飾の打ち直しは掴んだ瞬間の 1 本だけ (移動量は custom property が運ぶ)。
   expect(delta("TextFlowEditor.refreshDispatch")).toBeLessThanOrEqual(2);
+
+  // 離したら凍結が解け、握りつぶしていた分を含めて 1 回測り直す。
+  await expect.poll(async () => (
+    (await readPerformanceCounters(page))["PageCanvasEditor.deferredRecompute"] ?? 0
+  )).toBeGreaterThan(during["PageCanvasEditor.deferredRecompute"] ?? 0);
 });
 
 test("the whole drag is one undo step", async ({ page }) => {
@@ -995,6 +1079,36 @@ function createProblemDocument(): SigmaDocument {
     hints: [],
     numbering: { enabled: true, value: 1 },
   }];
+  return document;
+}
+
+/**
+ * 掴むブロックの下に「ページを跨いで分割されるブロック」がある紙面。
+ *
+ * 分割されたブロックは正本のクリップと **続きの複製** の 2 面で描かれ、複製は正本と同じ
+ * ブロック id を持つ。追従の印は id で配られるので、面ごとの出し分けが無いと別ページの
+ * 複製まで動く。
+ */
+function createSplitBlockDocument(): SigmaDocument {
+  const document = baseDocument("doc_e2e_space_after_split_block");
+  document.content = [
+    { type: "paragraph", id: "p_head", children: [{ type: "text", text: "つまみを掴む段落" }] },
+    {
+      type: "quote",
+      id: "p_tall",
+      blocks: Array.from({ length: 14 }, (_, index) => ({
+        type: "paragraph" as const,
+        id: `p_tall_line_${index + 1}`,
+        children: [{ type: "text" as const, text: `ページを跨ぐ引用の ${index + 1} 行目` }],
+      })),
+    },
+    { type: "paragraph", id: "p_tail", children: [{ type: "text", text: "分割の後の段落" }] },
+  ];
+  document.pageLayout = normalizePageLayout({
+    preset: "custom",
+    pageSize: { widthMm: 210, heightMm: 120 },
+    marginsMm: { top: 12, right: 16, bottom: 12, left: 16 },
+  });
   return document;
 }
 

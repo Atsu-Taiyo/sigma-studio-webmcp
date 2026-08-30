@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { Schema, type Node as ProseMirrorModelNode } from "@tiptap/pm/model";
 import { DecorationSet } from "@tiptap/pm/view";
 import { describe, expect, it } from "vitest";
@@ -84,6 +86,21 @@ describe("createSpaceAfterPreviewDecorations", () => {
       blockId: "p1",
       followerBlockIds: [],
     })).toBe(DecorationSet.empty);
+  });
+
+  it("is the only place a surface turns the shared mark into a decoration", () => {
+    // 印はモジュールのストアから **ブロック id で** 配られる。ページを跨いだ続きを描く複製は
+    // 正本と同じ id の面をもう 1 つ作るので、面ごとに「描くかどうか」を決められないと、別の
+    // ページにあるクリップ窓の中身まで一緒に平行移動する。判断は `TextFlowEditor` 側
+    // (`isReplicaSurface`) にあり、この純関数は渡されたものをそのまま印にする。
+    const source = readFileSync(new URL("../TextFlowEditor.tsx", import.meta.url), "utf8");
+    const extension = source.slice(
+      source.indexOf("const SpaceAfterPreviewExtension"),
+      source.indexOf("function styleVarsToInlineCss"),
+    );
+
+    expect(extension).toContain("isReplicaSurface()");
+    expect(extension).toContain("DecorationSet.empty");
   });
 
   it("ignores follower ids this surface does not draw", () => {

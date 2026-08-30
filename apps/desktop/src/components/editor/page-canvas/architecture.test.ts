@@ -77,6 +77,11 @@ describe("page canvas pure-model dependency boundary", () => {
     // ドラッグ中の換算と追従集合はページ制御側で書き直さない (純関数側の 1 箇所だけ)。
     expect(pageCanvas).not.toMatch(/\bfunction resolveSpaceAfterDragPx\s*\(/);
     expect(pageCanvas).not.toMatch(/\bfunction resolveSpaceAfterPreviewCohort\s*\(/);
+    // 関数宣言だけを見張っても、インラインで書き直されたら気付けない。換算に要る材料を
+    // ページ制御側が握っていないことまで見る (クランプの上限を持ち込んだ瞬間に落ちる)。
+    // ページの刻みは他の用途でも使うので、ここでは見張らない。
+    expect(pageCanvas).not.toContain("MAX_BLOCK_SPACE_AFTER_PX");
+    expect(pageCanvas).not.toMatch(/Math\.round\([^)]*startPx/);
     expect(pageCanvas).not.toContain('from "./page-canvas/reconciliation"');
     expect(pageCanvas).not.toMatch(/\bfunction collectReservedProblemAreaIds\s*\(/);
     expect(pageCanvas).not.toMatch(/\bfunction collectReservedLayoutSectionIds\s*\(/);

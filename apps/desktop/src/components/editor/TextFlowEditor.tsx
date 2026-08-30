@@ -1210,16 +1210,28 @@ function createColumnFlowLayoutDecorations(
 /**
  * ドラッグ中のブロック下余白プレビュー。掴んだブロックの後続に「追従する」印を配るだけで、
  * 移動量そのものは紙面の親に書かれた custom property から読む ({@link createSpaceAfterPreviewDecorations})。
+ *
+ * **複製の面には載せない**。ページを跨いだ続きを描く複製は、正本と同じブロック id を持つ面を
+ * もう 1 つ作る。印はモジュールのストアから id で配られるので、素通りさせると「掴んだ側とは
+ * 別のページにあるクリップ窓の中身」まで一緒に平行移動する (追従集合は同じページのものしか
+ * 選んでいないのに、id が一致するだけで届いてしまう)。
  */
-const SpaceAfterPreviewExtension = Extension.create({
+const SpaceAfterPreviewExtension = Extension.create<{ isReplicaSurface: () => boolean }>({
   name: "spaceAfterPreview",
 
+  addOptions() {
+    return { isReplicaSurface: () => false };
+  },
+
   addProseMirrorPlugins() {
+    const isReplicaSurface = this.options.isReplicaSurface;
     return [
       new Plugin({
         key: spaceAfterPreviewKey,
         props: {
-          decorations: (state) => createSpaceAfterPreviewDecorations(state.doc, getBlockSpaceAfterPreview()),
+          decorations: (state) => (isReplicaSurface()
+            ? DecorationSet.empty
+            : createSpaceAfterPreviewDecorations(state.doc, getBlockSpaceAfterPreview())),
         },
       }),
     ];
@@ -1291,6 +1303,16 @@ function TextFlowEditorImpl({
   );
   const blocksSyncKey = useMemo(() => getTextFlowBlocksSyncKey(blocks), [blocks]);
   const previousIdsRef = useRef(previousIds);
+  /**
+   * この面が「ページを跨いだ続きを見せる複製」か。
+   *
+   * 装飾プラグインは render の外 (transaction のたび) に走るので ref で持つ。**useEditor より
+   * 前に宣言する** — プラグインが最初の装飾をエディタ生成の途中で走らせるため。
+   */
+  const isBoxFragmentReplicaRef = useRef(boxFragmentReplicaId !== undefined);
+  useLayoutEffect(() => {
+    isBoxFragmentReplicaRef.current = boxFragmentReplicaId !== undefined;
+  }, [boxFragmentReplicaId]);
   const blocksRef = useRef(blocks);
   const selectedIdRef = useRef(selectedId);
   /** この編集器が今どのブロックを「選択中の行」として描いているか (合図の要否判定に使う)。 */
@@ -1610,7 +1632,11 @@ function TextFlowEditorImpl({
         getLayouts: getColumnFlowBlockLayouts,
         getBoxFragmentSourceLayouts,
       }),
-      SpaceAfterPreviewExtension,
+      // 複製かどうかはこの面の一生を通じて変わらないので、プラグインからそのまま読む。
+      // eslint-disable-next-line react-hooks/refs
+      SpaceAfterPreviewExtension.configure({
+        isReplicaSurface: () => isBoxFragmentReplicaRef.current,
+      }),
       // These stable callbacks are read by the decoration plugin when it runs,
       // not during React render.
       // eslint-disable-next-line react-hooks/refs
@@ -2308,7 +2334,8 @@ function TextFlowEditorImpl({
   // 素通りさせると掴むたびに紙面上のすべてのエディタで装飾プラグインが走り直す。
   const drawsSpaceAfterPreviewRef = useRef(false);
   useEffect(() => subscribeBlockSpaceAfterPreview(() => {
-    if (!editor || editor.isDestroyed) {
+    // 複製の面は印を描かない (装飾側で捨てる) ので、合図も要らない。
+    if (!editor || editor.isDestroyed || isBoxFragmentReplicaRef.current) {
       return;
     }
     const followerIds = getBlockSpaceAfterPreview()?.followerBlockIds ?? [];

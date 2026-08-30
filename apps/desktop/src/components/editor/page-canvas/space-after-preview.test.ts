@@ -138,6 +138,24 @@ describe("resolveSpaceAfterPreviewCohort", () => {
     expect(cohort.followerBlockIds).toEqual(["p2"]);
   });
 
+  it("follows the page the dragged block ENDS on, not the one it starts on", () => {
+    // ページを跨いで分割されたブロックを掴んだとき。下余白が描かれるのは最後の行の下 =
+    // 次のページ側なので、追従するのもそちら。掴んだ側のページで判定すると候補が 0 件になり、
+    // ドラッグ中は何も動かず離した瞬間に一気に飛ぶ (直したかった症状そのもの)。
+    const cohort = resolveSpaceAfterPreviewCohort({
+      units: [unit("u1", ["split", "next_page", "same_page_as_top"])],
+      blockRects: rects({
+        split: { top: 900, left: 40, width: 400, height: 250 },
+        next_page: { top: 1180, left: 40, width: 400, height: 80 },
+        same_page_as_top: { top: 950, left: 40, width: 400, height: 80 },
+      }),
+      pageStride: PAGE_STRIDE,
+      draggedBlockId: "split",
+    });
+
+    expect(cohort.followerBlockIds).toEqual(["next_page"]);
+  });
+
   it("keeps the neighbouring column still — it is not below anything that moved", () => {
     const cohort = resolveSpaceAfterPreviewCohort({
       units: [unit("u1", ["c1_a", "c1_b", "c2_a", "c2_b"])],

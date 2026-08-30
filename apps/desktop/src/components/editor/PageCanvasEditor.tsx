@@ -758,7 +758,13 @@ function PageCanvasEditorImpl({
    * 先に外すと「元の位置へ戻ってから、新しい余白ぶん下がる」フレームが 1 枚描かれる
    * (継ぎ目のちらつき)。外すのは {@link releaseSpaceAfterPreviewWhenPainted}。
    */
-  const spaceAfterCommitRef = useRef<{ blockId: string; px: number; deltaPx: number } | null>(null);
+  const spaceAfterCommitRef = useRef<{
+    blockId: string;
+    px: number;
+    deltaPx: number;
+    /** 掴んだ時点の下端。つまみを置き直すとき「まだ足していないか」を見分けるのに使う。 */
+    bottomBefore: number;
+  } | null>(null);
   /** ドラッグ中に握りつぶした再計測の予約。凍結を解いたら 1 回だけ走らせる。 */
   const recomputeDeferredWhileFrozenRef = useRef(false);
   /** 直近にホバー解決した位置。文書が変わった後につまみを置き直すのに使う。 */
@@ -2008,15 +2014,18 @@ function PageCanvasEditorImpl({
   /** Consecutive refused measurements, capped by `MAX_CONSECUTIVE_STALE_SKIPS`. */
   const staleSkipCountRef = useRef(0);
   const scheduleRecompute = useCallback((updatePrevMeasure = false) => {
+    // 予約の「性格」は凍結の前に記録する。ここを後回しにすると、凍結中に来た打鍵経路の
+    // 予約 (updatePrevMeasure = true) が握り潰され、解凍後の計測で `prevMeasureRef` が
+    // 更新されない = 削除レンダーのアンカー再解決が古い baseline を見る。
+    if (updatePrevMeasure) {
+      recomputeUpdatesPrevMeasureRef.current = true;
+    }
     // 下端つまみを掴んでいる間はページ割りを凍らせる。プレビューは平行移動なので寸法は
     // 変わらず ResizeObserver は鳴らないが、フォントの遅延ロードのような外因はここへ来る。
     // ドラッグ中に答えが変わると、後続ブロックが「別のページへ一気に移る」ように見える。
     if (spaceAfterDragRef.current || spaceAfterCommitRef.current) {
       recomputeDeferredWhileFrozenRef.current = true;
       return;
-    }
-    if (updatePrevMeasure) {
-      recomputeUpdatesPrevMeasureRef.current = true;
     }
     if (recomputeFrameRef.current !== null) {
       window.cancelAnimationFrame(recomputeFrameRef.current);
@@ -2095,9 +2104,17 @@ function PageCanvasEditorImpl({
    * 保険 (コミットが弾かれた / 面が無い) の打ち切りだけを担う。
    */
   const releaseSpaceAfterPreviewWhenPainted = useCallback(() => {
+    // **世代の錠**。掴み直し → 即離しで待ちが 2 つ重なると、参照先の ref は 1 つしかないので
+    // 前の待ちが新しい確定を「届かなかった」と判定して外しかねない。自分が始めた確定だけを
+    // 見る (ref が別物になっていたら、その待ちはもう自分のものではない)。
+    const owned = spaceAfterCommitRef.current;
+    if (!owned) {
+      return;
+    }
     let frames = 0;
     let observer: MutationObserver | null = null;
     let frame: number | null = null;
+    let timeout: number | null = null;
 
     const cleanup = () => {
       observer?.disconnect();
@@ -2106,34 +2123,40 @@ function PageCanvasEditorImpl({
         window.cancelAnimationFrame(frame);
         frame = null;
       }
+      if (timeout !== null) {
+        window.clearTimeout(timeout);
+        timeout = null;
+      }
     };
 
-    const isPainted = (blockId: string, px: number): boolean => {
+    const isPainted = (): boolean => {
       const element = canvasRef.current?.querySelector<HTMLElement>(
-        `.page-flow [data-sigma-doc-id="${CSS.escape(blockId)}"]`,
+        `.page-flow [data-sigma-doc-id="${CSS.escape(owned.blockId)}"]`,
       );
       return element
-        ? Math.abs(Number.parseFloat(window.getComputedStyle(element).paddingBottom || "0") - px) < 1
+        ? Math.abs(Number.parseFloat(window.getComputedStyle(element).paddingBottom || "0") - owned.px) < 1
         : false;
     };
 
-    const finish = (
-      pending: { blockId: string; px: number; deltaPx: number },
-      painted: boolean,
-    ) => {
+    const finish = (painted: boolean) => {
       cleanup();
       spaceAfterCommitRef.current = null;
       if (painted) {
         // つまみは「動かしている辺」そのもの。ホバーの取り直し (次のポインタ移動) を待つと、
         // 1 フレームだけ元の下端へ跳ね返って見える。
+        //
+        // 足すのは **まだドラッグ前の下端を指しているとき だけ**。待っている間にホバーが
+        // 取り直されていれば、その値は既に確定後の下端なので、そこへさらに足すとつまみが
+        // 2 倍下に residual として残る。
         setBlockAffordance((current) => (
-          current.spaceAfter?.blockId === pending.blockId
+          current.spaceAfter?.blockId === owned.blockId
+          && Math.abs(current.spaceAfter.bottom - owned.bottomBefore) < 0.5
             ? {
               ...current,
               spaceAfter: {
                 ...current.spaceAfter,
-                bottom: current.spaceAfter.bottom + pending.deltaPx,
-                spaceAfterPx: pending.px,
+                bottom: current.spaceAfter.bottom + owned.deltaPx,
+                spaceAfterPx: owned.px,
               },
             }
             : current
@@ -2145,14 +2168,19 @@ function PageCanvasEditorImpl({
       thawSpaceAfterRecompute(true);
     };
 
-    const check = () => {
-      const pending = spaceAfterCommitRef.current;
-      if (!pending) {
-        cleanup();
-        return;
+    /** この待ちがまだ有効か (自分の確定が生きているか)。 */
+    const stillOwns = (): boolean => {
+      if (spaceAfterCommitRef.current === owned) {
+        return true;
       }
-      if (isPainted(pending.blockId, pending.px)) {
-        finish(pending, true);
+      // 別の確定に差し替わった / 破棄された。後始末だけして手を引く。
+      cleanup();
+      return false;
+    };
+
+    const check = () => {
+      if (stillOwns() && isPainted()) {
+        finish(true);
       }
     };
 
@@ -2170,24 +2198,31 @@ function PageCanvasEditorImpl({
 
     const step = () => {
       frame = null;
-      const pending = spaceAfterCommitRef.current;
-      if (!pending) {
-        cleanup();
+      if (!stillOwns()) {
         return;
       }
       frames += 1;
-      if (isPainted(pending.blockId, pending.px)) {
-        finish(pending, true);
+      if (isPainted()) {
+        finish(true);
         return;
       }
       if (frames >= MAX_SPACE_AFTER_COMMIT_FRAMES) {
         // 届かないまま終わった (AI ロック等でコミットが弾かれた)。プレビューは残さない。
-        finish(pending, false);
+        finish(false);
         return;
       }
       frame = window.requestAnimationFrame(step);
     };
     frame = window.requestAnimationFrame(step);
+    // rAF はタブが背面に回ると止まる。それだけを頼りにすると、離した直後に別タブへ移った
+    // ときプレビューと凍結が残り、戻るまで外因の再ページ割りも効かなくなる。時計側にも
+    // 打ち切りを置いて、背面でも必ず畳む。
+    timeout = window.setTimeout(() => {
+      timeout = null;
+      if (stillOwns()) {
+        finish(isPainted());
+      }
+    }, MAX_SPACE_AFTER_COMMIT_WAIT_MS);
   }, [thawSpaceAfterRecompute]);
   const releaseSpaceAfterPreviewWhenPaintedRef = useRef(releaseSpaceAfterPreviewWhenPainted);
   useLayoutEffect(() => {
@@ -2860,6 +2895,7 @@ function PageCanvasEditorImpl({
         blockId: drag.target.blockId,
         px: drag.px,
         deltaPx: drag.px - drag.startPx,
+        bottomBefore: drag.target.bottom,
       };
       onChange(drag.target.blockId, (block) => setBlockSpaceAfter(block, drag.px));
       // プレビューはここでは外さない。確定した余白が実際に描かれたフレームまで待ってから
@@ -8067,6 +8103,14 @@ const EMPTY_SPACE_AFTER_FOLLOWER_UNITS: ReadonlySet<string> = new Set();
  * 待って届かないときは弾かれた (AI ロック等) とみなし、プレビューを残さず畳む。
  */
 const MAX_SPACE_AFTER_COMMIT_FRAMES = 12;
+
+/**
+ * フレームが止まる環境 (背面タブ) でも確実に畳むための時計側の打ち切り。
+ *
+ * rAF だけに頼ると、離した直後にタブを裏へ回されたときプレビューと再計測の凍結が残り、
+ * 戻るまでページ割りが更新されなくなる。
+ */
+const MAX_SPACE_AFTER_COMMIT_WAIT_MS = 1000;
 
 function getFlowUnitBlockIds(unit: RenderUnit): string[] {
   return unit.type === "block" ? [unit.block.id] : unit.blocks.map((block) => block.id);

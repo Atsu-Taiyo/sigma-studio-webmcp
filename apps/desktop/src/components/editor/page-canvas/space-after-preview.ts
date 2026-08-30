@@ -109,7 +109,11 @@ export function resolveSpaceAfterPreviewCohort({
   }
 
   const draggedBottom = dragged.top + (dragged.height ?? 0);
-  const draggedPage = pageIndexOf(dragged.top, pageStride);
+  // 基準は **下端が居るページ**。下余白は最後の行の下に描かれるので、ページを跨いで分割された
+  // ブロックでは掴んだ側ではなく続きの側のページで追従が起きる。上端で判定すると、分割された
+  // ブロックを掴んだときだけ候補が 0 件になり「ドラッグ中は動かず、離した瞬間に飛ぶ」に戻る。
+  // 下端がちょうど境界に乗ったときに次ページへ倒れないよう、1px 内側で読む。
+  const draggedPage = pageIndexOf(Math.max(dragged.top, draggedBottom - 1), pageStride);
   const draggedSpan = horizontalSpan(dragged);
 
   const isFollower = (blockId: string): boolean => {
