@@ -292,6 +292,7 @@ import {
   EMPTY_BLOCK_AFFORDANCE_HOVER,
   blockHitProbeColumnLeftPx,
   resolveBlockAffordanceHover,
+  resolveBlockInsertButtonLane,
   resolveBlockSelectionRange,
   resolveInnerBlockAt,
   sameBlockAffordanceHover,
@@ -3009,6 +3010,7 @@ function PageCanvasEditorImpl({
   // だが、追従は CSS (`[data-dragging]` の translate) がやるので **ここは動かさない** —
   // 毎フレーム `top` を書き換えると、そのたびに紙面全体が React で再レンダーされる。
   const spaceAfterHandle = spaceAfterDrag?.target ?? blockAffordance.spaceAfter;
+  const insertButtonLane = resolveBlockInsertButtonLane(blockAffordance);
   const spaceAfterHandleBottom = spaceAfterHandle?.bottom ?? 0;
   /**
    * 殻ごと平行移動するユニット。問題枠・サイドノート・問題番号は殻が持っているので、
@@ -5291,6 +5293,9 @@ function PageCanvasEditorImpl({
                   <button
                     type="button"
                     className="page-block-insert-button"
+                    // 下端つまみと同じ辺に出るときは 1 レーン外へ逃がす。重なると後から描かれる
+                    // こちらが必ず上に乗り、つまみを掴めなくなる (問題・囲み枠の直前のブロック)。
+                    data-lane={insertButtonLane === "default" ? undefined : insertButtonLane}
                     aria-label={tEditorText("pageCanvas.addBodyHere")}
                     title={tEditorText("pageCanvas.addBodyHere")}
                     onMouseDown={(event) => {

@@ -267,6 +267,68 @@ export function resolveBlockAffordanceHover(
 }
 
 /**
+ * 左ガターに並ぶ 2 つの当たり判定の矩形 (`globals.css` の写し。原点はそれぞれの affordance の
+ * 基準点 — つまみは「ブロックの下端」、＋ は「挿入線の位置」)。
+ *
+ * 既定のままだと ＋ (`.page-block-insert-button`) はつまみ (`.page-block-space-handle`) と
+ * ほぼ完全に重なる。両方が同じ辺に出るのは「問題・囲み枠の直前のブロック」で、そこでは
+ * 後から描かれる ＋ が必ず上に乗るので、下端つまみを掴めない (ドラッグしても何も起きない)。
+ */
+const SPACE_HANDLE_RECT = { left: -30, right: 0, top: -8, bottom: 8 };
+/** 問題エリアの中のつまみ。問題番号・サイドノートを避けて 1 レーン外に描かれる。 */
+const PROBLEM_LANE_SPACE_HANDLE_RECT = { left: -54, right: -24, top: -8, bottom: 8 };
+const INSERT_BUTTON_RECTS = {
+  default: { left: -26, right: -6, top: -11, bottom: 9 },
+  outer: { left: -56, right: -36, top: -11, bottom: 9 },
+} as const;
+
+export type BlockInsertButtonLane = keyof typeof INSERT_BUTTON_RECTS;
+
+/**
+ * ＋ を描くレーン。つまみと重なるときだけ 1 レーン外へ逃がす。
+ *
+ * 逃がす先でも重なる (問題レーンのつまみ) なら既定のまま — そこは重なりが数 px で、
+ * 外へ動かすと逆に食い込む。ずらすのは ＋ の方: つまみは右端を本文の左端に密着させる規約
+ * なので動かせない (隙間があると、そこを通って寄る途中でホバーが下のブロックへ移る)。
+ */
+export function resolveBlockInsertButtonLane(hover: BlockAffordanceHover): BlockInsertButtonLane {
+  const { insertPoint, spaceAfter } = hover;
+  if (!insertPoint || !spaceAfter) {
+    return "default";
+  }
+
+  const handle = spaceAfter.insideProblemArea ? PROBLEM_LANE_SPACE_HANDLE_RECT : SPACE_HANDLE_RECT;
+  const handleBox = {
+    left: spaceAfter.left + handle.left,
+    right: spaceAfter.left + handle.right,
+    top: spaceAfter.bottom + handle.top,
+    bottom: spaceAfter.bottom + handle.bottom,
+  };
+  const insertBox = (lane: BlockInsertButtonLane) => ({
+    left: insertPoint.left + INSERT_BUTTON_RECTS[lane].left,
+    right: insertPoint.left + INSERT_BUTTON_RECTS[lane].right,
+    top: insertPoint.top + INSERT_BUTTON_RECTS[lane].top,
+    bottom: insertPoint.top + INSERT_BUTTON_RECTS[lane].bottom,
+  });
+
+  if (!overlaps(handleBox, insertBox("default"))) {
+    return "default";
+  }
+  return overlaps(handleBox, insertBox("outer")) ? "default" : "outer";
+}
+
+interface AffordanceBox {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+function overlaps(a: AffordanceBox, b: AffordanceBox): boolean {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+/**
  * Shift-clicking a second handle selects everything between the two, so a run of paragraphs
  * can go in one Delete. Order follows the document, not the click order.
  */

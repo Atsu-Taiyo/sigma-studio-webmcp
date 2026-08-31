@@ -28,6 +28,25 @@ async function readScale(page: Page, blockId: string): Promise<number> {
   }, blockId);
 }
 
+/** ブロックの実測矩形 (画面 px)。 */
+async function blockBox(page: Page, blockId: string): Promise<{
+  left: number;
+  top: number;
+  bottom: number;
+  height: number;
+}> {
+  return page.evaluate((id) => {
+    const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${CSS.escape(id)}"]`);
+    const rect = element?.getBoundingClientRect();
+    return {
+      left: rect?.left ?? Number.NaN,
+      top: rect?.top ?? Number.NaN,
+      bottom: rect?.bottom ?? Number.NaN,
+      height: rect?.height ?? Number.NaN,
+    };
+  }, blockId);
+}
+
 async function blockTop(page: Page, blockId: string): Promise<number> {
   return page.evaluate((id) => {
     const element = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${CSS.escape(id)}"]`);
@@ -957,6 +976,94 @@ test("the handle stays put while dragging, even when the pointer leaves the bloc
     .toBeGreaterThanOrEqual(38);
 });
 
+/**
+ * 問題・囲み枠の直前のブロックでは、同じ辺に「ここに本文を追加」の ＋ が出る
+ * (キャレットが入れない隙間だから)。人は本文の下端へ寄ってから左のつまみへ滑らせるので、
+ * ＋ がつまみと同じレーンに重なっていると、押しても何も起きない = 高さを変えられない。
+ */
+test("a block above a problem can still be grabbed from the text side", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await installDesktopRuntimeMock(page, createParagraphAboveProblemDocument());
+  await page.goto("/");
+  await page.waitForTimeout(1500);
+
+  const scale = await readScale(page, "p_head");
+  const before = await blockBox(page, "p_head");
+
+  // 本文の中で下端へ寄る → ＋ と下端つまみが同時に出る辺。
+  await page.mouse.move(before.left + 60, before.bottom - 10);
+  await page.waitForTimeout(80);
+  await page.mouse.move(before.left + 40, before.bottom - 3);
+  await page.waitForTimeout(150);
+  await expect(page.locator(".page-block-insert-button")).toHaveCount(1);
+
+  // そのまま左のガターへ滑らせて、つまみを掴む。
+  for (let x = before.left + 20; x >= before.left - 15; x -= 4) {
+    await page.mouse.move(x, before.bottom - 1);
+    await page.waitForTimeout(24);
+  }
+  await page.mouse.move(before.left - 15, before.bottom);
+  await page.waitForTimeout(120);
+
+  await page.mouse.down();
+  for (let step = 1; step <= 8; step += 1) {
+    await page.mouse.move(before.left - 15, before.bottom + (DRAG_PX * scale * step) / 8);
+    await page.waitForTimeout(20);
+  }
+  await page.mouse.up();
+
+  await expect.poll(async () => Math.round(((await blockBox(page, "p_head")).height - before.height) / scale))
+    .toBeGreaterThanOrEqual(DRAG_PX - 2);
+
+  // 縮める側も同じ経路で。伸ばした後は下端が本文から離れるので、寄る経路は必ず本文側になる。
+  const grown = await blockBox(page, "p_head");
+  await page.mouse.move(grown.left + 60, grown.bottom - 20);
+  await page.waitForTimeout(80);
+  await page.mouse.move(grown.left + 40, grown.bottom - 3);
+  await page.waitForTimeout(150);
+  for (let x = grown.left + 20; x >= grown.left - 15; x -= 4) {
+    await page.mouse.move(x, grown.bottom - 1);
+    await page.waitForTimeout(24);
+  }
+  await page.mouse.move(grown.left - 15, grown.bottom);
+  await page.waitForTimeout(120);
+
+  await page.mouse.down();
+  for (let step = 1; step <= 8; step += 1) {
+    await page.mouse.move(grown.left - 15, grown.bottom - (20 * scale * step) / 8);
+    await page.waitForTimeout(20);
+  }
+  await page.mouse.up();
+
+  await expect.poll(async () => Math.round(((await blockBox(page, "p_head")).height - grown.height) / scale))
+    .toBeLessThanOrEqual(-18);
+});
+
+test("the insert button beside that edge still adds a paragraph", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await installDesktopRuntimeMock(page, createParagraphAboveProblemDocument());
+  await page.goto("/");
+  await page.waitForTimeout(1500);
+
+  const before = await blockBox(page, "p_head");
+  await page.mouse.move(before.left + 60, before.bottom - 10);
+  await page.waitForTimeout(80);
+  await page.mouse.move(before.left + 40, before.bottom - 3);
+  await page.waitForTimeout(150);
+
+  const insert = page.locator(".page-block-insert-button");
+  await expect(insert).toHaveCount(1);
+  await insert.click();
+
+  // 問題の手前に段落が 1 つ増える。
+  await expect.poll(async () => page.evaluate(() => {
+    const raw = window.localStorage.getItem("sigma-studio:e2e-document") ?? "{}";
+    return (JSON.parse(raw) as { content?: unknown[] }).content?.length ?? 0;
+  })).toBe(3);
+});
+
 test("the handle never reaches the PDF surface", async ({ page }) => {
   test.setTimeout(60_000);
 
@@ -1061,6 +1168,25 @@ function createProblemPartialColumnsDocument(): SigmaDocument {
     hints: [],
     numbering: { enabled: true, value: 1 },
   }];
+  return document;
+}
+
+/** 問題の直前に本文ブロックが 1 つある紙面。その境目には ＋ と下端つまみが同居する。 */
+function createParagraphAboveProblemDocument(): SigmaDocument {
+  const document = baseDocument("doc_e2e_space_after_above_problem");
+  document.content = [
+    { type: "paragraph", id: "p_head", children: [{ type: "text", text: "問題の前の段落" }] },
+    {
+      type: "problem",
+      id: "problem_below",
+      tags: [],
+      lead: [],
+      prompt: [{ type: "paragraph", id: "p_in_prompt", children: [{ type: "text", text: "問題文の段落" }] }],
+      solution: [],
+      hints: [],
+      numbering: { enabled: true, value: 1 },
+    },
+  ];
   return document;
 }
 

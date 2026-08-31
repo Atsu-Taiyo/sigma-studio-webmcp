@@ -9059,6 +9059,14 @@ code {
   pointer-events: auto;
 }
 
+/* 下端つまみ (.page-block-space-handle: 本文左端から -30px) と同じ辺・同じレーンに
+   来たときの逃がし先。既定の位置のままだとつまみにほぼ完全に重なり、後から描かれる
+   こちらが必ずポインタを取ってしまう (問題・囲み枠の直前のブロックで、下端を掴んでも
+   何も起きない)。判定は `resolveBlockInsertButtonLane` (矩形はそこの写しと同じ)。 */
+.page-block-insert-button[data-lane="outer"] {
+  left: -56px;
+}
+
 .page-block-insert-button:hover {
   background: var(--accent, #2563eb);
   color: #ffffff;

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   blockHitProbeColumnLeftPx,
   resolveBlockAffordanceHover,
+  resolveBlockInsertButtonLane,
   resolveBlockSelectionRange,
   resolveInnerBlockAt,
   sameBlockAffordanceHover,
@@ -167,6 +168,50 @@ describe("the space-after handle target", () => {
     };
 
     expect(resolveBlockAffordanceHover(withSpace, { x: 300, y: 320 }).spaceAfter?.spaceAfterPx).toBe(24);
+  });
+});
+
+describe("resolveBlockInsertButtonLane", () => {
+  const spaceAfter: BlockSpaceAfterTarget = {
+    blockId: "middle",
+    bottom: 340,
+    left: 100,
+    insideProblemArea: false,
+    spaceAfterPx: 0,
+  };
+  const insertPoint = { anchorBlockId: "tail", position: "before" as const, top: 340, left: 100, width: 400 };
+
+  it("keeps the default lane when there is no space-after handle to collide with", () => {
+    expect(resolveBlockInsertButtonLane({ handle: null, insertPoint, spaceAfter: null })).toBe("default");
+  });
+
+  it("keeps the default lane when the two sit on different edges", () => {
+    expect(resolveBlockInsertButtonLane({
+      handle: null,
+      insertPoint: { ...insertPoint, top: 200 },
+      spaceAfter,
+    })).toBe("default");
+  });
+
+  it("moves out one lane when the insert button would cover the handle", () => {
+    // 問題・囲み枠の直前のブロック: 同じ辺に両方が出て、＋ がつまみの上に乗る。
+    expect(resolveBlockInsertButtonLane({ handle: null, insertPoint, spaceAfter })).toBe("outer");
+  });
+
+  it("moves out for a boundary the pointer reached through the gap, too", () => {
+    expect(resolveBlockInsertButtonLane({
+      handle: null,
+      insertPoint: { ...insertPoint, top: 344 },
+      spaceAfter,
+    })).toBe("outer");
+  });
+
+  it("stays put for a handle already in the problem lane, where moving out would collide instead", () => {
+    expect(resolveBlockInsertButtonLane({
+      handle: null,
+      insertPoint,
+      spaceAfter: { ...spaceAfter, insideProblemArea: true },
+    })).toBe("default");
   });
 });
 
