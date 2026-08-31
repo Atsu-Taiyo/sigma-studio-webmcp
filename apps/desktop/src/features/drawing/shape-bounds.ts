@@ -43,7 +43,9 @@ export function getShapeBounds(shape: OverlayShape): OverlayBounds {
     shape.type === "group" ||
     shape.type === "geo" ||
     shape.type === "image" ||
-    shape.type === "tableShape"
+    shape.type === "graph3dShape" ||
+    shape.type === "tableShape" ||
+    shape.type === "chartShape"
   ) {
     return {
       x: shape.x,
@@ -213,4 +215,4 @@ function unionBounds(a: OverlayBounds, b: OverlayBounds): OverlayBounds {
   return { x: left, y: top, w: right - left, h: bottom - top };
 }
 
-export { getOverlayRichTextLineCount } from "@/features/rendering/core";
+export { getOverlayTextBlocksLineCount } from "@/features/rendering/core";

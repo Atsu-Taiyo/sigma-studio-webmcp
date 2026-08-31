@@ -294,23 +294,52 @@ export const SHORTCUT_LINE_WIDTHS: Record<string, OverlayTextSize> = {
   "overlay.line.width.l": "l",
   "overlay.line.width.xl": "xl",
 };
+/** The picker's columns: the same shape at two sizes. */
+export const LINE_ENDPOINT_SIZES = [
+  { size: "normal" },
+  { size: "small" },
+] as const;
+
+export type LineEndpointSize = (typeof LINE_ENDPOINT_SIZES)[number]["size"];
+
 /**
- * The menu, in order. Derived from nothing else on purpose: the labels are editorial.
+ * The picker's rows, in order. Derived from nothing else on purpose: the labels are editorial.
  *
+ * A row is one shape and the sizes it can be drawn at, so the menu can be read as a grid — the
+ * shapes down the side, the sizes across the top — instead of as fourteen names that only differ
+ * by a suffix.
+ */
+export const LINE_ENDPOINT_SHAPES: Array<{
+  values: Record<LineEndpointSize, OverlayArrowhead>;
+}> = [
+  { values: { normal: "arrow", small: "arrowSmall" } },
+  { values: { normal: "triangle", small: "triangleSmall" } },
+  { values: { normal: "openArrow", small: "openArrowSmall" } },
+  { values: { normal: "thinArrow", small: "thinArrowSmall" } },
+  { values: { normal: "diamond", small: "diamondSmall" } },
+  { values: { normal: "dot", small: "dotSmall" } },
+  { values: { normal: "bar", small: "barSmall" } },
+];
+
+/** The head drawn at no endpoint at all. It has no size, so it sits outside the grid. */
+export const LINE_ENDPOINT_NONE: { value: OverlayArrowhead } = {
+  value: "none",
+};
+
+/**
+ * Every head with the name the picker gives it.
+ *
+ * Built from the grid so a label cannot drift between the menu and the command palette.
  * `features/rendering/adapters/arrowhead-parity.test.ts` pins that this covers `OVERLAY_ARROWHEADS`
  * exactly, so a head can neither hide from the menu nor appear in it without existing in the model.
  */
 export const LINE_ENDPOINT_OPTIONS: Array<{
   value: OverlayArrowhead;
 }> = [
-  { value: "none" },
-  { value: "arrow" },
-  { value: "triangle" },
-  { value: "openArrow" },
-  { value: "thinArrow" },
-  { value: "diamond" },
-  { value: "dot" },
-  { value: "bar" },
+  LINE_ENDPOINT_NONE,
+  ...LINE_ENDPOINT_SHAPES.flatMap((shape) => LINE_ENDPOINT_SIZES.map(({ size }) => ({
+    value: shape.values[size],
+  }))),
 ];
 
 /** Command id → head, for both endpoints. Derived from the menu so the two cannot drift. */

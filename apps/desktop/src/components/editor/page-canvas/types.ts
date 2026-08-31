@@ -13,6 +13,7 @@ export type RenderUnit =
       type: "textFlow";
       id: string;
       blocks: TextFlowBlock[];
+      headingNumbers?: Readonly<Record<string, string>>;
     }
   | {
       type: "problemArea";
@@ -31,12 +32,14 @@ export type RenderUnit =
       id: string;
       section: LayoutSectionNode;
       blocks: TextFlowBlock[];
+      headingNumbers?: Readonly<Record<string, string>>;
     }
   | {
       type: "problemLayoutSection";
       id: string;
       section: LayoutSectionNode;
       blocks: TextFlowBlock[];
+      headingNumbers?: Readonly<Record<string, string>>;
       problem: ProblemNode;
       area: ProblemAreaKind;
       problemNumber?: number;

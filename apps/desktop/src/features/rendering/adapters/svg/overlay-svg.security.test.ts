@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { OverlayAsset, OverlayShape } from "@/features/document";
+import type { OverlayAsset, OverlayShape, SigmaTableSpec } from "@/features/document";
 
-import { serializeOverlaySvg, type OverlaySvgRenderers } from ".";
+import { exportOverlaySvg, serializeOverlaySvg, type OverlaySvgRenderers } from ".";
 
 /**
  * Injection is defended in two independent layers, and this file measures the serializer layer.
@@ -15,7 +15,9 @@ const INJECTED_COLOR =
 const renderers: OverlaySvgRenderers = {
   renderGraphHtml: (_spec, idSeed) => `<svg data-graph="${idSeed}"></svg>`,
   renderMathHtml: (tex) => `<span data-math="${tex}"></span>`,
+  renderOverlayTextHtml: (blocks) => `<div data-overlay-text="${blocks.length}"></div>`,
   renderTableHtml: (_table, width, height) => `<div data-table="${width}x${height}"></div>`,
+  renderChartSvg: (_data, spec, width, height) => `<g data-chart="${spec.kind}:${width}x${height}"></g>`,
 };
 
 function serialize(shape: OverlayShape): string {
@@ -39,8 +41,7 @@ function textShape(color: string): OverlayShape {
     props: {
       w: 120,
       h: 24,
-      richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "式" }] }] },
-      autoSize: false,
+      blocks: [{ type: "paragraph", id: "overlay_svg_security_test_18", children: [{ type: "text", text: "式" }] }],
       color,
       size: "m",
     },
@@ -58,7 +59,7 @@ function calloutShape(color: string): OverlayShape {
       h: 60,
       radius: 8,
       tail: { baseStart: { x: 0, y: 60 }, baseEnd: { x: 20, y: 60 }, tip: { x: 10, y: 90 } },
-      richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "注" }] }] },
+      blocks: [{ type: "paragraph", id: "overlay_svg_security_test_19", children: [{ type: "text", text: "注" }] }],
       color,
       size: "m",
       dash: "solid",
@@ -98,9 +99,10 @@ describe("overlay SVG serializer CSS injection", () => {
 
   it("does not let inline rich-text styling add declarations", () => {
     const shape = textShape("#1f2937");
-    (shape.props as { richText: unknown }).richText = {
-      blocks: [{
+    (shape.props as { blocks: unknown }).blocks = [
+      {
         type: "paragraph",
+        id: "p_injected",
         children: [{
           type: "text",
           text: "式",
@@ -108,8 +110,8 @@ describe("overlay SVG serializer CSS injection", () => {
           backgroundColor: INJECTED_COLOR,
           fontFamily: "serif;}html{display:none",
         }],
-      }],
-    };
+      },
+    ];
 
     const svg = serialize(shape);
 
@@ -163,5 +165,147 @@ describe("overlay SVG image sources", () => {
 
     expect(serializeOverlaySvg([shape], assets, { width: 400, height: 300 }, renderers) ?? "")
       .toContain(dataUrl);
+  });
+});
+
+/**
+ * The formula engine relays a referenced cell's text verbatim — that is the layer's job, and
+ * pre-escaping there would corrupt the value and double-escape downstream. So the escaping has to
+ * happen where the markup is built, and this is the test that says so. Unlike the block above,
+ * these cases run the *real* table renderer, because a stub would prove nothing about it.
+ */
+describe("a formula's value cannot inject markup into the exported SVG", () => {
+  const HOSTILE = '</p><script>alert(1)</script><p x="';
+
+  function tableWithFormula(referencedText: string, formula: string): OverlayShape {
+    const rowIds = ["r1", "r2"];
+    return {
+      id: "shape_table",
+      type: "tableShape",
+      x: 0,
+      y: 0,
+      props: {
+        w: 240,
+        h: 100,
+        table: {
+          version: 1,
+          kind: "plain",
+          columns: [{ id: "c1", width: { mode: "auto" } }],
+          rows: rowIds.map((id) => ({ id, height: { mode: "auto" } })),
+          cells: [
+            {
+              id: "r1-c1",
+              rowId: "r1",
+              columnId: "c1",
+              content: [{ type: "paragraph", id: "p1", children: [{ type: "text", text: referencedText }] }],
+            },
+            {
+              id: "r2-c1",
+              rowId: "r2",
+              columnId: "c1",
+              content: [{ type: "paragraph", id: "p2", children: [{ type: "text", text: formula }] }],
+            },
+          ],
+          grid: { borderColor: "#000000", borderWidth: 1 },
+          defaultCellStyle: {},
+        },
+      },
+    } as OverlayShape;
+  }
+
+  /** Serializes through the same renderer the export, the print path and the viewer all use. */
+  function exportSvg(shape: OverlayShape): string {
+    return exportOverlaySvg([shape], {}, { width: 400, height: 300 }) ?? "";
+  }
+
+  it("escapes hostile text a formula relays from another cell", () => {
+    const svg = exportSvg(tableWithFormula(HOSTILE, "=A1"));
+
+    expect(svg).not.toContain("<script>");
+  });
+
+  it("keeps the relayed text as text, so the value is still shown", () => {
+    const svg = exportSvg(tableWithFormula(HOSTILE, "=A1"));
+
+    expect(svg).toContain("&lt;script&gt;");
+  });
+
+  it("escapes hostile text left in a formula that cannot be parsed", () => {
+    // A source the parser refuses falls back to drawing the text as written, which is another way
+    // the same bytes reach the markup.
+    const svg = exportSvg(tableWithFormula("1", `=SUM(${HOSTILE}`));
+
+    expect(svg).not.toContain("<script>");
+  });
+
+  it("does not carry a hostile colour off the formula's own run into the style attribute", () => {
+    // The projection wears the formatting of the run the formula was typed into, so the author's
+    // `color` is the one value on this path that really does reach a `style` attribute.
+    const shape = tableWithFormula("1", "=1+1");
+    const table = (shape.props as { table: SigmaTableSpec }).table;
+    const paragraph = table.cells[1].content[0];
+    if (paragraph.type !== "paragraph") {
+      throw new Error("expected a paragraph");
+    }
+    paragraph.children = [{ type: "text", text: "=1+1", color: INJECTED_COLOR }];
+
+    // `position:relative` is the table's own layout; what must never appear is the declaration the
+    // injected colour smuggles in behind a `;`.
+    expect(styleDeclarations(exportSvg(shape))).not.toContain("position:fixed");
+  });
+
+  it("drops the hostile colour rather than emitting it", () => {
+    const shape = tableWithFormula("1", "=1+1");
+    const table = (shape.props as { table: SigmaTableSpec }).table;
+    const paragraph = table.cells[1].content[0];
+    if (paragraph.type !== "paragraph") {
+      throw new Error("expected a paragraph");
+    }
+    paragraph.children = [{ type: "text", text: "=1+1", color: INJECTED_COLOR }];
+
+    expect(exportSvg(shape)).not.toContain("2147483647");
+  });
+
+  it("writes the error colour as a style declaration rather than as text", () => {
+    const declarations = styleDeclarations(exportSvg(tableWithFormula("1", "=1/0")));
+
+    expect(declarations).toContain("color:#b42318");
+  });
+
+  it("still shows the error value itself", () => {
+    expect(exportSvg(tableWithFormula("1", "=1/0"))).toContain("#DIV/0!");
+  });
+
+  it("escapes hostile text a formula relays into a chart's labels", () => {
+    // `getTableCellText` now returns evaluated values, so a formula in a header cell names a chart
+    // series — a second way the same bytes reach markup, drawn as SVG `<text>`.
+    const shape = tableWithFormula(HOSTILE, "=A1");
+    const table = (shape.props as { table: SigmaTableSpec }).table;
+    const chart: OverlayShape = {
+      id: "shape_chart",
+      type: "chartShape",
+      x: 0,
+      y: 200,
+      props: {
+        w: 240,
+        h: 160,
+        spec: {
+          version: 1,
+          kind: "bar",
+          orientation: "columns",
+          headerRow: true,
+          labelColumn: false,
+          legend: true,
+          seriesColors: {},
+        },
+        sourceTableShapeId: shape.id,
+        dataSnapshot: { labels: [], series: [] },
+      },
+    } as OverlayShape;
+    void table;
+
+    const svg = exportOverlaySvg([shape, chart], {}, { width: 400, height: 400 }) ?? "";
+
+    expect(svg).not.toContain("<script>");
   });
 });

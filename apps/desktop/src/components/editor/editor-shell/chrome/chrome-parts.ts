@@ -25,6 +25,7 @@ export interface EditorChromeParts {
   searchGroup: ReactNode;
   viewGroup: ReactNode;
   importInput: ReactNode;
+  otherImportInput: ReactNode;
   imageInput: ReactNode;
   /** Word風リボンのタブバー（role="tablist"）。docs では描かれない。 */
   ribbonTabBar: ReactNode;

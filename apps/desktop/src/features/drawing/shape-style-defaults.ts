@@ -70,6 +70,8 @@ const CLOSED_AXES: readonly OverlayShapeStyleAxis[] = [...STROKE_AXES, "fill", "
  *   the highlighter stop being a highlighter.
  * - `text` / `callout` / `graph` / `table` use `color` and `size` for their own purposes (text
  *   colour, font size), so a line's stroke settings do not mean the same thing there.
+ * - `chart` colours its series from the table's own tracks and the shared palette; the remembered
+ *   stroke colour would overwrite an author's per-series choice with the last line they drew.
  */
 const STYLE_AXES_BY_COMMAND: Record<OverlayInsertCommand, readonly OverlayShapeStyleAxis[]> = {
   line: OPEN_AXES,
@@ -98,7 +100,9 @@ const STYLE_AXES_BY_COMMAND: Record<OverlayInsertCommand, readonly OverlayShapeS
   text: [],
   callout: [],
   graph: [],
+  graph3d: [],
   table: [],
+  chart: [],
 };
 
 /**

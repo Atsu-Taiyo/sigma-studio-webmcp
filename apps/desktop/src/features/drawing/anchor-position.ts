@@ -344,7 +344,9 @@ function getShapeAnchorReferenceBounds(shape: OverlayShape): OverlayBounds {
     shape.type === "image" ||
     shape.type === "callout" ||
     shape.type === "graph2dShape" ||
-    shape.type === "tableShape"
+    shape.type === "graph3dShape" ||
+    shape.type === "tableShape" ||
+    shape.type === "chartShape"
   ) {
     return {
       x: shape.x,

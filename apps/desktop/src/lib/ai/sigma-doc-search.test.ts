@@ -205,6 +205,20 @@ describe("searchSigmaDocument", () => {
     });
   });
 
+  /**
+   * A list item holds prose in three places: its own line, the blocks continuing it, and the
+   * sub-lists under it. Search that stops at the first makes the rest unfindable — and unfindable
+   * text is text an AI edit will never be asked to touch.
+   */
+  it("finds text nested inside a list in an overlay text shape", () => {
+    const document = documentWithOverlayShapes([listTextShape("text_list")]);
+
+    expect(searchSigmaDocument(document, "親項目").matches[0]).toMatchObject({ blockId: "text_list", field: "text" });
+    expect(searchSigmaDocument(document, "続きの段落").matches[0]).toMatchObject({ blockId: "text_list", field: "text" });
+    expect(searchSigmaDocument(document, "入れ子の項目").matches[0]).toMatchObject({ blockId: "text_list", field: "text" });
+    expect(searchSigmaDocument(document, "y=ax").matches[0]).toMatchObject({ blockId: "text_list", field: "tex" });
+  });
+
   it("truncates results at the default limit while reporting totalMatches", () => {
     const document = createDocument(
       Array.from({ length: 25 }, (_, index) => paragraph(`p_${index}`, "検索対象の本文です")),
@@ -329,20 +343,62 @@ function textShapeWithContent(id: string, text: string, tex: string): OverlayTex
     y: 0,
     props: {
       w: 120,
-      autoSize: true,
+      h: 16,
       color: "#111827",
       size: "m",
-      richText: {
-        blocks: [
+      blocks: [
           {
-            type: "paragraph",
+            type: "paragraph", id: "sigma_doc_search_test_37",
             children: [
               { type: "text", text },
               { type: "mathInline", id: "tex_1", tex, display: "inline" },
             ],
           },
         ],
-      },
+    },
+  };
+}
+
+/** A text shape whose content is a list with a continuation paragraph and a nested sub-list. */
+function listTextShape(id: string): OverlayTextShape {
+  return {
+    id,
+    type: "text",
+    x: 0,
+    y: 0,
+    props: {
+      w: 200,
+      h: 64,
+      color: "#111827",
+      size: "m",
+      blocks: [{
+        type: "list",
+        id: "list_1",
+        listType: "bullet",
+        items: [{
+          type: "listItem",
+          id: "li_1",
+          children: [{ type: "text", text: "親項目" }],
+          continuations: [{
+            type: "paragraph",
+            id: "li_1_cont",
+            children: [{ type: "text", text: "続きの段落" }],
+          }],
+          nested: [{
+            type: "list",
+            id: "list_2",
+            listType: "bullet",
+            items: [{
+              type: "listItem",
+              id: "li_2",
+              children: [
+                { type: "text", text: "入れ子の項目" },
+                { type: "mathInline", id: "nested_math", tex: "y=ax", display: "inline" },
+              ],
+            }],
+          }],
+        }],
+      }],
     },
   };
 }
@@ -366,15 +422,13 @@ function calloutWithContent(id: string, text: string, tex: string): OverlayCallo
       size: "m",
       dash: "solid",
       strokeWidth: "m",
-      richText: {
-        blocks: [{
-          type: "paragraph",
+      blocks: [{
+          type: "paragraph", id: "sigma_doc_search_test_38",
           children: [
             { type: "text", text },
             { type: "mathInline", id: "callout_math", tex, display: "inline" },
           ],
         }],
-      },
     },
   };
 }

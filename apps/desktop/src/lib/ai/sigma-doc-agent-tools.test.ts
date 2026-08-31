@@ -1,3 +1,5 @@
+import { isOverlayShape, overlayTextBlocksToInlineNodes } from "@/features/document";
+import { DEFAULT_TEXT_SHAPE_WIDTH } from "@/features/drawing";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,6 +9,7 @@ import {
   createTableSpecFromAiToolArgs,
   executeSigmaDocAgentDraftTool,
   executeSigmaDocAgentReadTool,
+  getShapeToolTextBox,
   getSigmaDocAgentSessionDraft,
   normalizeAiShapeGeometryPatch,
   summarizeSessionDraftForToolResult,
@@ -1302,7 +1305,65 @@ describe("SigmaDoc draft mutation tools", () => {
     }).ok).toBe(false);
   });
 
-  it("auto-sizes inserted text shapes when AI omits width and height", () => {
+  /**
+   * The shapes these tools build are persisted as-is, so they have to satisfy the same validator
+   * the file format does. A tool that produced a shape the schema rejects would fail at save time,
+   * long after the AI turn that made it.
+   */
+  /**
+   * The height a tool stores is a floor, not a layout: the lines the content already carries, so
+   * the box is never shorter than its own line breaks while it waits to be measured. A list is the
+   * case that used to be counted wrong — a list item's line, the blocks continuing it and the
+   * sub-lists under it are all lines, and treating the whole list as one leaves the box a third of
+   * the height it needs.
+   */
+  it("counts every line of a list when it derives a text box height", () => {
+    const line = (id: string, text: string) => ({
+      type: "listItem" as const,
+      id,
+      children: [{ type: "text" as const, text }],
+    });
+    const blocks = [{
+      type: "list" as const,
+      id: "list_1",
+      listType: "bullet" as const,
+      items: [
+        { ...line("li_1", "一つ目"), continuations: [{ type: "paragraph" as const, id: "li_1_c", children: [{ type: "text" as const, text: "続き" }] }] },
+        { ...line("li_2", "二つ目"), nested: [{ type: "list" as const, id: "list_2", listType: "bullet" as const, items: [line("li_3", "入れ子")] }] },
+      ],
+    }];
+
+    // Four lines: two items, one continuation, one nested item — at the 16px line box of size "m".
+    expect(getShapeToolTextBox(blocks, "m")).toEqual({ w: DEFAULT_TEXT_SHAPE_WIDTH, h: 64 });
+  });
+
+  it("builds text and callout shapes the overlay validator accepts", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    expect(executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
+      targetId: "p_1",
+      id: "shape_valid_text",
+      kind: "text",
+      text: "本文",
+      tex: undefined,
+    }).ok).toBe(true);
+    expect(executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
+      targetId: "p_1",
+      id: "shape_valid_callout",
+      kind: "callout",
+      text: "注意",
+    }).ok).toBe(true);
+
+    const shapes = session.draftDocument.pageLayout?.overlay?.overlaySnapshot?.shapes ?? [];
+    const built = shapes.filter((shape) => shape.id === "shape_valid_text" || shape.id === "shape_valid_callout");
+
+    expect(built).toHaveLength(2);
+    for (const shape of built) {
+      expect(isOverlayShape(shape)).toBe(true);
+    }
+  });
+
+  it("gives an inserted text shape the default width when the AI names none", () => {
     const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
 
     expect(executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
@@ -1316,8 +1377,11 @@ describe("SigmaDoc draft mutation tools", () => {
     const snapshot = session.draftDocument.pageLayout?.overlay?.overlaySnapshot;
     const autoText = snapshot?.shapes.find((shape): shape is OverlayTextShape => shape.type === "text" && shape.id === "shape_auto_text");
 
-    expect(autoText?.props.autoSize).toBe(true);
-    expect(autoText?.props.w).toBe(160);
+    // The same default every other creation path takes — a text box's width is chosen, and a tool
+    // that chose nothing gets the choice everyone else gets.
+    expect(autoText?.props.w).toBe(DEFAULT_TEXT_SHAPE_WIDTH);
+    // One line of content, so one line of height. The editor writes the measured height back the
+    // first time it draws the shape; this is only the floor it cannot be shorter than.
     expect(autoText?.props.h).toBe(16);
   });
 
@@ -1376,24 +1440,45 @@ describe("SigmaDoc draft mutation tools", () => {
     expect(ellipseRyOnly?.props).toMatchObject({ w: 352, h: 60 });
   });
 
-  it("keeps explicitly sized inserted text shapes fixed", () => {
+  it("takes the width the AI asked for and derives the height from the content", () => {
     const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
 
     expect(executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
       targetId: "p_1",
       id: "shape_fixed_text",
       kind: "text",
-      text: "固定サイズ",
+      text: "一行目\n二行目",
       w: 120,
-      h: 48,
     }).ok).toBe(true);
     const fixedText = session.draftDocument.pageLayout?.overlay?.overlaySnapshot?.shapes
       .find((shape): shape is OverlayTextShape => shape.type === "text" && shape.id === "shape_fixed_text");
 
-    expect(fixedText?.props).toMatchObject({ w: 120, h: 48, autoSize: false });
+    expect(fixedText?.props).toMatchObject({ w: 120, h: 32 });
   });
 
-  it("wraps auto-sized inserted text at maxWidth and estimates its height", () => {
+  /**
+   * A text shape's height is its content's, and the editor overwrites the stored value with the
+   * measured one the first time it draws the shape. A tool that asked for a height would be asking
+   * for something that cannot be honoured, so it is refused rather than accepted and dropped.
+   */
+  it("refuses a height on an inserted text shape", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
+      targetId: "p_1",
+      id: "shape_height_text",
+      kind: "text",
+      text: "固定サイズ",
+      w: 120,
+      h: 48,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(session.draftDocument.pageLayout?.overlay?.overlaySnapshot?.shapes ?? [])
+      .not.toContainEqual(expect.objectContaining({ id: "shape_height_text" }));
+  });
+
+  it("refuses the removed auto-wrapping argument outright", () => {
     const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
 
     expect(executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
@@ -1402,16 +1487,7 @@ describe("SigmaDoc draft mutation tools", () => {
       kind: "text",
       text: "あいうえおかきくけこ",
       maxWidth: 64,
-    }).ok).toBe(true);
-    const wrappedText = session.draftDocument.pageLayout?.overlay?.overlaySnapshot?.shapes
-      .find((shape): shape is OverlayTextShape => shape.type === "text" && shape.id === "shape_wrapped_text");
-
-    expect(wrappedText?.props).toMatchObject({
-      w: 64,
-      h: 48,
-      maxWidth: 64,
-      autoSize: true,
-    });
+    }).ok).toBe(false);
   });
 
   it("expands labeled ordinary shapes when AI omits width and height", () => {
@@ -1479,7 +1555,7 @@ describe("SigmaDoc draft mutation tools", () => {
     expect(callout?.props.tail.baseEnd.y).toBe(68);
     expect(callout?.props.tail.tip.x).toBeCloseTo(25.2);
     expect(callout?.props.tail.tip.y).toBe(96);
-    expect(callout?.props.richText.blocks[0]?.type).toBe("paragraph");
+    expect(callout?.props.blocks[0]?.type).toBe("paragraph");
     expect(snapshot?.shapes).toHaveLength(1);
     expect(session.operations).toHaveLength(1);
   });
@@ -1500,7 +1576,7 @@ describe("SigmaDoc draft mutation tools", () => {
     expect(callout).toBeDefined();
     expect(callout?.props.w).toBeGreaterThan(40); // Minimum plus padding
     expect(callout?.props.h).toBeGreaterThan(30);
-    expect(JSON.stringify(callout?.props.richText)).toContain("短い文字");
+    expect(JSON.stringify(callout?.props.blocks)).toContain("短い文字");
     expect(callout?.parentId).toBeUndefined();
     expect(snapshot?.shapes).toHaveLength(1);
     expect(session.operations).toHaveLength(1);
@@ -1521,7 +1597,7 @@ describe("SigmaDoc draft mutation tools", () => {
 
     expect(callout).toBeDefined();
     expect(callout?.props.w).toBeGreaterThan(120);
-    expect(JSON.stringify(callout?.props.richText)).toContain("これは非常に長いテキストです");
+    expect(JSON.stringify(callout?.props.blocks)).toContain("これは非常に長いテキストです");
     expect((snapshot?.shapes ?? []).filter((shape) => shape.type === "text")).toHaveLength(0);
     expect(session.operations).toHaveLength(1);
   });
@@ -1545,7 +1621,7 @@ describe("SigmaDoc draft mutation tools", () => {
     expect(callout?.props.w).toBe(200);
     expect(callout?.props.h).toBe(100);
     expect(callout?.props.radius).toBe(26);
-    expect(JSON.stringify(callout?.props.richText)).toContain("固定サイズ");
+    expect(JSON.stringify(callout?.props.blocks)).toContain("固定サイズ");
     expect(session.operations).toHaveLength(1);
   });
 
@@ -1568,7 +1644,7 @@ describe("SigmaDoc draft mutation tools", () => {
     expect(callout?.props.h).toBe(80);
   });
 
-  it("rejects maxWidth for callout (text-only parameter)", () => {
+  it("rejects the removed wrap-width argument on a callout too", () => {
     const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
 
     const result = executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
@@ -1598,7 +1674,7 @@ describe("SigmaDoc draft mutation tools", () => {
 
     expect(callout).toBeDefined();
     expect(callout?.anchor).toMatchObject({ type: "block", blockId: "p_1" });
-    expect(JSON.stringify(callout?.props.richText)).toContain("テスト");
+    expect(JSON.stringify(callout?.props.blocks)).toContain("テスト");
     expect(snapshot?.shapes).toHaveLength(1);
   });
 
@@ -2361,7 +2437,7 @@ function tableShape(id: string) {
 }
 
 function getTextShapeMathTex(shape: OverlayTextShape | undefined): string | undefined {
-  const node = shape?.props.richText.blocks[0]?.children[0];
+  const node = overlayTextBlocksToInlineNodes(shape?.props.blocks ?? [])[0];
   return node?.type === "mathInline" ? node.tex : undefined;
 }
 

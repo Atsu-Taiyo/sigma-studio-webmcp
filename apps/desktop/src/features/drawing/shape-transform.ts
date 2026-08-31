@@ -11,8 +11,7 @@ import {
   getShapeBounds,
   getShapeRotation,
   getTextShapeEffectiveSize,
-  getTextShapeScale,
-  normalizeTextShapeScale,
+  MIN_TEXT_SHAPE_WIDTH,
 } from "./shape-bounds";
 
 const FULL_CIRCLE = Math.PI * 2;
@@ -159,7 +158,9 @@ export function resizeBoxShape(
     shape.type === "arc" ||
     shape.type === "image" ||
     shape.type === "callout" ||
-    shape.type === "tableShape"
+    shape.type === "graph3dShape" ||
+    shape.type === "tableShape" ||
+    shape.type === "chartShape"
   ) {
     if (shape.type === "arc") {
       return {
@@ -256,46 +257,46 @@ export function canBoxResize(shape: OverlayShape): boolean {
     shape.type === "image" ||
     shape.type === "callout" ||
     shape.type === "graph2dShape" ||
+    shape.type === "graph3dShape" ||
     shape.type === "tableShape" ||
+    shape.type === "chartShape" ||
     shape.type === "text";
 }
 
+/**
+ * Resizing a text shape moves the wrap width, never the glyphs: the font size is not part of the
+ * geometry, so the box takes the new width (clamped) and re-derives its height from the content.
+ *
+ * When the clamp bites, the edge the author is *not* dragging has to stay put. Dragging the left
+ * edge past the minimum otherwise keeps sliding the box leftwards at a fixed width, because `x`
+ * would follow the pointer while `w` stopped — the shape would walk away under the cursor. Which
+ * edge is moving is read off the bounds themselves — a west-side drag moves the left edge and
+ * leaves the right one exactly where it was — so this needs no knowledge of the handle.
+ *
+ * Both edges moving is a different gesture: a selection being scaled around a box the shape is
+ * only part of. There the clamp must hold the left edge, or a member that scales below the
+ * minimum pops out of the box the rest of the selection is following.
+ */
 function resizeTextShapeToBounds(
   shape: Extract<OverlayShape, { type: "text" }>,
   nextBounds: OverlayBounds,
 ): Extract<OverlayShape, { type: "text" }> {
-  const currentBounds = getShapeBounds(shape);
-  const widthScale = currentBounds.w > 0
-    ? nextBounds.w / currentBounds.w
-    : 1;
-  const heightScale = currentBounds.h > 0
-    ? nextBounds.h / currentBounds.h
-    : 1;
-  const nextScale = normalizeTextShapeScale(
-    getTextShapeScale(shape) * Math.max(widthScale, heightScale),
-  );
-  const scaledShape: Extract<OverlayShape, { type: "text" }> = {
+  const width = Math.max(MIN_TEXT_SHAPE_WIDTH, nextBounds.w);
+  const keepsRightEdge = Math.abs((nextBounds.x + nextBounds.w) - (shape.x + shape.props.w)) < 0.5;
+  const movesLeftEdge = nextBounds.x !== shape.x && keepsRightEdge;
+  const x = movesLeftEdge ? nextBounds.x + nextBounds.w - width : nextBounds.x;
+  const resized: Extract<OverlayShape, { type: "text" }> = {
     ...shape,
-    props: {
-      ...shape.props,
-      scale: nextScale,
-    },
+    props: { ...shape.props, w: width },
   };
-  const minHeight = getTextShapeEffectiveSize(scaledShape).h;
 
   return {
-    ...shape,
-    x: nextBounds.x,
+    ...resized,
+    x,
     y: nextBounds.y,
     props: {
-      ...shape.props,
-      w: nextBounds.w,
-      h: minHeight,
-      ...(shape.props.maxWidth === undefined
-        ? {}
-        : { maxWidth: nextBounds.w }),
-      scale: nextScale,
-      autoSize: true,
+      ...resized.props,
+      h: getTextShapeEffectiveSize(resized).h,
     },
   };
 }

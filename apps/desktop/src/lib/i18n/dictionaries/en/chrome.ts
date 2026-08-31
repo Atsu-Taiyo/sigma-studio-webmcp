@@ -22,6 +22,7 @@ export const chrome = {
       problem: "Problem",
       math: "Equation",
       graph: "Graph",
+      graph3d: "3D figure",
       image: "Image",
       shape: "Shape",
     },
@@ -208,6 +209,17 @@ export const chrome = {
       diamond: "Diamond",
       dot: "Dot",
       bar: "Bar",
+      arrowSmall: "Arrow (small)",
+      triangleSmall: "Triangle (small)",
+      openArrowSmall: "Arrow (open, small)",
+      thinArrowSmall: "Arrow (thin, small)",
+      diamondSmall: "Diamond (small)",
+      dotSmall: "Dot (small)",
+      barSmall: "Bar (small)",
+      size: {
+        normal: "Standard",
+        small: "Small",
+      },
     },
     lineDash: {
       none: "No line",
@@ -242,6 +254,10 @@ export const chrome = {
     graph: {
       label: "Graph",
       tooltip: "Insert a graph",
+    },
+    graph3d: {
+      label: "3D figure",
+      tooltip: "Insert a 3D figure",
     },
     table: {
       label: "Table",

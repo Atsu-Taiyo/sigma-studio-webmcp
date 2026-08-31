@@ -55,6 +55,7 @@ export type OverlayInteractionMode =
   | { id: "overlay.imageCropResize"; tool: OverlayTool; shape: Extract<OverlayShape, { type: "image" }>; handle: ResizeHandle; start: OverlayPoint }
   | { id: "overlay.imageCropPan"; tool: OverlayTool; shape: Extract<OverlayShape, { type: "image" }>; start: OverlayPoint }
   | { id: "overlay.graphEditing"; tool: OverlayTool; shapeId: OverlayShapeId }
+  | { id: "overlay.graph3dEditing"; tool: OverlayTool; shapeId: OverlayShapeId }
   | { id: "overlay.tableEditing"; tool: OverlayTool; shapeId: OverlayShapeId }
   | { id: "overlay.originPicking"; tool: OverlayTool; shapeId: OverlayShapeId; initial: boolean }
   | { id: "overlay.graphFillPicking"; tool: OverlayTool; shapeId: OverlayShapeId }
@@ -78,6 +79,7 @@ export type OverlayInteractionAction =
   | { type: "startImageCropResize"; shape: Extract<OverlayShape, { type: "image" }>; handle: ResizeHandle; start: OverlayPoint }
   | { type: "startImageCropPan"; shape: Extract<OverlayShape, { type: "image" }>; start: OverlayPoint }
   | { type: "editGraph"; shapeId: OverlayShapeId }
+  | { type: "editGraph3D"; shapeId: OverlayShapeId }
   | { type: "editTable"; shapeId: OverlayShapeId }
   | { type: "pickOrigin"; shapeId: OverlayShapeId; initial?: boolean }
   | { type: "pickGraphFill"; shapeId: OverlayShapeId }
@@ -182,6 +184,8 @@ export function overlayInteractionModeReducer(
       return { id: "overlay.imageCropPan", tool: currentTool, shape: action.shape, start: action.start };
     case "editGraph":
       return { id: "overlay.graphEditing", tool: currentTool, shapeId: action.shapeId };
+    case "editGraph3D":
+      return { id: "overlay.graph3dEditing", tool: currentTool, shapeId: action.shapeId };
     case "editTable":
       return { id: "overlay.tableEditing", tool: currentTool, shapeId: action.shapeId };
     case "pickOrigin":
@@ -306,7 +310,13 @@ export function resolveMovePointerUp(
 }
 
 export function getEditingShapeId(mode: OverlayInteractionMode): OverlayShapeId | null {
-  if (mode.id === "overlay.textEditing" || mode.id === "overlay.imageCropping" || mode.id === "overlay.graphEditing" || mode.id === "overlay.tableEditing") {
+  if (
+    mode.id === "overlay.textEditing" ||
+    mode.id === "overlay.imageCropping" ||
+    mode.id === "overlay.graphEditing" ||
+    mode.id === "overlay.graph3dEditing" ||
+    mode.id === "overlay.tableEditing"
+  ) {
     return mode.shapeId;
   }
 

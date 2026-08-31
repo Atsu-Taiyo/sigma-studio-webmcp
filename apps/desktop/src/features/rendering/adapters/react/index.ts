@@ -1,9 +1,12 @@
 "use client";
 
-import "../register-math-metrics";
-
 export { DocumentTitleText, type DocumentTitleTextProps } from "./DocumentTitleText";
 export { Graph2DPreview } from "./Graph2DPreview";
+export {
+  Graph3DPreview,
+  Graph3DStaticLabelOverlay,
+  type Graph3DPreviewProps,
+} from "./Graph3DPreview";
 export {
   MathEnvironmentProvider,
   MathEnvironmentValueProvider,
@@ -25,12 +28,12 @@ export {
   renderMathHtml,
 } from "./MathPreview";
 export {
+  OverlayChartStaticView,
+  type OverlayChartStaticViewProps,
+} from "./OverlayChartStaticView";
+export {
   OverlayTableStaticView,
   OverlayTableTrendCell,
   type OverlayTableStaticViewProps,
   type OverlayTableTrendCellProps,
 } from "./OverlayTableStaticView";
-export {
-  OverlayRichTextPreview,
-  type OverlayRichTextPreviewProps,
-} from "./OverlayRichTextPreview";

@@ -685,12 +685,10 @@ function textShapeWithContent(id: string, text: string, parentId?: string): Over
     ...(parentId ? { parentId } : {}),
     props: {
       w: 120,
-      autoSize: true,
+      h: 16,
       color: "#111827",
       size: "m",
-      richText: {
-        blocks: [{ type: "paragraph", children: [{ type: "text", text }] }],
-      },
+      blocks: [{ type: "paragraph", id: "document_tree_test_35", children: [{ type: "text", text }] }],
     },
   };
 }
@@ -704,6 +702,20 @@ describe("collectOverlayShapeOutline", () => {
     expect(outline).toEqual([
       { id: "shape_table", type: "tableShape", description: "表 2行×2列 「国語の点数」", x: 0, y: 0 },
     ]);
+  });
+
+  it("describes a table by what a formula cell evaluates to, not by its source", () => {
+    // The outline names the table for a human. A label reading `=1+29` where the canvas, print, the
+    // PDF and the viewer all show `30` describes a table nobody can see.
+    const document = documentWithOverlayShapes([tableShapeWithCellText("shape_table", "=1+29")]);
+
+    expect(collectOverlayShapeOutline(document)[0].description).toBe("表 2行×2列 「30」");
+  });
+
+  it("still names a table by a formula it cannot parse, as the text that was typed", () => {
+    const document = documentWithOverlayShapes([tableShapeWithCellText("shape_table", "=SUM(A1")]);
+
+    expect(collectOverlayShapeOutline(document)[0].description).toBe("表 2行×2列 「=SUM(A1」");
   });
 
   it("describes a text shape by its content and reports its anchor block id", () => {

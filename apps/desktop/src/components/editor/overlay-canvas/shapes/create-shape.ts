@@ -1,12 +1,15 @@
-import { toRichText } from "../ids";
+import { createOverlayTextBlocks } from "../ids";
 import type { InsertTool } from "../interaction-mode";
 import { getCenterDragBounds } from "../math";
 import type { OverlayPoint, OverlayShape, OverlayShapeId, SigmaTableSpec } from "../types";
 import {
   createArcShapeFromCenterDrag,
   createArcShapeFromThreePoints,
+  createGraph3DSpecPreset,
   DEFAULT_CALLOUT_CORNER_RADIUS,
+  DEFAULT_TEXT_SHAPE_WIDTH,
   getTextShapeLineHeightPx,
+  MIN_TEXT_SHAPE_WIDTH,
   normalizeCalloutCornerRadius,
   type OverlayShapeStyleDefaults,
 } from "@/features/drawing";
@@ -18,8 +21,13 @@ import {
 } from "./line";
 import { regularPolygonSidesFromCommand } from "./regular-polygon";
 import { TABLE_SHAPE_TYPE, createTableShapeProps } from "./table";
+import { buildGraph3DPresetNames } from "@/lib/graph3d-preset-names";
+import { createCurrentLocaleTranslator } from "@/lib/i18n";
+import { CHART_SHAPE_TYPE, MIN_CHART_HEIGHT, MIN_CHART_WIDTH } from "./chart";
 
 const EQUILATERAL_TRIANGLE_HEIGHT_RATIO = Math.sqrt(3) / 2;
+const tShape = createCurrentLocaleTranslator("shape");
+
 
 export { getRegularResizeAspect } from "@/features/drawing";
 
@@ -329,11 +337,12 @@ export function buildInsertShape(
       y: minY,
       rotation: 0,
       props: {
-        w,
+        // The width is the user's from the first moment: a drag sets it, a click takes the
+        // default. Height is one line — the box is empty, and the DOM measurement grows it as
+        // soon as there is something to draw.
+        w: end.x === start.x ? DEFAULT_TEXT_SHAPE_WIDTH : Math.max(MIN_TEXT_SHAPE_WIDTH, w),
         h: getTextShapeLineHeightPx("m"),
-        scale: 1,
-        richText: toRichText(""),
-        autoSize: true,
+        blocks: createOverlayTextBlocks(""),
         color: "black",
         size: "m",
       },
@@ -358,7 +367,7 @@ export function buildInsertShape(
           baseEnd: { x: w * 0.42, y: bodyHeight },
           tip: { x: w * 0.14, y: h },
         },
-        richText: toRichText(""),
+        blocks: createOverlayTextBlocks(""),
         color: "black",
         size: "m",
         dash: "solid",
@@ -369,6 +378,21 @@ export function buildInsertShape(
 
   if (command === "graph") {
     return createGraphShapeFromPlotBounds(id, { x: minX, y: minY, w, h }, tool.graphPreset ?? "blank");
+  }
+
+  if (command === "graph3d") {
+    return {
+      id,
+      type: "graph3dShape",
+      x: minX,
+      y: minY,
+      rotation: 0,
+      props: {
+        w,
+        h,
+        spec: createGraph3DSpecPreset(tool.graph3dPreset ?? "revolution", buildGraph3DPresetNames(tShape)),
+      },
+    };
   }
 
   if (command === "table") {
@@ -387,6 +411,32 @@ export function buildInsertShape(
             table: cloneTableSpec(tool.table),
           }
         : createTableShapeProps("plain", tableW, tableH),
+    };
+  }
+
+  if (command === "chart") {
+    if (!tool.chart) {
+      return null;
+    }
+    return {
+      id,
+      type: CHART_SHAPE_TYPE,
+      x: minX,
+      y: minY,
+      rotation: 0,
+      props: {
+        // `w`/`h` come from the corner drag, matching `x`/`y` above. `getCenterDragBounds` reads
+        // `start` as a centre and so returns twice the span — pairing it with a corner origin
+        // produced a chart of double the requested size, anchored where the smaller one was
+        // clamped to fit.
+        w: Math.max(MIN_CHART_WIDTH, w),
+        h: Math.max(MIN_CHART_HEIGHT, h),
+        // Deep-cloned for the same reason the table spec is: the seed belongs to the caller, and a
+        // shared reference would let a later edit to the shape mutate whatever produced it.
+        spec: structuredClone(tool.chart.spec),
+        ...(tool.chart.sourceTableShapeId ? { sourceTableShapeId: tool.chart.sourceTableShapeId } : {}),
+        dataSnapshot: structuredClone(tool.chart.dataSnapshot),
+      },
     };
   }
 

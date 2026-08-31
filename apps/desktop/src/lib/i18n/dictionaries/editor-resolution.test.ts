@@ -26,7 +26,12 @@ const KEYS = flatten(ja as unknown as DictionaryValue);
 const LOCALES = ["ja", "en"] as const;
 const JAPANESE = /[\u3040-\u30ff\u4e00-\u9fff]/u;
 /** 英語辞書に**意図的に**残してある日本語 (英語 UI でも `/問題` と打てるようにするため)。 */
-const INTENTIONAL_JAPANESE_IN_EN = ["slash.problem.aliases"];
+const INTENTIONAL_JAPANESE_IN_EN = [
+  "slash.block.quote.aliases",
+  "slash.block.codeBlock.aliases",
+  "slash.block.divider.aliases",
+  "slash.problem.aliases",
+];
 
 describe("editor namespace resolution", () => {
   it("resolves the post-main block and whiteboard UI in English", () => {

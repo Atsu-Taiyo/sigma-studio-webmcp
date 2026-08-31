@@ -2,8 +2,9 @@ import { ensureShapeAnchorDx } from "@/components/editor/overlay-canvas/anchor";
 import {
   estimateTopLevelBlockRects,
   normalizeOverlaySnapshot,
-  type OverlayRichTextDocument,
+  type OverlayTextBlock,
   type InlineNode,
+  type ListItemContinuationNode,
   type SigmaCommentAnchor,
   type SigmaDocument,
 } from "@/features/document";
@@ -160,8 +161,10 @@ function findFirstOverlayMathCommentCandidate(
 }
 
 function extractOverlayShapeMath(shape: OverlayShape): { mathInlineId?: string; tex: string } | null {
-  if (shape.type === "text") {
-    return findFirstOverlayMathInline(shape.props.richText);
+  // A callout holds the same blocks a text shape does, so a comment left on one anchors to the
+  // formula inside it the same way.
+  if (shape.type === "text" || shape.type === "callout") {
+    return findFirstOverlayMathInline(shape.props.blocks);
   }
 
   if (shape.type === "tableShape") {
@@ -187,17 +190,42 @@ function extractOverlayShapeMath(shape: OverlayShape): { mathInlineId?: string; 
   return null;
 }
 
-function findFirstOverlayMathInline(document: OverlayRichTextDocument): { mathInlineId?: string; tex: string } | null {
-  for (const block of document.blocks) {
-    for (const inline of block.children) {
-      if (inline.type !== "mathInline") {
-        continue;
+/**
+ * The first formula in a shape's blocks, in reading order.
+ *
+ * A list item holds prose in three places — its own line, the blocks continuing it, and the
+ * sub-lists under it — and stopping at the first means a comment on a shape whose only formula
+ * sits in a nested item anchors to the whole shape instead of to that formula. A quote is the same
+ * problem one level down; a divider holds nothing.
+ */
+function findFirstOverlayMathInline(
+  blocks: readonly (OverlayTextBlock | ListItemContinuationNode)[],
+): { mathInlineId?: string; tex: string } | null {
+  for (const block of blocks) {
+    if (block.type === "divider") {
+      continue;
+    }
+    if (block.type === "list") {
+      for (const item of block.items ?? []) {
+        const math = findFirstInlineMath(item.children ?? [])
+          ?? findFirstOverlayMathInline(item.continuations ?? [])
+          ?? findFirstOverlayMathInline(item.nested ?? []);
+        if (math) {
+          return math;
+        }
       }
-      const tex = inline.tex.trim();
-      if (tex) {
-        const mathInlineId = inline.id || undefined;
-        return { mathInlineId, tex };
+      continue;
+    }
+    if (block.type === "quote") {
+      const math = findFirstOverlayMathInline(block.blocks ?? []);
+      if (math) {
+        return math;
       }
+      continue;
+    }
+    const math = findFirstInlineMath(block.children ?? []);
+    if (math) {
+      return math;
     }
   }
 

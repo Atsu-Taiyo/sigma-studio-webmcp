@@ -24,9 +24,7 @@ function callout(props: Partial<OverlayCalloutShape["props"]> = {}): OverlayCall
         baseEnd: { x: 68, y: 72 },
         tip: { x: 24, y: 100 },
       },
-      richText: {
-        blocks: [{ type: "paragraph", children: [{ type: "text", text: "説明" }] }],
-      },
+      blocks: [{ type: "paragraph", id: "callout_test_29", children: [{ type: "text", text: "説明" }] }],
       color: "#111111",
       size: "m",
       dash: "solid",

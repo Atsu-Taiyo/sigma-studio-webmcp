@@ -206,6 +206,38 @@ describe("overlay shape renderer dependency boundary", () => {
     expect(layoutReadSites(renderedLines, [])).toEqual([]);
   });
 
+  /**
+   * A shape's text height is measured from the DOM, and that measurement has exactly one home.
+   *
+   * The renderer itself must stay free of layout reads — it is mounted by `packages/viewer` and by
+   * the print surface, where there is nothing to write a measurement back to. The measuring module
+   * gets an allow-list of function *names*: the rule is not "this file may measure" but "these two
+   * functions may", so a `useEffect` that starts reading rects next to them still fails.
+   */
+  it("keeps the text height measurement in two named functions", () => {
+    expect(layoutReadSites(readSiblingSource("./shape-renderer.tsx"), [])).toEqual([]);
+    expect(layoutReadSites(readSiblingSource("./text-shape-measure.ts"), [
+      "measureOverlayTextContentHeight",
+      "useOverlayTextContentHeight",
+    ])).toEqual([]);
+  });
+
+  /**
+   * The editing surface and the static view must turn a measured height into a box height the same
+   * way. They are different mounts of the same shape, so a second conversion would show up as the
+   * box jumping at the moment focus arrives or leaves.
+   */
+  it("keeps one conversion from measured content to box height", () => {
+    const editor = readSiblingSource("./text-shape-editor.tsx");
+    const renderer = readSiblingSource("./shape-renderer.tsx");
+
+    for (const source of [editor, renderer]) {
+      expect(source).toContain("overlayTextBoxHeightForContent");
+      expect(source).toContain('from "./text-shape-measure"');
+    }
+    expect(editor).toContain("measureOverlayTextContentHeight");
+  });
+
   it("keeps re-anchoring as a UI-free overlay model", () => {
     const model = readSiblingSource("./reanchor-model.ts");
     const graphLabels = readSiblingSource("./shapes/graph-labels.ts");

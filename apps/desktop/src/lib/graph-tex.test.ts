@@ -14,38 +14,72 @@ import { evaluateExpression, evaluateImplicitExpression, evaluateScalar } from "
 
 describe("texToGraphExpression", () => {
   it("converts basic arithmetic and powers", () => {
-    expect(texToGraphExpression("x^2-5x+6")).toBe("(x)^(2)-5*x+6");
+    expect(texToGraphExpression("x^2-5x+6")).toBe("x^2-5*x+6");
     expect(texToGraphExpression("2x+1")).toBe("2*x+1");
-    expect(texToGraphExpression("x^{10}")).toBe("(x)^(10)");
+    expect(texToGraphExpression("x^{10}")).toBe("x^10");
+  });
+
+  /**
+   * 保存された評価式はそのまま人の目に触れる: 表示用 TeX を作れない場面ではこの文字列が
+   * 数式として描かれるので、`x^2` が `(x)²` と表示されていた。AI が読む文字列も同じ。
+   */
+  it("adds a paren only where dropping it would change the reading", () => {
+    for (const [tex, expected] of [
+      ["x^2", "x^2"],
+      ["2x^2", "2*x^2"],
+      ["x^2+y^2", "x^2+y^2"],
+      ["-x^2", "-x^2"],
+      ["\\sin(x)^2", "sin(x)^2"],
+      ["\\frac{1}{2}x^2", "1/2*x^2"],
+      ["\\frac{x^2}{y^2}", "x^2/y^2"],
+      ["\\cos(2x)", "cos(2*x)"],
+      // ここから先は外すと読み方が変わるので残る。
+      ["(x+1)^2", "(x+1)^2"],
+      ["e^{-x^2}", "e^(-x^2)"],
+      ["x^{\\frac{1}{2}}", "x^(1/2)"],
+      ["\\frac{a}{bc}", "a/(b*c)"],
+      ["\\frac{1}{x+1}", "1/(x+1)"],
+    ] as const) {
+      expect(`${tex} -> ${texToGraphExpression(tex)}`).toBe(`${tex} -> ${expected}`);
+    }
+  });
+
+  /** 同じ式を入力し直すたびに括弧が一段ずつ増える、ということが起きない。 */
+  it("reaches a fixed point after one round trip", () => {
+    for (const tex of ["x^2+y^2", "\\sin(x)^2", "\\frac{x+1}{x-1}", "\\sqrt[3]{x}", "-2x^3"]) {
+      const once = texToGraphExpression(tex) ?? "";
+      const twice = texToGraphExpression(graphExpressionToTex(once)) ?? "";
+      expect(`${tex}: ${twice}`).toBe(`${tex}: ${once}`);
+    }
   });
 
   it("converts fractions, roots and pi", () => {
-    expect(texToGraphExpression("\\frac{3}{2}")).toBe("(3)/(2)");
-    expect(texToGraphExpression("-\\frac{x+1}{2}")).toBe("-(x+1)/(2)");
+    expect(texToGraphExpression("\\frac{3}{2}")).toBe("3/2");
+    expect(texToGraphExpression("-\\frac{x+1}{2}")).toBe("-(x+1)/2");
     expect(texToGraphExpression("\\sqrt{2}")).toBe("sqrt(2)");
-    expect(texToGraphExpression("\\sqrt[3]{x}")).toBe("(x)^(1/(3))");
+    expect(texToGraphExpression("\\sqrt[3]{x}")).toBe("x^(1/3)");
     expect(texToGraphExpression("2\\pi")).toBe("2*pi");
-    expect(texToGraphExpression("\\frac{\\pi}{2}")).toBe("(pi)/(2)");
+    expect(texToGraphExpression("\\frac{\\pi}{2}")).toBe("pi/2");
   });
 
   it("converts trigonometric and logarithmic functions", () => {
     expect(texToGraphExpression("\\sin x")).toBe("sin(x)");
-    expect(texToGraphExpression("\\cos\\left(2x\\right)")).toBe("cos((2*x))");
+    expect(texToGraphExpression("\\cos\\left(2x\\right)")).toBe("cos(2*x)");
     expect(texToGraphExpression("\\sin 2\\pi")).toBe("sin(2*pi)");
-    expect(texToGraphExpression("\\sin^{2}x")).toBe("(sin(x))^(2)");
+    expect(texToGraphExpression("\\sin^{2}x")).toBe("sin(x)^2");
     expect(texToGraphExpression("\\ln x + \\exp x")).toBe("ln(x)+exp(x)");
     expect(texToGraphExpression("\\arcsin x")).toBe("asin(x)");
   });
 
   it("binds a postfix power to the whole function application for parenthesized arguments", () => {
-    expect(texToGraphExpression("\\sin\\left(x\\right)^{2}")).toBe("(sin((x)))^(2)");
-    expect(texToGraphExpression("\\sin(x)^{2}")).toBe("(sin((x)))^(2)");
-    expect(texToGraphExpression("\\sin\\left(x\\right)^2")).toBe("(sin((x)))^(2)");
-    expect(texToGraphExpression("\\cos\\left(2x\\right)^{3}")).toBe("(cos((2*x)))^(3)");
-    expect(texToGraphExpression("\\ln\\left(x\\right)^{2}")).toBe("(ln((x)))^(2)");
-    expect(texToGraphExpression("\\operatorname{sin}\\left(x\\right)^{2}")).toBe("(sin((x)))^(2)");
+    expect(texToGraphExpression("\\sin\\left(x\\right)^{2}")).toBe("sin(x)^2");
+    expect(texToGraphExpression("\\sin(x)^{2}")).toBe("sin(x)^2");
+    expect(texToGraphExpression("\\sin\\left(x\\right)^2")).toBe("sin(x)^2");
+    expect(texToGraphExpression("\\cos\\left(2x\\right)^{3}")).toBe("cos(2*x)^3");
+    expect(texToGraphExpression("\\ln\\left(x\\right)^{2}")).toBe("ln(x)^2");
+    expect(texToGraphExpression("\\operatorname{sin}\\left(x\\right)^{2}")).toBe("sin(x)^2");
     // 前置指数 `\sin^{2}(x)` と同じ式へ正規化される。
-    expect(texToGraphExpression("\\sin^{2}\\left(x\\right)")).toBe("(sin((x)))^(2)");
+    expect(texToGraphExpression("\\sin^{2}\\left(x\\right)")).toBe("sin(x)^2");
   });
 
   it("evaluates parenthesized function powers as (f(x))^n", () => {
@@ -60,22 +94,22 @@ describe("texToGraphExpression", () => {
 
   it("preserves a leading minus outside a parenthesized function power", () => {
     const negated = texToGraphExpression("-\\sin\\left(x\\right)^{2}") ?? "";
-    expect(negated).toBe("-(sin((x)))^(2)");
+    expect(negated).toBe("-sin(x)^2");
     expect(evaluateExpression(negated, 0.3)).toBeCloseTo(-(Math.sin(0.3) ** 2), 10);
   });
 
   it("keeps the TeX convention for non-parenthesized function arguments", () => {
-    expect(texToGraphExpression("\\sin x^{2}")).toBe("sin((x)^(2))");
-    expect(texToGraphExpression("\\sin{x}^{2}")).toBe("sin(((x))^(2))");
-    expect(texToGraphExpression("\\sin|x|^{2}")).toBe("sin((abs(x))^(2))");
-    expect(texToGraphExpression("\\sin\\left|x\\right|^{2}")).toBe("sin((abs(x))^(2))");
+    expect(texToGraphExpression("\\sin x^{2}")).toBe("sin(x^2)");
+    expect(texToGraphExpression("\\sin{x}^{2}")).toBe("sin(x^2)");
+    expect(texToGraphExpression("\\sin|x|^{2}")).toBe("sin(abs(x)^2)");
+    expect(texToGraphExpression("\\sin\\left|x\\right|^{2}")).toBe("sin(abs(x)^2)");
     expect(texToGraphExpression("\\sin 2\\pi")).toBe("sin(2*pi)");
-    expect(texToGraphExpression("\\sin^{2}x")).toBe("(sin(x))^(2)");
+    expect(texToGraphExpression("\\sin^{2}x")).toBe("sin(x)^2");
   });
 
   it("handles adjacent factors and malformed delimiters after a function call", () => {
-    expect(texToGraphExpression("\\sin\\left(x\\right)\\left(x+1\\right)")).toBe("sin((x))*(x+1)");
-    expect(texToGraphExpression("\\sin(x)(x+1)")).toBe("sin((x))*(x+1)");
+    expect(texToGraphExpression("\\sin\\left(x\\right)\\left(x+1\\right)")).toBe("sin(x)*(x+1)");
+    expect(texToGraphExpression("\\sin(x)(x+1)")).toBe("sin(x)*(x+1)");
     expect(texToGraphExpression("\\sin\\left(x\\right|")).toBeNull();
     expect(texToGraphExpression("\\sin\\left|x\\right)")).toBeNull();
     expect(texToGraphExpression("\\sin\\left(")).toBeNull();
@@ -137,7 +171,7 @@ describe("parseGraphPointTex", () => {
   it("parses fractions, roots and pi coordinates", () => {
     const parsed = parseGraphPointTex("\\left(\\frac{3}{2}, -\\sqrt{2}\\right)");
     expect(parsed).toEqual({
-      x: "(3)/(2)",
+      x: "3/2",
       y: "-sqrt(2)",
       xTex: "\\frac{3}{2}",
       yTex: "-\\sqrt{2}",
@@ -149,7 +183,7 @@ describe("parseGraphPointTex", () => {
 
   it("keeps commas inside groups intact", () => {
     // 座標区切り以外のカンマ (グループ内) では分割しない。
-    expect(parseGraphPointTex("(\\frac{1}{2}, 3)")?.x).toBe("(1)/(2)");
+    expect(parseGraphPointTex("(\\frac{1}{2}, 3)")?.x).toBe("1/2");
   });
 
   it("rejects invalid coordinate input", () => {
@@ -164,8 +198,8 @@ describe("parseGraphRangeTex", () => {
     expect(parseGraphRangeTex("-2 \\le x \\le 3", "x")).toEqual({ min: "-2", max: "3" });
     expect(parseGraphRangeTex("0 \\le t \\le 2\\pi", "t")).toEqual({ min: "0", max: "2*pi" });
     expect(parseGraphRangeTex("-\\frac{\\pi}{2} \\leq x \\leq \\frac{\\pi}{2}", "x")).toEqual({
-      min: "-(pi)/(2)",
-      max: "(pi)/(2)",
+      min: "-pi/2",
+      max: "pi/2",
     });
   });
 
@@ -191,7 +225,7 @@ describe("parseGraphRangeTex", () => {
 describe("parseGraphImplicitEquationTex", () => {
   it("normalizes equations equal to zero to their left-hand expression", () => {
     expect(parseGraphImplicitEquationTex("x^2-y^2-2y=0")).toEqual({
-      expression: "(x)^(2)-(y)^(2)-2*y",
+      expression: "x^2-y^2-2*y",
       tex: "x^2-y^2-2y=0",
     });
   });
@@ -200,7 +234,7 @@ describe("parseGraphImplicitEquationTex", () => {
     const parsed = parseGraphImplicitEquationTex("x^2-y^2=2y");
 
     expect(parsed).toEqual({
-      expression: "((x)^(2)-(y)^(2))-(2*y)",
+      expression: "x^2-y^2-2*y",
       tex: "x^2-y^2=2y",
     });
     expect(evaluateImplicitExpression(parsed?.expression ?? "", 2, 1)).toBeCloseTo(1);
@@ -210,7 +244,7 @@ describe("parseGraphImplicitEquationTex", () => {
     const parsed = parseGraphImplicitEquationTex("x^2-4x+y^2=22");
 
     expect(parsed).toEqual({
-      expression: "((x)^(2)-4*x+(y)^(2))-(22)",
+      expression: "x^2-4*x+y^2-22",
       tex: "x^2-4x+y^2=22",
     });
     expect(evaluateImplicitExpression(parsed?.expression ?? "", 6, Math.sqrt(10))).toBeCloseTo(0);
@@ -245,7 +279,8 @@ describe("graphExpressionToTex", () => {
   it("round-trips sin(x)^2 through the display TeX", () => {
     const tex = graphExpressionToTex("sin(x)^2");
     expect(tex).toBe("\\sin\\left(x\\right)^{2}");
-    expect(texToGraphExpression(tex)).toBe("(sin((x)))^(2)");
+    // 読み取ったほうも同じ文字列に戻る。入力し直すたびに括弧が増える形にはしない。
+    expect(texToGraphExpression(tex)).toBe("sin(x)^2");
   });
 
   it("round-trips unary minus and exponent forms with the same value", () => {

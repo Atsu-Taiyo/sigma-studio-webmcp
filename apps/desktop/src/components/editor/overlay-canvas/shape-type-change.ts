@@ -12,7 +12,7 @@ import { buildInsertShape } from "./shapes/create-shape";
 
 export type ShapeTypeChangeCommand = Exclude<
   OverlayInsertCommand,
-  "threePointArc" | "highlight" | "text" | "graph" | "table"
+  "threePointArc" | "highlight" | "text" | "graph" | "graph3d" | "table" | "chart"
 >;
 
 export function canChangeOverlayShapeType(shape: OverlayShape): boolean {
@@ -29,7 +29,9 @@ export function isShapeTypeChangeCommand(command: string): command is ShapeTypeC
     command !== "highlight" &&
     command !== "text" &&
     command !== "graph" &&
-    command !== "table";
+    command !== "graph3d" &&
+    command !== "table" &&
+    command !== "chart";
 }
 
 export function changeOverlayShapeType(source: OverlayShape, command: ShapeTypeChangeCommand): OverlayShape | null {

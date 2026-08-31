@@ -1,13 +1,15 @@
-import { memo } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
 
+import { OverlayTextBlocksView } from "@/components/editor/text-flow/OverlayTextBlocksView";
 import {
   Graph2DPreview,
-  OverlayRichTextPreview,
+  Graph3DStaticLabelOverlay,
+  OverlayChartStaticView,
   OverlayTableStaticView,
 } from "@/features/rendering/adapters/react";
 import {
@@ -20,13 +22,17 @@ import {
 } from "@/features/rendering/core";
 import type {
   Graph2DSpec,
+  OverlayChartShape,
+  SigmaTableSpec,
 } from "@/features/document";
+import { resolveChartData } from "@/features/document";
 import {
   getArrowheadPathTrim,
   getShapeArrowheadPlan,
   getShapeBounds,
   getCalloutGeometry,
   getCalloutTextRect,
+  getGraph3DPreviewSourceHash,
   getShapeDimensionBounds,
   getShapeLabelPlacement,
   getShapeRotation,
@@ -38,6 +44,7 @@ import {
 } from "@/features/drawing";
 import type { GraphSpecChangeMeta } from "@/lib/graph2d";
 import { countPerformanceEvent } from "@/lib/performance";
+import { createCurrentLocaleTranslator } from "@/lib/i18n";
 
 import type { OriginPickPreview } from "./shape-editors";
 import { getImageCropCss } from "./image-crop";
@@ -51,6 +58,10 @@ import {
   markerUrl,
 } from "./render-attrs";
 import { getCalloutPath } from "./shapes/callout";
+import {
+  overlayTextBoxHeightForContent,
+  useOverlayTextContentHeight,
+} from "./text-shape-measure";
 import { getGraphRenderLayout } from "./shapes/graph";
 import {
   getLinePolylinePoints,
@@ -66,7 +77,11 @@ import type {
   OverlayShapeId,
 } from "./types";
 
+/** Reports the box height a shape's drawn text needs, so the derived cache can be kept honest. */
+export type OverlayTextMeasuredHeightHandler = (shapeId: OverlayShapeId, height: number) => void;
+
 const ORIGIN_PICK_MARKER_RADIUS = 14;
+const tShape = createCurrentLocaleTranslator("shape");
 
 /**
  * The `transform-origin` for a div laid out on the reference box.
@@ -107,6 +122,10 @@ function toLocalLabelPoint(shape: OverlayShape, bounds: OverlayBounds): OverlayP
  * a missing renderer is the read-only case rather than a mistake.
  */
 export interface OverlayShapeEditorRenderers {
+  renderGraph3DEditor: (props: {
+    interactive: boolean;
+    shape: Extract<OverlayShape, { type: "graph3dShape" }>;
+  }) => ReactNode;
   renderTableEditor: (props: { editing: boolean; shape: Extract<OverlayShape, { type: "tableShape" }> }) => ReactNode;
   renderTextEditor: (props: {
     editing: boolean;
@@ -117,7 +136,7 @@ export interface OverlayShapeEditorRenderers {
 
 export const noopFocus = () => {};
 export const noopTextEditorCancel = () => {};
-export const noopTextAutoSize = () => {};
+export const noopTextMeasuredHeight = () => {};
 export const noopTextChange = () => {};
 export const noopGraphSpecChange = () => {};
 export const noopGraphCropEnd = () => {};
@@ -133,19 +152,64 @@ export function OverlayShapeReadOnlyView({
   externalRevision = 0,
   diffClassName,
   decoration,
+  chartSourceTable,
 }: {
   shape: OverlayShape;
   assets: Record<string, OverlayAsset>;
   externalRevision?: number;
+  /** See {@link OverlayShapeView}; read-only surfaces resolve it the same way. */
+  chartSourceTable?: SigmaTableSpec | null;
   /** Extra host-owned diff/apply class names; the renderer treats them opaquely. */
   diffClassName?: string;
   /** Optional feature-owned visual rendered without changing shape geometry. */
   decoration?: OverlayShapeDecoration | null;
 }) {
+  const [textMeasurement, setTextMeasurement] = useState<{
+    key: string;
+    height: number;
+  } | null>(null);
+  const richTextShape = shape.type === "text" || shape.type === "callout" ? shape : null;
+  const textMeasurementKey = richTextShape
+    ? JSON.stringify([
+        richTextShape.id,
+        richTextShape.type,
+        richTextShape.props.w,
+        richTextShape.props.fontSize,
+        richTextShape.props.size,
+        richTextShape.props.blocks,
+      ])
+    : null;
+  const handleTextMeasuredHeight = useCallback((_shapeId: OverlayShapeId, height: number) => {
+    if (!textMeasurementKey) {
+      return;
+    }
+    setTextMeasurement((current) => (
+      current?.key === textMeasurementKey && Math.abs(current.height - height) < 1
+        ? current
+        : { key: textMeasurementKey, height }
+    ));
+  }, [textMeasurementKey]);
+  let renderedShape: OverlayShape = shape;
+  if (richTextShape?.type === "callout" && textMeasurement?.key === textMeasurementKey) {
+    renderedShape = {
+      ...richTextShape,
+      props: {
+        ...richTextShape.props,
+        h: Math.max(richTextShape.props.h, textMeasurement.height),
+      },
+    };
+  } else if (richTextShape?.type === "text" && textMeasurement?.key === textMeasurementKey) {
+    renderedShape = {
+      ...richTextShape,
+      props: { ...richTextShape.props, h: textMeasurement.height },
+    };
+  }
+
   return (
     <OverlayShapeView
-      shape={shape}
+      shape={renderedShape}
       assets={assets}
+      chartSourceTable={chartSourceTable}
       externalRevision={externalRevision}
       selected={false}
       editing={false}
@@ -159,6 +223,7 @@ export function OverlayShapeReadOnlyView({
       onDoubleClick={noopShapeDoubleClick}
       onGraphSpecChange={noopGraphSpecChange}
       onGraphCropEnd={noopGraphCropEnd}
+      onTextMeasuredHeight={richTextShape ? handleTextMeasuredHeight : undefined}
     />
   );
 }
@@ -185,6 +250,7 @@ export function composeShapeTransform(
 export const OverlayShapeView = memo(function OverlayShapeView({
   shape,
   assets,
+  chartSourceTable,
   externalRevision,
   selected,
   editing,
@@ -199,15 +265,26 @@ export const OverlayShapeView = memo(function OverlayShapeView({
   diffClassName,
   decoration,
   editorRenderers,
+  onTextMeasuredHeight,
   textPaintRevision,
 }: {
   shape: OverlayShape;
   assets: Record<string, OverlayAsset>;
+  /**
+   * The live table a `chartShape` reads, resolved against the whole snapshot by the host.
+   *
+   * Pass the `SigmaTableSpec` **by reference** — a fresh object here defeats this component's `memo`
+   * and re-renders every shape on every keystroke. Deriving the chart's data before passing it is
+   * the opposite failure: the memo then bails and the chart stops following the table.
+   */
+  chartSourceTable?: SigmaTableSpec | null;
   externalRevision: number;
   selected: boolean;
   editing: boolean;
   /** Omitted by every read-only surface; see `OverlayShapeEditorRenderers`. */
   editorRenderers?: OverlayShapeEditorRenderers;
+  /** Height report for persisted write-back or read-only local derived geometry. */
+  onTextMeasuredHeight?: OverlayTextMeasuredHeightHandler;
   /** Changes only when a visible static text body must be rasterized again. */
   textPaintRevision?: number;
   disableGraphCrop: boolean;
@@ -243,7 +320,7 @@ export const OverlayShapeView = memo(function OverlayShapeView({
       }}
       onPointerDown={(event) => onPointerDown(event, shape)}
       onDoubleClickCapture={(event) => {
-        if (shape.type !== "graph2dShape") {
+        if (shape.type !== "graph2dShape" && shape.type !== "graph3dShape") {
           return;
         }
         event.preventDefault();
@@ -251,7 +328,7 @@ export const OverlayShapeView = memo(function OverlayShapeView({
         onDoubleClick(event, shape);
       }}
       onDoubleClick={(event) => {
-        if (shape.type === "graph2dShape") {
+        if (shape.type === "graph2dShape" || shape.type === "graph3dShape") {
           return;
         }
         event.preventDefault();
@@ -264,6 +341,7 @@ export const OverlayShapeView = memo(function OverlayShapeView({
         shape={shape}
         assets={assets}
         bounds={bounds}
+        chartSourceTable={chartSourceTable}
         externalRevision={externalRevision}
         editing={editing}
         disableGraphCrop={disableGraphCrop}
@@ -272,6 +350,7 @@ export const OverlayShapeView = memo(function OverlayShapeView({
         onGraphSpecChange={onGraphSpecChange}
         onGraphCropEnd={onGraphCropEnd}
         editorRenderers={editorRenderers}
+        onTextMeasuredHeight={onTextMeasuredHeight}
       />
       {decoration?.content}
     </div>
@@ -369,6 +448,7 @@ export function ShapeBody({
   shape,
   assets,
   bounds,
+  chartSourceTable,
   externalRevision,
   editing,
   disableGraphCrop,
@@ -377,14 +457,19 @@ export function ShapeBody({
   onGraphSpecChange,
   onGraphCropEnd,
   editorRenderers,
+  onTextMeasuredHeight: measureTextHeight,
 }: {
   shape: OverlayShape;
   assets: Record<string, OverlayAsset>;
   bounds: OverlayBounds;
+  /** The live table a `chartShape` reads; see {@link OverlayShapeView}. */
+  chartSourceTable?: SigmaTableSpec | null;
   externalRevision: number;
   editing: boolean;
   /** Omitted by every read-only surface; see `OverlayShapeEditorRenderers`. */
   editorRenderers?: OverlayShapeEditorRenderers;
+  /** Height report for persisted write-back or read-only local derived geometry. */
+  onTextMeasuredHeight?: OverlayTextMeasuredHeightHandler;
   disableGraphCrop: boolean;
   hideGraphAxes: boolean;
   originPickPreview: OriginPickPreview | null;
@@ -626,7 +711,7 @@ export function ShapeBody({
         >
           {editing && editorRenderers
             ? editorRenderers.renderTextEditor({ editing, externalRevision, shape })
-            : <OverlayTextShapeStaticView shape={shape} />}
+            : <OverlayTextShapeStaticView shape={shape} onMeasuredHeight={measureTextHeight} />}
         </div>
       </div>
     );
@@ -696,6 +781,48 @@ export function ShapeBody({
     );
   }
 
+  if (shape.type === "graph3dShape") {
+    const previewAsset = shape.props.previewAssetId
+      ? assets[shape.props.previewAssetId]
+      : undefined;
+    const previewStale = Boolean(
+      previewAsset &&
+      shape.props.previewSourceHash !== getGraph3DPreviewSourceHash(shape.props.spec),
+    );
+    return (
+      <div
+        className="graph3d-shape overlay-graph3d-shape"
+        data-testid="overlay-graph3d"
+        style={{ width: shape.props.w, height: shape.props.h }}
+      >
+        {editorRenderers && (editing || previewStale || !previewAsset) ? (
+          editorRenderers.renderGraph3DEditor({ interactive: editing, shape })
+        ) : previewAsset ? (
+          <>
+            {/* Derived data URLs are already canonical local assets; Next image optimization cannot improve them. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              alt={previewAsset.props.name}
+              draggable={false}
+              src={previewAsset.props.src}
+              style={{ display: "block", width: "100%", height: "100%", objectFit: "cover" }}
+            />
+            <Graph3DStaticLabelOverlay
+              spec={shape.props.spec}
+              width={shape.props.w}
+              height={shape.props.h}
+            />
+            {previewStale && <span className="overlay-graph3d-stale">{tShape("graph3d.previewWaiting")}</span>}
+          </>
+        ) : (
+          <div className="overlay-graph3d-placeholder" aria-label={tShape("graph3d.aria")}>
+            <span aria-hidden="true">3D</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (shape.type === "tableShape") {
     if (editorRenderers) {
       return editorRenderers.renderTableEditor({ editing, shape });
@@ -709,15 +836,49 @@ export function ShapeBody({
     );
   }
 
+  if (shape.type === "chartShape") {
+    return <OverlayChartShapeBody shape={shape} sourceTable={chartSourceTable ?? null} />;
+  }
+
   if (shape.type === "group") {
     return null;
   }
 
   if (!editing || !editorRenderers) {
-    return <OverlayTextShapeStaticView shape={shape} />;
+    return <OverlayTextShapeStaticView shape={shape} onMeasuredHeight={measureTextHeight} />;
   }
 
   return editorRenderers.renderTextEditor({ editing, externalRevision, shape });
+}
+
+/**
+ * A chart's own body, split out so the live/snapshot derivation can be memoized.
+ *
+ * `ShapeBody` is one long branch chain, so a `useMemo` there would be a conditional hook. Keeping
+ * the derivation here also puts it on the child side of `OverlayShapeView`'s `memo`, which is what
+ * lets the host pass the table by reference and still have the chart follow an edit to it.
+ */
+function OverlayChartShapeBody({
+  shape,
+  sourceTable,
+}: {
+  shape: OverlayChartShape;
+  sourceTable: SigmaTableSpec | null;
+}) {
+  const data = useMemo(
+    () => resolveChartData(shape.props, sourceTable),
+    [shape.props, sourceTable],
+  );
+  return (
+    <div className="chart-shape" data-testid="overlay-chart">
+      <OverlayChartStaticView
+        data={data}
+        height={shape.props.h}
+        spec={shape.props.spec}
+        width={shape.props.w}
+      />
+    </div>
+  );
 }
 
 export function GeoSvgBody({ shape }: { shape: Extract<OverlayShape, { type: "geo" }> }) {
@@ -827,36 +988,51 @@ export function ArrowMarkerDefs({
   );
 }
 
+/**
+ * A shape's text when it is not being edited — which is every surface except the focused shape on
+ * the interactive canvas, so this is what the reader, the printer and the PDF actually see.
+ *
+ * It draws through the body's own static block renderer, so a shape gets the body's typesetting
+ * (inline math, underlines, boxed runs, lists) instead of the paragraph-only renderer it used to
+ * have. What stays shape-specific is the box: the width is the user's, and the height is the
+ * derived cache — which `onMeasuredHeight` keeps honest on surfaces that can write back.
+ */
 export function OverlayTextShapeStaticView({
   shape,
+  onMeasuredHeight,
 }: {
   shape: Extract<OverlayShape, { type: "text" | "callout" }>;
+  /**
+   * Reports the height the drawn text needs. Interactive surfaces write it back to SigmaDoc;
+   * read-only surfaces may use it as local derived geometry without mutating the document.
+   */
+  onMeasuredHeight?: OverlayTextMeasuredHeightHandler;
 }) {
   const lineHeightPx = getTextShapeRenderedLineHeightPx(shape);
   const isCallout = shape.type === "callout";
-  const autoSize = shape.type === "text" && shape.props.autoSize;
-  const constrainedAutoSize = shape.type === "text" && shape.props.autoSize && shape.props.maxWidth !== undefined;
+  const reportHeight = useCallback((contentHeight: number) => {
+    onMeasuredHeight?.(shape.id, overlayTextBoxHeightForContent(shape, contentHeight));
+  }, [onMeasuredHeight, shape]);
+  const measureRef = useOverlayTextContentHeight(
+    onMeasuredHeight ? reportHeight : undefined,
+    { rotated: getShapeRotation(shape) !== 0, remeasureKey: shape.props.w },
+  );
+
   return (
     <div
-      className={`overlay-text-shape ${isCallout ? "embedded-callout" : ""} ${autoSize ? "auto-size" : ""} ${constrainedAutoSize ? "constrained" : ""}`}
+      className={`overlay-text-shape ${isCallout ? "embedded-callout" : ""}`}
       style={{
-        width: isCallout
-          ? "100%"
-          : constrainedAutoSize
-            ? shape.props.maxWidth
-            : autoSize
-              ? "max-content"
-              : shape.props.w,
+        // A callout fills the text rect its geometry already carved out; a text shape is exactly
+        // as wide as the user made it, and the content wraps inside that.
+        width: isCallout ? "100%" : shape.props.w,
         minWidth: isCallout ? 0 : MIN_TEXT_SHAPE_WIDTH,
-        minHeight: isCallout ? lineHeightPx : Math.max(shape.props.h ?? 0, lineHeightPx),
+        minHeight: isCallout ? lineHeightPx : Math.max(shape.props.h, lineHeightPx),
         color: shape.props.color,
         fontSize: `${getTextShapeFontSizePt(shape)}pt`,
         pointerEvents: "none",
       }}
     >
-      <div className="overlay-text-shape-content ProseMirror">
-        <OverlayRichTextPreview node={shape.props.richText} keyPrefix={`overlay-text-${shape.id}`} />
-      </div>
+      <OverlayTextBlocksView blocks={shape.props.blocks} contentRef={measureRef} />
     </div>
   );
 }

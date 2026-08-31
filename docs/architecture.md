@@ -346,6 +346,7 @@ overlayは見た目のレイヤーとして `stackLayer: "background" | "foregro
 担当範囲（シェイプ種別）:
 
 - `graph2dShape`: 2D関数グラフ・数直線（`Graph2DSpec`）
+- `graph3dShape`: 数式曲面・立体・共通部分・3D注釈（`Graph3DSpec`）。Three.jsのscene/meshは保存しない
 - `geo`: 矩形・楕円などの図形
 - `arc`: 円弧・扇形
 - `arrow` / `line`: 矢印・折れ線・曲線・フリーハンド
@@ -462,6 +463,24 @@ remote asset参照の例:
 
 所有するtext shapeをmaterializeした後は、対応する `GraphAxes` / `GraphPoint.label` / `GraphAnnotation.text` / `GraphCurve.label` の本文を空にし、ラベル本文の正本をtext shapeへ一本化します。グラフ更新コマンドがspec形式の入力を必要とする場合だけtext shapeから一時specへ投影し、その投影は保存しません。
 
+### 3D teaching materials
+
+3D教材は `graph3dShape` と、その `props.spec: Graph3DSpec` を正本にします。`Graph3DSpec` は次を数学的・engine非依存なデータとして保持します。
+
+- `implicitSurface`、媒介変数曲線・曲面（`x = u`、`y = v` と書けば教科書の `z = f(x,y)` になる）
+- 球・円柱・円錐・直方体、回転体、多面体、不等式で囲まれた立体（線形・非線形）
+- 汎用parameterと再生範囲。animation frameは保存せず、その時点のparameter値から導出する
+- 立体ごとの局所軸倍率・局所回転・ワールド座標の平行移動。数式文字列は書き換えず、描画と内外判定の双方へ同じアフィン変換を適用する
+- 立体どうしの共通部分 (`objectIntersection` region)。何も切り落とさずに共有する体積を塗る。平面を1つ混ぜたときは共有する面を塗る。非表示の立体も判定には残る。閉じた媒介変数曲面も中身のある立体として使える
+- 数式ラベルと、線種・太さ・端の形を持つ寸法線
+- z-upのcamera・表示設定
+
+数式文字列は編集中の未完成値も失わず保存します。評価は `features/drawing/math-expression.ts` の制約付きparserだけを使い、`eval`、`Function`、動的import、ユーザーcallbackは使いません。式長・構文step・再帰深さ・geometry分割数には上限を設けます。共通部分は `graph3d-solid.ts` が担当し、立体ごとの内外判定 (`Graph3DSolidField`) を作ってから交わりを求めます。半空間だけで表せる立体どうしは頂点列挙で厳密に、曲面や二次不等式を含む場合は格子上のmarching tetrahedraで標本化します。古い `cuts` は互換のため残しますが描画しません。平面との共通部分は `objectIntersection` へ移行します。
+
+Three.jsは `features/rendering/adapters/three` と `adapters/react/Graph3DPreview.tsx` に限定した描画adapterです。OrbitControlsによる回転・pan・zoom、perspective/orthographic camera、lighting、grid、GPU resourceのdisposeを担当します。Three.jsの `Scene`、`Mesh`、camera stateをSigmaDocの正本にしてはいけません。
+
+ページ上、PDF、静的ViewerではWebGLを常時起動しません。設定パネルのlive viewportからPNG previewを生成し、`previewAssetId`で通常のoverlay image assetとして参照します。`previewSourceHash`がspecと一致しない間は古い画像であることを表示します。コピー時はpreview assetも複製し、Viewerでは通常画像と同じdata URL安全検証を通します。previewは派生キャッシュなので、数学的内容の復元には使いません。
+
 ## PDF And Print Quality
 
 HTML/CSS + ChromiumのベクターPDF出力は現実的ですが、商用品質の教材PDFを作るには構造検査と画像検査が必要です。複数ページのCSS fragmentationは使わず、確定済みの用紙窓を1ページずつ出力します。
@@ -533,7 +552,7 @@ notes
 ### 描画経路には唯一の出典を持つ
 
 本文の見た目を決めるものは 1 箇所にしかない: `document-surface.css`、`rich-text-dom.ts`、
-`overlay-text-line-model.ts`、`OverlayTableStaticView`。編集面・印刷/PDF・viewer・素材プレビューは
+`TextFlowStaticBlock`、`OverlayTableStaticView`。編集面・印刷/PDF・viewer・素材プレビューは
 すべてここを通る。**意図的に残した例外がある**（overlay テキストの囲み枠はセグメントごとに
 border を引く、running region のリストは region スコープ、静的レンダラのリスト構造は編集面と
 食い違う）ので、統一する前にその理由を読むこと。「速いから」と別の描画経路を足すと、そちらだけが古くなる。

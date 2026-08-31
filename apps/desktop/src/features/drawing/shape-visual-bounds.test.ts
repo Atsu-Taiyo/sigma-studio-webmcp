@@ -535,11 +535,15 @@ describe("the selection box still contains everything that is drawn", () => {
         bottom: drawnEnd.y + (spec.markerHeight - spec.refY) * strokeWidth,
       };
 
-      const inside = drawnStart.x >= bounds.x &&
-        markerBox.left >= bounds.x &&
-        markerBox.right <= bounds.x + bounds.w &&
-        markerBox.top >= bounds.y &&
-        markerBox.bottom <= bounds.y + bounds.h;
+      // The box and the marker reach the same distance by two different multiplications, so a head
+      // whose marker units are not whole numbers can miss by one ulp. That is arithmetic noise,
+      // not a head sticking out of its selection.
+      const slack = 1e-9;
+      const inside = drawnStart.x >= bounds.x - slack &&
+        markerBox.left >= bounds.x - slack &&
+        markerBox.right <= bounds.x + bounds.w + slack &&
+        markerBox.top >= bounds.y - slack &&
+        markerBox.bottom <= bounds.y + bounds.h + slack;
       expect(`${spec.kind}/${size}:${inside}`).toBe(`${spec.kind}/${size}:true`);
     }
   });

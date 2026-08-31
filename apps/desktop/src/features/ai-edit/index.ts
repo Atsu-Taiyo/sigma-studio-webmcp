@@ -74,6 +74,7 @@ export {
   groupMcpProposalsForPreview,
   resolveOverlayShapeAnchorBlockId,
   type AiApplyAnimationState,
+  type AiEditPreviewState,
 } from "./model/preview";
 export {
   deriveAiProposalPresentation,

@@ -4,7 +4,13 @@ import { createEmptyEditorDocument } from "@/lib/blank-document";
 import { createBlock } from "@/lib/document-tree";
 import type { DocumentMetadata } from "@/lib/runtime/types";
 
-import { getDefaultDocumentSelectionId, sameDocumentMetadatas } from "./document-helpers";
+import type { SelectedOverlayChart } from "@/components/editor/EditorSettings";
+
+import {
+  areSelectedOverlayChartsEqual,
+  getDefaultDocumentSelectionId,
+  sameDocumentMetadatas,
+} from "./document-helpers";
 
 function metadata(overrides: Partial<DocumentMetadata> = {}): DocumentMetadata {
   return {
@@ -75,5 +81,65 @@ describe("getDefaultDocumentSelectionId", () => {
     };
 
     expect(getDefaultDocumentSelectionId(document)).toBe("problem_1");
+  });
+});
+
+describe("areSelectedOverlayChartsEqual", () => {
+  const base: SelectedOverlayChart = {
+    shapeId: "chart-1",
+    spec: {
+      version: 1,
+      kind: "bar",
+      orientation: "columns",
+      headerRow: true,
+      labelColumn: true,
+      legend: true,
+      seriesColors: { c2: "#0083d5" },
+    },
+    data: { labels: ["a"], series: [{ id: "c2", name: "Math", values: [1] }] },
+    linked: true,
+    onSpecChange: () => {},
+  };
+
+  it("treats a structurally identical payload as equal", () => {
+    // The canvas re-dispatches on every commit; without this the shell would setState each time
+    // and the two would re-render one another without end.
+    expect(areSelectedOverlayChartsEqual(base, structuredClone({ ...base, onSpecChange: undefined }) as never)).toBe(true);
+  });
+
+  it("ignores a fresh callback identity", () => {
+    expect(areSelectedOverlayChartsEqual(base, { ...base, onSpecChange: () => {} })).toBe(true);
+  });
+
+  it("notices a changed chart kind", () => {
+    expect(areSelectedOverlayChartsEqual(base, { ...base, spec: { ...base.spec, kind: "line" } })).toBe(false);
+  });
+
+  it("notices a changed series colour", () => {
+    expect(areSelectedOverlayChartsEqual(base, { ...base, spec: { ...base.spec, seriesColors: { c2: "#ff0000" } } }))
+      .toBe(false);
+  });
+
+  it("notices new data from the table", () => {
+    expect(areSelectedOverlayChartsEqual(base, {
+      ...base,
+      data: { labels: ["a"], series: [{ id: "c2", name: "Math", values: [2] }] },
+    })).toBe(false);
+  });
+
+  it("notices the reference breaking", () => {
+    expect(areSelectedOverlayChartsEqual(base, { ...base, linked: false })).toBe(false);
+  });
+
+  it("notices a different chart", () => {
+    expect(areSelectedOverlayChartsEqual(base, { ...base, shapeId: "chart-2" })).toBe(false);
+  });
+
+  it("treats null on one side as different", () => {
+    expect(areSelectedOverlayChartsEqual(base, null)).toBe(false);
+  });
+
+  it("treats two nulls as equal", () => {
+    expect(areSelectedOverlayChartsEqual(null, null)).toBe(true);
   });
 });

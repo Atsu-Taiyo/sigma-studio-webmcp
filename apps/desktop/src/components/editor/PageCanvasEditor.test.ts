@@ -1790,7 +1790,11 @@ describe("isFlowBlockFragmentable", () => {
   it("routes every built-in box style through the shared fragmentation engine", () => {
     expect(BUILTIN_BOX_STYLES.map((style) => style.id)).toEqual([
       "fancybox",
+      "titlebox",
+      "bandbox",
       "itembox",
+      "theorembox",
+      "tabbox",
       "tcolorbox",
       "tcolorbox-note",
       "doublebox",

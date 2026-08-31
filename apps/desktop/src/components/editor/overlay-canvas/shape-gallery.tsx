@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import type { OverlayInsertCommand } from "@/features/drawing";
 import type { OverlayCommand } from "@/components/editor/page-overlay-types";
 import { getRegularPolygonPoints, REGULAR_POLYGON_SIDES } from "@/features/drawing";
 import type { Translate } from "@/lib/i18n";
@@ -145,12 +146,17 @@ export function buildLineToolItems(
   return LINE_TOOLS.map(({ command, labelKey, icon }) => ({ command, label: t(labelKey), icon }));
 }
 
-export function isLineToolCommand(command: OverlayCommand): boolean {
+/**
+ * Accepts the wider `OverlayInsertCommand` because the active tool is typed that way, and it
+ * carries commands the toolbar never offers (`chart` is created from a table's own menu). Those
+ * simply answer `false` here rather than needing a cast at every call site.
+ */
+export function isLineToolCommand(command: OverlayCommand | OverlayInsertCommand): boolean {
   return LINE_TOOLS.some((tool) => tool.command === command);
 }
 
-export function isShapeMenuCommand(command: OverlayCommand): boolean {
-  return command !== "text" && command !== "graph" && !isLineToolCommand(command);
+export function isShapeMenuCommand(command: OverlayCommand | OverlayInsertCommand): boolean {
+  return command !== "text" && command !== "graph" && command !== "chart" && !isLineToolCommand(command);
 }
 
 /** Google Slides風の「図形」ギャラリー1マス。command系は runOverlayCommand、image系は画像選択ダイアログを開く。 */

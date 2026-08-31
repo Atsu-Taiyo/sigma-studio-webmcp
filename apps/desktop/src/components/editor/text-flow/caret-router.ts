@@ -77,14 +77,19 @@ export interface CaretSurfaceHandle {
   }) => boolean;
   /** 面の一番上 / 一番下の行へキャレットを置く。 */
   focusCaretAtEdge: (edge: "top" | "bottom", preferredX: number) => boolean;
-  /** 分割されたブロックの直前 / 直後のブロックへキャレットを置く。 */
+  /**
+   * 分割されたブロックの直前 / 直後のブロックへキャレットを置く。`preferredX` が null なら
+   * 横位置を選ばず論理的な端 (直後の先頭 / 直前の末尾) に置く — 左右移動の出口が使う。
+   */
   focusCaretAfterBlock: (
     containerBlockId: string,
     direction: "up" | "down",
-    preferredX: number,
+    preferredX: number | null,
   ) => boolean;
   /** 同じ doc の、その向きにある次のテキストブロックの位置。無ければ null。 */
   adjacentTextblockAddress: (direction: "up" | "down") => CaretAddress | null;
+  /** この面の doc の先頭 / 末尾のキャレット位置。左右移動がユニット境界を渡るときの行き先。 */
+  docEdgeAddress: (edge: "start" | "end") => CaretAddress | null;
   /** キャレットが可視域の外なら、紙面をスクロールして見える位置へ入れる。 */
   ensureCaretVisible: () => void;
   /** 跨ぎ選択・跨ぎ置換が使う面ごとの情報。持たない面 (素材ダイアログ等) は null。 */
@@ -501,6 +506,37 @@ function applyToSurface(
 // --- 上下移動 ---------------------------------------------------------------
 
 /**
+ * キャレットがテキストブロックの端の行 (up = 先頭行 / down = 最終行) にいるか。
+ *
+ * `endOfTextblock` は内部で DOM の幾何を見るため、CSS multicol (段組みセクション) の中では
+ * 端の行にいても false を返すことがある。false のときだけ、ブロックの端の位置と同じ行に
+ * いるかを自前の幾何で確かめて補う。
+ */
+export function caretAtTextblockEdgeLine(
+  view: Editor["view"],
+  direction: "up" | "down",
+): boolean {
+  if (view.endOfTextblock(direction)) {
+    return true;
+  }
+  try {
+    const { $head } = view.state.selection;
+    if (!$head.parent.isTextblock) {
+      return false;
+    }
+    const caret = view.coordsAtPos($head.pos);
+    const edge = view.coordsAtPos(
+      direction === "down" ? $head.end() : $head.start(),
+      direction === "down" ? -1 : 1,
+    );
+    const lineHeight = Math.max(caret.bottom - caret.top, 1);
+    return Math.abs(edge.top - caret.top) < lineHeight / 2;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 1 行ぶんの上下移動を**先回りして**解決する。面をまたぐときだけ介入し、`true` を返したら
  * 呼び出し側が `preventDefault` する。
  *
@@ -529,7 +565,7 @@ export function moveCaretVertically(
   }
 
   // 分割されていない面。ブロックの縦の端でなければネイティブに任せる。
-  if (!from.editor.view.endOfTextblock(direction)) {
+  if (!caretAtTextblockEdgeLine(from.editor.view, direction)) {
     return false;
   }
   // 同じ doc にまだ次のテキストブロックがあるならネイティブで足りる。ただしその行き先が
@@ -602,9 +638,19 @@ function moveWithinFragmentedBlock(
   const move = resolveVerticalMove({ direction, lineHeight, localY, table });
   if (move.kind === "same") {
     // 同じ断片の中の移動。折り返し・双方向テキスト・数式ノードビューの中まで自前で持たない。
-    return false;
-  }
-  if (move.kind === "fragment") {
+    //
+    // ただし複製の doc はそのブロックしか持たない。最終断片の下端は「ブロック内の合法な末尾」
+    // として最終断片へ寄せられる (`resolveCaretSurface`) ので、最終行からの下移動もここへ
+    // 落ちてくる — ネイティブに任せると行き先が doc に無く、キャレットが複製の端で迷子になる。
+    // その形 (ブロックの端の行 × doc に次のテキストブロックが無い) だけはブロックの外への
+    // 出口として扱う。
+    const stuckAtReplicaDocEdge = from.surface.kind === "fragmentReplica"
+      && caretAtTextblockEdgeLine(from.editor.view, direction)
+      && from.adjacentTextblockAddress(direction) === null;
+    if (!stuckAtReplicaDocEdge) {
+      return false;
+    }
+  } else if (move.kind === "fragment") {
     const owners = getCaretSurfaces().filter((handle) => handle.ownsBlock(address!.blockId));
     const target = resolveFragmentTarget(owners, containerBlockId, move.fragmentIndex);
     if (!target.handle) {
@@ -636,12 +682,22 @@ function moveWithinFragmentedBlock(
     // が先頭/末尾にある面だけ隣のユニットへ抜けられなくなる)。
     return null;
   }
-  return source.focusCaretAfterBlock(containerBlockId, direction, preferredX);
+  if (source.focusCaretAfterBlock(containerBlockId, direction, preferredX)) {
+    return true;
+  }
+  // 箱がユニットの端 (その向きに正本の doc の続きが無い)。隣のユニットへ。
+  return moveToNeighbourSurface(from, direction, preferredX);
 }
 
 /**
  * 文書順で隣の面へ移る。**順番を持たない面 (素材ダイアログ・ヘッダ/フッタ) は候補にしない**
  * ので、モーダルが開いていても本文の上下移動が漏れない。
+ *
+ * 候補は**ユニットだけ**。複製の順番タプルは正本の直後に並ぶが、その内容は持ち主のユニットの
+ * 一部 (箱) の写しであって「doc の端の先」ではない — 複製を候補にすると、箱より後ろの本文の
+ * 末尾で ↓ を押しただけで同じ箱の頭へ逆戻りする。行き先の面 (正本か複製か) は、行き先ユニット
+ * の端の**内容の住所**から引き直す: 端が分割されたブロックの中なら、それを見せている複製の端へ
+ * preferredX を保って置く。
  */
 function moveToNeighbourSurface(
   from: CaretSurfaceHandle,
@@ -651,10 +707,101 @@ function moveToNeighbourSurface(
   if (from.order.length === 0) {
     return false;
   }
-  const ordered = getCaretSurfaces().filter((handle) => handle.order.length > 0);
-  const next = nextSurfaceInVisualOrder(ordered, from.order, direction);
+  const units = getCaretSurfaces().filter((handle) => (
+    handle.order.length > 0 && handle.surface.kind === "unit"
+  ));
+  const next = nextSurfaceInVisualOrder(units, from.order, direction);
   if (!next) {
     return false;
   }
-  return next.focusCaretAtEdge(direction === "down" ? "top" : "bottom", preferredX);
+  const address = next.docEdgeAddress(direction === "down" ? "start" : "end");
+  const face = address
+    ? resolveTargetSurface(
+      getCaretSurfaces().filter((handle) => handle.ownsBlock(address.blockId)),
+      { anchor: address, head: address, preferredX: null },
+    ).handle
+    : null;
+  // 行き先の複製がまだ出ていない (カリング) ときはユニットの正本へ。見える帯の端に置くので
+  // clip された場所へは入らない。
+  const target = face ?? next;
+  return target.focusCaretAtEdge(direction === "down" ? "top" : "bottom", preferredX);
+}
+
+
+// --- 左右移動 ---------------------------------------------------------------
+
+/**
+ * 1 文字ぶんの左右移動のうち、**ネイティブでは正しく動けない境界**だけを先回りして解決する。
+ * `true` を返したら呼び出し側が `preventDefault` する。
+ *
+ * - 行の途中・普通のブロック境界はネイティブに任せる (bidi・数式ノードビューの中まで自前で
+ *   持たないのは上下移動と同じ方針)。
+ * - 行き先が**別の面が見せている断片**の中: ネイティブは同じ doc の中で成功して clip された
+ *   見えない場所へ入ってしまうので、見せている面へ配る。
+ * - doc の端: ネイティブは動けず、キャレットが端で止まる。複製の端ならブロックの外 (正本の
+ *   doc) へ、ユニットの端なら文書順で隣のユニットの端へ渡す。
+ */
+export function moveCaretHorizontally(
+  viewDom: Element,
+  direction: "forward" | "backward",
+): boolean {
+  const from = getCaretSurfaceByViewDom(viewDom);
+  if (!from || from.editor.isDestroyed || !from.editor.state.selection.empty) {
+    return false;
+  }
+  if (!from.editor.view.endOfTextblock(direction)) {
+    return false;
+  }
+  const verticalDirection = direction === "forward" ? "down" : "up";
+  const adjacent = from.adjacentTextblockAddress(verticalDirection);
+  if (adjacent) {
+    const container = from.fragmentBlockIdFor(adjacent.blockId);
+    if (!container || !(container in fragmentSources)) {
+      return false;
+    }
+    const selection: TextFlowSelectionBookmark = {
+      anchor: adjacent,
+      head: adjacent,
+      preferredX: null,
+    };
+    const owners = getCaretSurfaces().filter((handle) => handle.ownsBlock(adjacent.blockId));
+    const target = resolveTargetSurface(owners, selection);
+    if (!target.handle || target.handle === from) {
+      return false;
+    }
+    return applyToSurface(target.handle, selection, target);
+  }
+
+  // doc の端。複製なら行き先はまずブロックの外 = 正本の doc にある。
+  if (from.surface.kind === "fragmentReplica") {
+    const containerBlockId = from.surface.blockId;
+    const source = containerBlockId
+      ? getCaretSurfaces()
+        .filter((handle) => handle.ownsBlock(containerBlockId))
+        .find((handle) => handle.surface.kind !== "fragmentReplica") ?? null
+      : null;
+    if (source?.focusCaretAfterBlock(containerBlockId!, verticalDirection, null)) {
+      return true;
+    }
+    // 箱がユニットの端 (その向きに正本の doc の続きが無い)。下の共通経路で隣のユニットへ。
+  }
+
+  // ユニットの端。隣の候補は**ユニットだけ**にする: 複製の doc はこのユニットの内容の一部
+  // (同じ箱) の写しであって、この先・この前の内容を持たない。
+  if (from.order.length === 0) {
+    return false;
+  }
+  const units = getCaretSurfaces().filter((handle) => (
+    handle.order.length > 0 && handle.surface.kind === "unit"
+  ));
+  const next = nextSurfaceInVisualOrder(units, from.order, verticalDirection);
+  if (!next) {
+    return false;
+  }
+  const address = next.docEdgeAddress(direction === "forward" ? "start" : "end");
+  if (!address) {
+    return false;
+  }
+  // 行き先の位置が分割されたブロックの中なら、`deliverCaret` が見せている面まで選び直す。
+  return deliverCaret({ anchor: address, head: address, preferredX: null });
 }

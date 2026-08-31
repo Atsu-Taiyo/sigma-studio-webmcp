@@ -288,7 +288,9 @@ export interface EditorChromeAppMenu {
   openDocumentTabs: { fileId: string; title: string; updatedAt: string; }[];
   openImportDialog: () => void;
   openNewDocMenu: () => void;
+  openOtherImportDialog: () => void;
   openPrintPreview: () => void;
+  otherImportInputRef: RefObject<HTMLInputElement | null>;
   openWorkspaceScreen: () => Promise<void>;
   promoteAiToSidebar: () => void;
   reportIssue: () => void;

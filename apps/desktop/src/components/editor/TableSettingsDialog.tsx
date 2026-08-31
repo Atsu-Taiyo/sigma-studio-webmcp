@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 import { ColorPalette } from "@/components/editor/ColorPalette";
 import { MathPreview, OverlayTableTrendCell } from "@/features/rendering/adapters/react";
 import { ToolbarPopover } from "@/components/editor/ToolbarPopover";
+import { Select } from "@/components/ui/Select";
 import {
   applyTableTemplateStyle,
   createOpenSidesTableSpec,
@@ -39,6 +40,8 @@ import type {
   SigmaTableGridLineStyle,
   SigmaTableSpec,
 } from "@/components/editor/overlay-canvas/types";
+import { getTableCellDisplayNodes } from "@/features/document";
+import { isSafeCssDeclarationValue } from "@/features/document/css-safety";
 import type { InlineNode, TextAlign } from "@/features/document";
 import { getCumulativeOffsets } from "@/features/rendering/core";
 import { useT } from "@/lib/i18n/react";
@@ -349,25 +352,26 @@ export function TableSettingsDialog({
                 </div>
                 <label className="table-border-line-type">
                   <span className="table-border-label">{t("table.lineTypeLabel")}</span>
-                  <select
+                  <Select
                     aria-label={t("table.lineTypeAria")}
-                    size={5}
                     disabled={selectedLineCount === 0}
                     value={selectedLineTypeValue}
-                    onChange={(event) => {
-                      const option = LINE_TYPE_OPTIONS.find((entry) => entry.id === event.target.value);
+                    options={[
+                      ...(selectedLineTypeValue === MIXED_SELECT_VALUE
+                        ? [{ value: MIXED_SELECT_VALUE, label: tCommon("color.mixed"), disabled: true }]
+                        : []),
+                      ...LINE_TYPE_OPTIONS.map((option) => ({
+                        value: option.id,
+                        label: t(`table.lineType.${option.id}`),
+                      })),
+                    ]}
+                    onChange={(id) => {
+                      const option = LINE_TYPE_OPTIONS.find((entry) => entry.id === id);
                       if (option) {
                         updateSelectedLineType(option);
                       }
                     }}
-                  >
-                    {selectedLineTypeValue === MIXED_SELECT_VALUE && (
-                      <option value={MIXED_SELECT_VALUE} disabled>{tCommon("color.mixed")}</option>
-                    )}
-                    {LINE_TYPE_OPTIONS.map((option) => (
-                      <option key={option.id} value={option.id}>{t(`table.lineType.${option.id}`)}</option>
-                    ))}
-                  </select>
+                  />
                 </label>
                 <label className="table-border-color">
                   <span className="table-border-label">{t("table.colorLabel")}</span>
@@ -584,7 +588,7 @@ function TableSettingsPreview({
                     >
                       {cell?.content.map((content) => (
                         <span key={content.id} className="table-settings-preview-cell-content">
-                          {renderPreviewContent(content, colSpan)}
+                          {renderPreviewContent(table, cell, content, colSpan)}
                         </span>
                       ))}
                     </td>
@@ -947,7 +951,12 @@ function roundOffset(offset: number): number {
   return Math.round(offset * 1000) / 1000;
 }
 
-function renderPreviewContent(content: SigmaTableCellContent, colSpan: number): ReactNode {
+function renderPreviewContent(
+  table: SigmaTableSpec,
+  cell: SigmaTableCell | undefined,
+  content: SigmaTableCellContent,
+  colSpan: number,
+): ReactNode {
   if (content.type === "trend") {
     // The same component the table itself draws, so the preview cannot show an arrow the document
     // does not have. It used to be KaTeX here — and `\to` for `flat`, where every other surface used
@@ -955,16 +964,22 @@ function renderPreviewContent(content: SigmaTableCellContent, colSpan: number): 
     return <OverlayTableTrendCell colSpan={colSpan} content={content} />;
   }
 
-  return renderInlineNodes(content.children);
+  // The live table is what the dialog previews, so a formula cell has to show the same value here
+  // as it does on the canvas behind the dialog.
+  return renderInlineNodes(getTableCellDisplayNodes(table, cell, content));
 }
 
-function renderInlineNodes(children: InlineNode[]): ReactNode {
+function renderInlineNodes(children: readonly InlineNode[]): ReactNode {
   return children.map((child, index) => {
     if (child.type === "mathInline") {
       return <MathPreview key={child.id} tex={child.tex} />;
     }
 
-    return <span key={`${child.text}-${index}`}>{child.text}</span>;
+    // The colour is carried because the projection puts the error colour there, and this preview
+    // exists to agree with the canvas behind the dialog. It goes through the same safety funnel as
+    // every other document-supplied colour.
+    const color = child.color && isSafeCssDeclarationValue(child.color) ? child.color : undefined;
+    return <span key={`${child.text}-${index}`} style={color ? { color } : undefined}>{child.text}</span>;
   });
 }
 

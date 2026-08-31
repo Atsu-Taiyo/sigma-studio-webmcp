@@ -3,6 +3,8 @@
 import { FileCog, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { Select } from "@/components/ui/Select";
+import { SettingsField, SettingsRow, SettingsSection, Switch } from "@/components/ui/settings";
 import {
   expandMarginsForRunningRegions,
   getPageLayoutIssues,
@@ -13,6 +15,8 @@ import {
   type PageLayout,
   type PageOrientation,
   type PageSizePreset,
+  type HeadingNumberingConfig,
+  type HeadingNumberingStyle,
 } from "@/features/document";
 import { useT } from "@/lib/i18n/react";
 
@@ -22,9 +26,14 @@ import { formatSigmaValidationCode } from "@/lib/validation-text";
 interface PageSettingsDialogProps {
   layout?: PageLayout;
   mathFractionSizing?: "uniform" | "texDefault";
+  headingNumbering?: HeadingNumberingConfig;
   hasContent?: boolean;
   onClose: () => void;
-  onChange: (layout: PageLayout, mathFractionSizing: "uniform" | "texDefault") => void;
+  onChange: (
+    layout: PageLayout,
+    mathFractionSizing: "uniform" | "texDefault",
+    headingNumbering: HeadingNumberingConfig,
+  ) => void;
   /** 設定パレットから開いたときに見せたい項目 (`settings-catalog.ts` の id)。 */
   focusEntryId?: string;
 }
@@ -49,6 +58,9 @@ interface PageSettingsDraft {
   footerOffsetMm: number;
   footerShowOnFirstPage: boolean;
   mathFractionSizing: "uniform" | "texDefault";
+  headingNumberingEnabled: boolean;
+  headingNumberingStyle: HeadingNumberingStyle;
+  headingNumberingDepth: 1 | 2 | 3;
 }
 
 // 用紙名 (A4/A3/…) は国際共通の規格名なので訳さない。`custom` だけが翻訳対象。
@@ -66,6 +78,7 @@ const COLUMN_COUNT_OPTIONS = [1, 2, 3, 4] as const;
 export function PageSettingsDialog({
   layout,
   mathFractionSizing,
+  headingNumbering,
   onClose,
   onChange,
   focusEntryId,
@@ -77,7 +90,7 @@ export function PageSettingsDialog({
   useSettingsEntryFocus(focusEntryId);
   const normalizedLayout = useMemo(() => normalizePageLayout(layout), [layout]);
   const [draft, setDraft] = useState<PageSettingsDraft>(() =>
-    layoutToDraft(normalizedLayout, mathFractionSizing),
+    layoutToDraft(normalizedLayout, mathFractionSizing, headingNumbering),
   );
   const [showWhiteboardConfirm, setShowWhiteboardConfirm] = useState(false);
   const presetOptions = isWhiteboardPageLayout(normalizedLayout)
@@ -178,7 +191,11 @@ export function PageSettingsDialog({
       ...nextLayout,
       preset: "whiteboard",
       pageSize: { widthMm: draft.widthMm, heightMm: draft.heightMm },
-    }), draft.mathFractionSizing);
+    }), draft.mathFractionSizing, {
+      enabled: draft.headingNumberingEnabled,
+      style: draft.headingNumberingStyle,
+      depth: draft.headingNumberingDepth,
+    });
     onClose();
   };
 
@@ -202,7 +219,11 @@ export function PageSettingsDialog({
     if (!canApply) {
       return;
     }
-    onChange(normalizedNextLayout, draft.mathFractionSizing);
+    onChange(normalizedNextLayout, draft.mathFractionSizing, {
+      enabled: draft.headingNumberingEnabled,
+      style: draft.headingNumberingStyle,
+      depth: draft.headingNumberingDepth,
+    });
     onClose();
   };
 
@@ -230,29 +251,28 @@ export function PageSettingsDialog({
         <div className="page-settings-body">
           <div id="page-settings-paper" className="page-settings-grid">
             <label className="field-label" htmlFor="page-size-preset">{t("page.paperSize")}</label>
-            <select
+            <Select
               id="page-size-preset"
               value={draft.preset}
-              onChange={(event) => updatePreset(event.target.value as PageSizePreset)}
-            >
-              {presetOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label ?? t(option.value === "whiteboard" ? "page.whiteboard" : "page.custom")}
-                </option>
-              ))}
-            </select>
+              options={presetOptions.map((option) => ({
+                value: option.value,
+                label: option.label ?? t(option.value === "whiteboard" ? "page.whiteboard" : "page.custom"),
+              }))}
+              onChange={(preset) => updatePreset(preset as PageSizePreset)}
+            />
 
             {!isWhiteboard && (
               <>
                 <label className="field-label" htmlFor="page-orientation">{t("page.orientation")}</label>
-                <select
+                <Select
                   id="page-orientation"
                   value={draft.orientation}
-                  onChange={(event) => updateOrientation(event.target.value as PageOrientation)}
-                >
-                  <option value="portrait">{t("page.portrait")}</option>
-                  <option value="landscape">{t("page.landscape")}</option>
-                </select>
+                  options={[
+                    { value: "portrait", label: t("page.portrait") },
+                    { value: "landscape", label: t("page.landscape") },
+                  ]}
+                  onChange={(orientation) => updateOrientation(orientation as PageOrientation)}
+                />
               </>
             )}
           </div>
@@ -301,17 +321,12 @@ export function PageSettingsDialog({
                 <h3>{t("page.columns")}</h3>
                 <div className="page-settings-grid two-columns">
                   <label className="field-label" htmlFor="page-column-count">{t("page.columnCount")}</label>
-                  <select
+                  <Select
                     id="page-column-count"
-                    value={draft.columnCount}
-                    onChange={(event) => updateDraft("columnCount", Number(event.target.value))}
-                  >
-                    {COLUMN_COUNT_OPTIONS.map((count) => (
-                      <option key={count} value={count}>
-                        {count}
-                      </option>
-                    ))}
-                  </select>
+                    value={String(draft.columnCount)}
+                    options={COLUMN_COUNT_OPTIONS.map((count) => ({ value: String(count), label: String(count) }))}
+                    onChange={(count) => updateDraft("columnCount", Number(count))}
+                  />
                   <NumberField
                     id="page-column-gap"
                     label={t("page.columnGapMm")}
@@ -364,6 +379,48 @@ export function PageSettingsDialog({
               <span>{t("page.fractionSameSize")}</span>
             </label>
           </section>
+
+          <SettingsSection
+            id="page-settings-heading-numbering"
+            title={t("page.headingNumbers")}
+            description={t("page.headingNumbersDescription")}
+          >
+            <SettingsRow
+              label={t("page.headingNumbersShow")}
+              control={(
+                <Switch
+                  checked={draft.headingNumberingEnabled}
+                  label={t("page.headingNumbersShow")}
+                  onCheckedChange={(enabled) => updateDraft("headingNumberingEnabled", enabled)}
+                />
+              )}
+            />
+            <SettingsField label={t("page.headingNumbersStyle")} htmlFor="page-heading-numbering-style">
+              <Select
+                id="page-heading-numbering-style"
+                value={draft.headingNumberingStyle}
+                disabled={!draft.headingNumberingEnabled}
+                options={[
+                  { value: "decimal", label: "1.1.3" },
+                  { value: "sectionSign", label: "§1.1.3" },
+                  { value: "chapterJa", label: t("page.headingNumbersStyleChapter") },
+                ]}
+                onChange={(style) => updateDraft("headingNumberingStyle", style as HeadingNumberingStyle)}
+              />
+            </SettingsField>
+            <SettingsField label={t("page.headingNumbersDepth")} htmlFor="page-heading-numbering-depth">
+              <Select
+                id="page-heading-numbering-depth"
+                value={String(draft.headingNumberingDepth)}
+                disabled={!draft.headingNumberingEnabled}
+                options={([1, 2, 3] as const).map((depth) => ({
+                  value: String(depth),
+                  label: t(`page.headingNumbersDepth${depth}`),
+                }))}
+                onChange={(depth) => updateDraft("headingNumberingDepth", Number(depth) as 1 | 2 | 3)}
+              />
+            </SettingsField>
+          </SettingsSection>
 
           {issues.length > 0 && (
             <div className="page-settings-errors" role="alert">
@@ -492,6 +549,7 @@ function NumberField({
 function layoutToDraft(
   layout: PageLayout,
   mathFractionSizing?: "uniform" | "texDefault",
+  headingNumbering?: HeadingNumberingConfig,
 ): PageSettingsDraft {
   return {
     preset: layout.preset,
@@ -513,5 +571,8 @@ function layoutToDraft(
     footerOffsetMm: layout.footer?.offsetMm ?? 5,
     footerShowOnFirstPage: layout.footer?.showOnFirstPage ?? true,
     mathFractionSizing: mathFractionSizing ?? "uniform",
+    headingNumberingEnabled: headingNumbering?.enabled ?? false,
+    headingNumberingStyle: headingNumbering?.style ?? "decimal",
+    headingNumberingDepth: headingNumbering?.depth ?? 3,
   };
 }

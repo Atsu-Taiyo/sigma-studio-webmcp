@@ -1,16 +1,14 @@
-import type { InlineNode, OverlayRichTextDocument } from "@/features/document";
+import type { InlineNode } from "@/features/document";
 import {
   inlineMathNodeClassName,
   inlineMathNodeDataAttributes,
 } from "./inline-math-frame";
 import {
   createInlineNodesRenderModel,
-  createOverlayRichTextRenderModel,
   type BoxedInlineRunSegment,
   type RichTextBoxDecoration,
   type RichTextInlineRenderNode,
   type RichTextRenderDecoration,
-  type RichTextRenderNode,
   type RichTextRenderStyle,
 } from "@/features/rendering/core";
 
@@ -58,25 +56,6 @@ export type RichTextDomNode =
   | { key: string; kind: "mathBody"; tex: string }
   | { key: string; kind: "text"; text: string };
 
-export interface OverlayRichTextBlockDom {
-  /**
-   * Inline render model of the block. `buildOverlayBlockInlineDom` turns it into DOM descriptors;
-   * the React renderer never needs that step because it mounts `InlineContent` instead, so the
-   * projection stays off the typing path.
-   */
-  inlineModel: RichTextInlineRenderNode[];
-  /**
-   * Raw inline content, so the React renderer can hand it to the memoized `InlineContent`
-   * component (which needs the node identity, and owns the runtime boxed-run measurement).
-   */
-  inlineNodes: InlineNode[];
-  isBlank: boolean;
-  key: string;
-  selfContainedStyle: RichTextDomStyle;
-  style?: RichTextDomStyle;
-  tag: "h1" | "h2" | "h3" | "p";
-}
-
 export interface InlineRichTextDomOptions {
   /** Runtime boxed-run measurements, keyed by segment id. React only; absent in static output. */
   alignmentStyles?: Record<string, RichTextDomStyle>;
@@ -97,62 +76,8 @@ export const OVERLAY_BLOCK_SELF_CONTAINED_STYLE: RichTextDomStyle = { margin: "0
 /** Mirrors `globals.css`'s `.overlay-text-shape .inline-math-node { margin: 0 }`. */
 export const MATH_FRAME_SELF_CONTAINED_STYLE: RichTextDomStyle = { margin: "0" };
 
-/** Splits an overlay rich-text document into the block descriptors both renderers walk. */
-export function buildOverlayRichTextBlocksDom(
-  document: OverlayRichTextDocument,
-  options: { runIdPrefix?: string } = {},
-): OverlayRichTextBlockDom[] {
-  const runIdPrefix = options.runIdPrefix ?? "overlay";
-  const model = createOverlayRichTextRenderModel(document, { runIdPrefix });
-  const blocks: OverlayRichTextBlockDom[] = [];
-  model.children.forEach((child, index) => {
-    if (child.kind !== "block") {
-      return;
-    }
-    const key = `${runIdPrefix}-${index}`;
-    blocks.push({
-      inlineModel: child.children as RichTextInlineRenderNode[],
-      inlineNodes: document.blocks[index]?.children ?? [],
-      isBlank: child.isBlank === true,
-      key,
-      selfContainedStyle: OVERLAY_BLOCK_SELF_CONTAINED_STYLE,
-      style: blockStyle(child),
-      tag: blockTag(child),
-    });
-  });
-  return blocks;
-}
-
-/** DOM descriptors for a block's inline content. Only string serialization needs these. */
-export function buildOverlayBlockInlineDom(block: OverlayRichTextBlockDom): RichTextDomNode[] {
-  return block.isBlank
-    ? []
-    : buildInlineRenderModelDom(block.inlineModel, { keyPrefix: block.key });
-}
-
-function blockTag(block: Extract<RichTextRenderNode, { kind: "block" }>): "h1" | "h2" | "h3" | "p" {
-  if (block.blockType !== "heading") {
-    return "p";
-  }
-  return `h${block.headingLevel ?? 3}` as "h1" | "h2" | "h3";
-}
-
-function blockStyle(
-  block: Extract<RichTextRenderNode, { kind: "block" }>,
-): RichTextDomStyle | undefined {
-  const style: RichTextDomStyle = {};
-  if (block.textAlign) {
-    style["text-align"] = block.textAlign;
-  }
-  if (block.lineHeight) {
-    style["line-height"] = block.lineHeight;
-  }
-  return Object.keys(style).length > 0 ? style : undefined;
-}
-
-/** Projects canonical inline nodes into the DOM descriptors both renderers walk. */
 export function buildInlineRichTextDom(
-  children: InlineNode[],
+  children: readonly InlineNode[],
   options: InlineRichTextDomOptions,
 ): RichTextDomNode[] {
   return buildInlineRenderModelDom(

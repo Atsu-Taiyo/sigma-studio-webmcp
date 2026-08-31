@@ -5,6 +5,7 @@ import type { SigmaDocument } from "@/types/sigma-doc";
 import { grabShapeFromBody } from "./body-overlay-entry";
 import { installDesktopRuntimeMock } from "./desktop-runtime-mock";
 import { waitForPagedSurfaceSettled } from "./paged-surface";
+import { selectUiOptionInPage } from "./ui-select";
 
 /**
  * Where a table's `double` boundaries are drawn, on each of the surfaces that draw them.
@@ -523,15 +524,9 @@ test("keeps the boundaries where they are through a zoom change", async ({ page 
   await openEditor(page);
   const atOneHundred = await settledTableLineGeometry(page, AUTO_SELECTOR);
 
-  await page.evaluate(() => {
-    const select = document.querySelector<HTMLSelectElement>('select[aria-label="ズーム"]');
-    if (!select) {
-      throw new Error("ズームのselectが見つかりません");
-    }
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-    setter?.call(select, "1.1");
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  // 以前は select に "1.1" を流し込んでいた。選択肢に無い値なので value は "" になり、
+  // 実際に適用されていたのは下限の 10% だった。同じ倍率を、いまの選択コントロールから明示的に選ぶ。
+  await selectUiOptionInPage(page, "ズーム", "10");
   await activateTableEditor(page, AUTO_SELECTOR);
 
   // Divided by `--editor-zoom`, so a zoomed surface has to report the same model px. The editor's

@@ -123,9 +123,15 @@ export function collectSelectedOverlayAssets(
   assets: Record<string, OverlayAsset>,
 ): Record<string, OverlayAsset> {
   const selectedAssetIds = new Set(
-    shapes
-      .filter((shape): shape is Extract<OverlayShape, { type: "image" }> => shape.type === "image")
-      .map((shape) => shape.props.assetId),
+    shapes.flatMap((shape) => {
+      if (shape.type === "image") {
+        return [shape.props.assetId];
+      }
+      if (shape.type === "graph3dShape" && shape.props.previewAssetId) {
+        return [shape.props.previewAssetId];
+      }
+      return [];
+    }),
   );
 
   return Object.fromEntries(

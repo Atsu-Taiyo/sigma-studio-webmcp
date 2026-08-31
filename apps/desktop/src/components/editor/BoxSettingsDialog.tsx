@@ -1,10 +1,20 @@
 "use client";
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useRef, useState, type CSSProperties, type ReactNode } from "react";
 
+import { BoxTitleEditor } from "@/components/editor/BoxTitleEditor";
+import { ColorPalette } from "@/components/editor/ColorPalette";
+import { ToolbarPopover } from "@/components/editor/ToolbarPopover";
 import { Grid, Inline, Stack } from "@/components/ui/layout";
+import { Select } from "@/components/ui/Select";
 import { ModalBody, ModalFrame, ModalHeader } from "@/components/ui/Modal";
-import type { BoxBlockNode, BoxFrameSpec, BoxSpacingPx } from "@/features/document";
+import type {
+  BoxBlockNode,
+  BoxFrameSpec,
+  BoxSpacingPx,
+  InlineNode,
+  MathFractionSizing,
+} from "@/features/document";
 import {
   resolveBoxStyles,
   boxFrameClassName,
@@ -12,15 +22,24 @@ import {
   boxFrameStyleVars,
   resolveBoxFrame,
 } from "@/lib/box-blocks";
+import { boxFrameFields, type BoxFrameField, type BoxFrameFieldGroup } from "@/lib/box-frame-fields";
 import styles from "./BoxSettingsDialog.module.css";
+import type { Translate } from "@/lib/i18n";
 import { useT } from "@/lib/i18n/react";
 
 type BoxSettingsBlock = Pick<BoxBlockNode, "id" | "styleId" | "frame">;
 
 interface BoxSettingsDialogProps {
   boxBlock: BoxSettingsBlock;
+  title: InlineNode[];
+  mathFractionSizing?: MathFractionSizing | null;
+  /** ⋯メニューの「タイトルを編集…」から開いたときだけタイトル入力へキャレットを置く。 */
+  autoFocusTitle?: boolean;
   onStyleChange: (styleId: string) => void;
   onFrameChange: (patch: Partial<BoxFrameSpec>) => void;
+  onTitleChange: (title: InlineNode[]) => void;
+  /** このスタイルで覚えている見た目を捨て、組み込みの既定へ戻す。 */
+  onResetStyle: () => void;
   onClose: () => void;
 }
 
@@ -34,13 +53,19 @@ const DEFAULT_PADDING: BoxSpacingPx = {
 };
 
 /**
- * boxBlockの見た目に関する設定だけを集約する。
- * タイトル本文はエディタ内で直接編集し、このダイアログでは扱わない。
+ * boxBlockのタイトルと見た目の設定を集約する。
+ * タイトルは枠の中に直接書ける (紙面上の細い placeholder) が、そこは狙って当てにくい入力なので、
+ * 「タイトルを付ける」ための確実な入口はここに置く。数式も本文と同じノードで入れられる。
  */
 export function BoxSettingsDialog({
   boxBlock,
+  title,
+  mathFractionSizing,
+  autoFocusTitle = false,
   onStyleChange,
   onFrameChange,
+  onTitleChange,
+  onResetStyle,
   onClose,
 }: BoxSettingsDialogProps) {
   const t = useT("settings");
@@ -52,7 +77,8 @@ export function BoxSettingsDialog({
     hasUniformPadding(padding) ? "all" : "sides"
   ));
   const uniformPadding = hasUniformPadding(padding) ? padding.top : "";
-  const borderColor = resolvedFrame.borderColor ?? "#000000";
+  const fields = boxFrameFields(resolvedFrame);
+  const decorationFields = fields.filter((field) => field.group === "decoration");
 
   const patchPadding = (side: keyof BoxSpacingPx, value: number) => {
     onFrameChange({
@@ -79,6 +105,17 @@ export function BoxSettingsDialog({
       />
       <ModalBody padding="xl">
         <Stack gap="xl">
+          <Stack as="section" gap="sm" aria-labelledby="box-settings-title-heading">
+            <SectionHeading id="box-settings-title-heading" title={t("box.titleSection")} />
+            <BoxTitleEditor
+              value={title}
+              mathFractionSizing={mathFractionSizing}
+              autoFocus={autoFocusTitle}
+              onChange={onTitleChange}
+            />
+            <p className={styles.fieldHint}>{t("box.titleHint")}</p>
+          </Stack>
+
           <Stack as="section" gap="md" aria-labelledby="box-settings-style-heading">
             <SectionHeading id="box-settings-style-heading" title={t("box.style")} />
             <Grid columns={3} gap="sm" className={styles.styleGrid}>
@@ -116,17 +153,7 @@ export function BoxSettingsDialog({
                   step={0.1}
                   onChange={(borderWidthPx) => onFrameChange({ borderWidthPx })}
                 />
-                <label className={styles.field}>
-                  <span>{t("box.borderColor")}</span>
-                  <span className={styles.colorField}>
-                    <input
-                      type="color"
-                      value={htmlColorValue(borderColor)}
-                      onChange={(event) => onFrameChange({ borderColor: event.target.value })}
-                    />
-                    <output>{borderColor}</output>
-                  </span>
-                </label>
+                {renderFields(fields, "border", onFrameChange, t)}
               </Grid>
 
               <ControlGroup label={t("box.corner")}>
@@ -174,6 +201,24 @@ export function BoxSettingsDialog({
                 ))}
               </ControlGroup>
             </Stack>
+
+            <Stack as="section" gap="md" aria-labelledby="box-settings-colors-heading">
+              <SectionHeading id="box-settings-colors-heading" title={t("box.colors")} />
+              <Grid columns={2} gap="md">
+                {renderFields(fields, "surface", onFrameChange, t)}
+                {renderFields(fields, "title", onFrameChange, t)}
+                {renderFields(fields, "body", onFrameChange, t)}
+              </Grid>
+            </Stack>
+
+            {decorationFields.length > 0 ? (
+              <Stack as="section" gap="md" aria-labelledby="box-settings-decoration-heading">
+                <SectionHeading id="box-settings-decoration-heading" title={t("box.decoration")} />
+                <Grid columns={2} gap="md">
+                  {renderFields(fields, "decoration", onFrameChange, t)}
+                </Grid>
+              </Stack>
+            ) : null}
 
             <Stack as="section" gap="md" aria-labelledby="box-settings-padding-heading">
               <Inline justify="between" align="center">
@@ -243,9 +288,136 @@ export function BoxSettingsDialog({
               )}
             </Stack>
           </Grid>
+
+          <Inline justify="between" align="center" className={styles.footer}>
+            <p className={styles.fieldHint}>{t("box.rememberHint")}</p>
+            <button type="button" className={styles.resetButton} onClick={onResetStyle}>
+              {t("box.resetStyle")}
+            </button>
+          </Inline>
         </Stack>
       </ModalBody>
     </ModalFrame>
+  );
+}
+
+/**
+ * 決められる項目を 1 グループぶん描く。中身は {@link boxFrameFields} が持つので、ここは
+ * 種類ごとの入力部品を選ぶだけ。装飾を足しても画面側の変更は要らない。
+ */
+function renderFields(
+  fields: BoxFrameField[],
+  group: BoxFrameFieldGroup,
+  onFrameChange: (patch: Partial<BoxFrameSpec>) => void,
+  t: Translate<"settings">,
+): ReactNode {
+  return fields
+    .filter((field) => field.group === group)
+    .map((field) => {
+      const label = t(`box.field.${field.id}` as never) as string;
+      if (field.kind === "color") {
+        return (
+          <ColorField
+            key={field.id}
+            fieldId={field.id}
+            label={label}
+            value={field.value}
+            onChange={(color) => onFrameChange(field.patch(color))}
+          />
+        );
+      }
+      if (field.kind === "length") {
+        return (
+          <NumberField
+            key={field.id}
+            label={label}
+            testId={`box-field-${field.id}`}
+            value={field.value}
+            min={field.min}
+            max={field.max}
+            step={field.step}
+            onChange={(value) => onFrameChange(field.patch(value))}
+          />
+        );
+      }
+      // `Select` はボタンなので `label` で包んでも結び付かない。名前は id 参照で渡す。
+      return (
+        <div key={field.id} className={styles.field}>
+          <span id={`box-settings-${field.id}-label`}>{label}</span>
+          <Select
+            value={field.value}
+            data-testid={`box-field-${field.id}`}
+            aria-labelledby={`box-settings-${field.id}-label`}
+            options={field.options.map((option) => ({
+              value: option,
+              label: t(`box.fieldOption.${option}` as never) as string,
+            }))}
+            onChange={(value) => onFrameChange(field.patch(value))}
+          />
+        </div>
+      );
+    });
+}
+
+/**
+ * 色 1 つ。ダイアログの上に開くので、パレットの重なり順はモーダルの入れ子レイヤーへ乗せる。
+ */
+function ColorField({
+  fieldId,
+  label,
+  value,
+  onChange,
+}: {
+  fieldId: string;
+  label: string;
+  value: string;
+  onChange: (color: string) => void;
+}) {
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const labelId = `box-settings-${fieldId.replace(/\./g, "-")}-label`;
+  return (
+    <div className={styles.field}>
+      <span id={labelId}>{label}</span>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={styles.colorField}
+        data-testid={`box-field-${fieldId}`}
+        aria-labelledby={labelId}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span
+          className={styles.colorSwatch}
+          // 16 進で書かれていない値 (`transparent` など) は塗らずに「色なし」として見せる。
+          // 黒で塗ると、枠線を消しているスタイルが「黒い枠線」に見える。
+          data-empty={isHtmlColor(value) ? undefined : "true"}
+          style={isHtmlColor(value) ? { backgroundColor: value } : undefined}
+          aria-hidden="true"
+        />
+        <output>{value}</output>
+      </button>
+      <ToolbarPopover
+        open={open}
+        anchorRef={buttonRef}
+        onClose={() => setOpen(false)}
+        className="color-popover"
+        ariaLabel={label}
+        zIndex="var(--z-modal-nested)"
+      >
+        <ColorPalette
+          value={htmlColorValue(value)}
+          onChange={(color) => {
+            if (color) {
+              onChange(color);
+            }
+            setOpen(false);
+          }}
+        />
+      </ToolbarPopover>
+    </div>
   );
 }
 
@@ -260,6 +432,7 @@ function NumberField({
   max,
   step,
   placeholder,
+  testId,
   onChange,
 }: {
   label: string;
@@ -268,6 +441,7 @@ function NumberField({
   max: number;
   step: number;
   placeholder?: string;
+  testId?: string;
   onChange: (value: number) => void;
 }) {
   return (
@@ -275,6 +449,7 @@ function NumberField({
       <span>{label}</span>
       <input
         type="number"
+        data-testid={testId}
         value={value}
         min={min}
         max={max}
@@ -354,6 +529,10 @@ function hasUniformPadding(padding: BoxSpacingPx): boolean {
     padding.top === padding.left;
 }
 
+function isHtmlColor(color: string): boolean {
+  return /^#[0-9a-f]{6}$/i.test(color);
+}
+
 function htmlColorValue(color: string): string {
-  return /^#[0-9a-f]{6}$/i.test(color) ? color : "#000000";
+  return isHtmlColor(color) ? color : "#000000";
 }

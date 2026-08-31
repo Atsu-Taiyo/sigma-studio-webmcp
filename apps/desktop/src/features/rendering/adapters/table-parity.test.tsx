@@ -20,6 +20,18 @@ import {
 
 import { OverlayTableStaticView } from "./react";
 
+/** A table with no cells: these tests render one cell in isolation, never a whole grid. */
+const emptyTrendTable: SigmaTableSpec = {
+  version: 1,
+  kind: "plain",
+  columns: [],
+  rows: [],
+  cells: [],
+  grid: { borderColor: "#000000", borderWidth: 1 },
+  defaultCellStyle: {},
+};
+
+
 /**
  * The table used to be drawn by two independent implementations: the React editor surface, and an
  * HTML string serializer inside `overlay-svg.ts`. They shared the border resolution but each
@@ -417,6 +429,7 @@ describe("every surface draws a trend cell the same way", () => {
   function editorTrendCell(direction: "down" | "flat" | "up", label: boolean, colSpan: number): string {
     return extractTrendCell(renderToStaticMarkup(
       <OverlayTableCellContentEditor
+        cell={undefined}
         cellId="cell_trend"
         colSpan={colSpan}
         columnIndex={0}
@@ -427,6 +440,8 @@ describe("every surface draws a trend cell the same way", () => {
           ...(label ? { label: [{ type: "text", text: "増加" }] } : {}),
         }}
         editing={false}
+        showFormulaSource={false}
+        table={emptyTrendTable}
         onChange={() => undefined}
         onFocus={() => undefined}
         onNavigate={() => false}
@@ -488,7 +503,7 @@ describe("every surface draws a trend cell the same way", () => {
    *
    * So the component declares it, and the values are read back out of the CSS rather than trusted to
    * a comment. Fixed pixels were the wrong answer in the other direction: an imported compact
-   * variation table leaves a 24px content box (`lib/external-document/table.ts` — `min: 28`, `paddingX: 2`)
+   * variation table leaves a 24px content box (`lib/classic-format/table.ts` — `min: 28`, `paddingX: 2`)
    * and `.overlay-table-cell-content-layer` clips, so a 44px arrow lost its head.
    */
   it("carries the container sizing the overlay stylesheets supply", () => {

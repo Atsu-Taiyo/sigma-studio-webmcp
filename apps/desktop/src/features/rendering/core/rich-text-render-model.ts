@@ -95,7 +95,7 @@ export interface InlineNodesRenderModelOptions {
 
 /** Converts canonical SigmaDoc inline nodes into the shared render model. */
 export function createInlineNodesRenderModel(
-  children: InlineNode[],
+  children: readonly InlineNode[],
   options: InlineNodesRenderModelOptions = {},
 ): RichTextInlineRenderFragment {
   const entries: AnnotatedInlineNode[] = options.annotateBoxedRuns

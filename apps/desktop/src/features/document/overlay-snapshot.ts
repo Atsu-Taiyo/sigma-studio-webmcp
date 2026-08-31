@@ -1,17 +1,18 @@
 import type {
   OverlayAsset,
-  OverlayRichTextDocument,
   OverlayShape,
   OverlayShapeId,
   OverlayShapePatch,
   OverlaySnapshot,
+  OverlayTextBlock,
 } from "./overlay-model";
 import type { InlineNode } from "./model";
+import { normalizeBlockSpaceAfterPx } from "./application/block-space-after";
+import { normalizeCodeBlockTheme } from "./model/blocks";
 import { isAllowedOverlayAssetSource, normalizeOverlayAssetSource } from "./asset-source";
 import { isSafeCssColor, isSafeCssFontFamily, SAFE_FALLBACK_COLOR } from "./css-safety";
 import { normalizeOverlayGroups } from "./overlay-group-normalization";
 import { migrateLegacyGraphShapeToPlotBounds } from "./overlay-graph-migration";
-import { migrateLegacyOverlaySnapshotRichText } from "./overlay-migrations";
 import {
   isBaseOverlaySnapshot,
   isOverlayAsset,
@@ -30,11 +31,13 @@ const SHAPE_PROP_KEYS: Record<OverlayShape["type"], readonly string[]> = {
   arc: ["kind", "r", "rx", "ry", "startAngle", "endAngle", "arrowheadStart", "arrowheadEnd", "fill", "fillColor", "fillOpacity", "fillPattern", "color", "strokeOpacity", "dash", "size"],
   arrow: ["start", "end", "arrowheadStart", "arrowheadEnd", "fill", "color", "strokeOpacity", "labelColor", "dash", "size", "label"],
   line: ["kind", "points", "closed", "arrowheadStart", "arrowheadEnd", "fill", "fillColor", "fillOpacity", "fillPattern", "color", "strokeOpacity", "labelColor", "dash", "size", "label"],
-  text: ["w", "h", "maxWidth", "scale", "richText", "autoSize", "color", "fontSize", "size"],
+  text: ["w", "h", "blocks", "color", "fontSize", "size"],
   image: ["assetId", "w", "h", "crop"],
-  callout: ["w", "h", "radius", "tail", "richText", "color", "fontSize", "size", "dash", "strokeWidth"],
+  callout: ["w", "h", "radius", "tail", "blocks", "color", "fontSize", "size", "dash", "strokeWidth"],
   graph2dShape: ["boundsMode", "w", "h", "spec", "preserveSpecSize", "axisLabelTextShapeIds", "pointLabelTextShapeIdsByPointId", "annotationTextShapeIdsByAnnotationId", "labelTextShapeIds", "labelTextShapeIdsByCurveId"],
+  graph3dShape: ["w", "h", "spec", "previewAssetId", "previewSourceHash"],
   tableShape: ["w", "h", "table"],
+  chartShape: ["w", "h", "spec", "sourceTableShapeId", "dataSnapshot"],
 };
 
 export function createEmptyOverlaySnapshot(): OverlaySnapshot {
@@ -56,20 +59,19 @@ export function normalizeOverlaySnapshot(snapshot: unknown): OverlaySnapshot {
     return cached;
   }
 
-  const migratedSnapshot = migrateLegacyOverlaySnapshotRichText(snapshot);
-  if (!isBaseOverlaySnapshot(migratedSnapshot)) {
+  if (!isBaseOverlaySnapshot(snapshot)) {
     return createEmptyOverlaySnapshot();
   }
 
-  const extensions = collectOverlayExtensions(migratedSnapshot);
-  const validShapes = migratedSnapshot.shapes
+  const extensions = collectOverlayExtensions(snapshot);
+  const validShapes = snapshot.shapes
     .filter(isOverlayShape)
     .map(canonicalizeOverlayShape);
   const normalized: OverlaySnapshot = {
     version: 1,
     shapes: normalizeOverlayGroups(normalizeGraphPlotBounds(validShapes)),
     assets: Object.fromEntries(
-      Object.entries(migratedSnapshot.assets)
+      Object.entries(snapshot.assets)
         .filter((entry): entry is [string, OverlayAsset] => isUsableOverlayAsset(entry[1]))
         .map(([key, asset]) => [key, canonicalizeOverlayAsset(asset)]),
     ),
@@ -97,8 +99,7 @@ export function recoverOverlaySnapshot(snapshot: unknown): {
   snapshot: OverlaySnapshot;
   issues: OverlaySnapshotRecoveryIssue[];
 } {
-  const migratedSnapshot = migrateLegacyOverlaySnapshotRichText(snapshot);
-  if (!isBaseOverlaySnapshot(migratedSnapshot)) {
+  if (!isBaseOverlaySnapshot(snapshot)) {
     return {
       snapshot: createEmptyOverlaySnapshot(),
       issues: [{ kind: "snapshot" }],
@@ -106,7 +107,7 @@ export function recoverOverlaySnapshot(snapshot: unknown): {
   }
 
   const issues: OverlaySnapshotRecoveryIssue[] = [];
-  const validShapes = migratedSnapshot.shapes.flatMap((shape, index) => {
+  const validShapes = snapshot.shapes.flatMap((shape, index) => {
     if (isOverlayShape(shape)) {
       return [canonicalizeOverlayShape(shape)];
     }
@@ -118,14 +119,14 @@ export function recoverOverlaySnapshot(snapshot: unknown): {
     });
     return [];
   });
-  const validAssets = Object.entries(migratedSnapshot.assets).flatMap(([key, asset]) => {
+  const validAssets = Object.entries(snapshot.assets).flatMap(([key, asset]) => {
     if (isUsableOverlayAsset(asset)) {
       return [[key, canonicalizeOverlayAsset(asset)] as const];
     }
     issues.push({ kind: "asset", key });
     return [];
   });
-  const extensions = collectOverlayExtensions(migratedSnapshot);
+  const extensions = collectOverlayExtensions(snapshot);
 
   return {
     snapshot: {
@@ -140,27 +141,25 @@ export function recoverOverlaySnapshot(snapshot: unknown): {
 
 /**
  * Strict schema preprocessing: preserve validation failures, but canonicalize
- * valid legacy snapshots so arbitrary metadata cannot cross the SigmaDoc
- * boundary.
+ * valid snapshots so arbitrary metadata cannot cross the SigmaDoc boundary.
  */
 export function prepareOverlaySnapshotForValidation(snapshot: unknown): unknown {
-  const migrated = migrateLegacyOverlaySnapshotRichText(snapshot);
   if (
-    !isBaseOverlaySnapshot(migrated) ||
-    !migrated.shapes.every(isOverlayShape) ||
+    !isBaseOverlaySnapshot(snapshot) ||
+    !snapshot.shapes.every(isOverlayShape) ||
     // ここは「構造として読めるか」の門。許可外の `src` は下の再構築で **落とす** 対象なので、
     // ここで早期 return してしまうと素通しになる。
-    !Object.values(migrated.assets).every(isOverlayAsset) ||
-    (migrated.extensions !== undefined && !isOverlayExtensions(migrated.extensions))
+    !Object.values(snapshot.assets).every(isOverlayAsset) ||
+    (snapshot.extensions !== undefined && !isOverlayExtensions(snapshot.extensions))
   ) {
-    return migrated;
+    return snapshot;
   }
-  const extensions = collectOverlayExtensions(migrated);
+  const extensions = collectOverlayExtensions(snapshot);
   return {
     version: 1,
-    shapes: migrated.shapes.map(canonicalizeOverlayShape),
+    shapes: snapshot.shapes.map(canonicalizeOverlayShape),
     assets: Object.fromEntries(
-      Object.entries(migrated.assets)
+      Object.entries(snapshot.assets)
         .filter((entry): entry is [string, OverlayAsset] => isUsableOverlayAsset(entry[1]))
         .map(([key, asset]) => [key, canonicalizeOverlayAsset(asset)]),
     ),
@@ -191,23 +190,12 @@ export function patchShape(
       return shape;
     }
 
-    const rawPatchProps = (patch.props ?? {}) as Record<string, unknown>;
-    const removesTextMaxWidth = shape.type === "text" && rawPatchProps.maxWidth === null;
-    const baseProps = { ...shape.props } as Record<string, unknown>;
-    if (removesTextMaxWidth) {
-      delete baseProps.maxWidth;
-    }
-    const patchProps = removesTextMaxWidth
-      ? Object.fromEntries(
-          Object.entries(rawPatchProps).filter(([key]) => key !== "maxWidth"),
-        )
-      : rawPatchProps;
     const next = {
       ...shape,
       ...patch,
       props: {
-        ...baseProps,
-        ...patchProps,
+        ...shape.props,
+        ...(patch.props ?? {}),
       },
     } as OverlayShape;
 
@@ -313,7 +301,24 @@ function sanitizeShapeCssScalars(type: OverlayShape["type"], props: Record<strin
     props.spec = sanitizeGraphSpecCssScalars(props.spec);
   } else if (type === "tableShape") {
     props.table = sanitizeTableCssScalars(props.table);
+  } else if (type === "chartShape") {
+    props.spec = sanitizeChartSpecCssScalars(props.spec);
   }
+}
+
+/**
+ * A rejected series colour costs that one series its colour and nothing else — the renderer falls
+ * back to the palette exactly as it does for a series nobody has recoloured.
+ */
+function sanitizeChartSpecCssScalars(spec: unknown): unknown {
+  if (!isRecord(spec) || !isRecord(spec.seriesColors)) {
+    return spec;
+  }
+  const seriesColors = withSanitizedColors(
+    spec.seriesColors,
+    Object.keys(spec.seriesColors),
+  );
+  return seriesColors === spec.seriesColors ? spec : { ...spec, seriesColors };
 }
 
 /** Copy-on-write: returns the same reference when no value had to change. */
@@ -483,7 +488,7 @@ function canonicalizeOverlayShape(shape: OverlayShape): OverlayShape {
   const props = canonical.props as Record<string, unknown>;
   sanitizeShapeCssScalars(shape.type, props);
   if (shape.type === "text" || shape.type === "callout") {
-    props.richText = canonicalizeOverlayRichText(shape.props.richText);
+    props.blocks = shape.props.blocks.map(canonicalizeOverlayTextBlock);
   }
   if (shape.type === "arrow") {
     props.start = canonicalizePoint(shape.props.start);
@@ -538,17 +543,91 @@ function canonicalizeOverlayAsset(asset: OverlayAsset): OverlayAsset {
   };
 }
 
-function canonicalizeOverlayRichText(
-  document: OverlayRichTextDocument,
-): OverlayRichTextDocument {
-  return {
-    blocks: document.blocks.map((block) => ({
-      ...pickDefined(block as unknown as Record<string, unknown>, [
-        "type", "level", "align", "lineHeight",
-      ]),
+/**
+ * Canonical form of one shape block. Every nesting level is walked — list items, the blocks that
+ * continue an item under its marker, nested lists, and the blocks inside a quote — because the
+ * whole point of dropping unknown keys is that no part of the tree carries anything the schema
+ * does not name, and an unwalked branch is exactly where such a key survives a round trip.
+ */
+function canonicalizeOverlayTextBlock(block: OverlayTextBlock): OverlayTextBlock {
+  if (block.type === "divider") {
+    return pickDefined({
+      ...(block as unknown as Record<string, unknown>),
+      spaceAfterPx: normalizeBlockSpaceAfterPx(block.spaceAfterPx),
+    }, ["type", "id", "spaceAfterPx"]) as unknown as OverlayTextBlock;
+  }
+
+  if (block.type === "quote") {
+    return {
+      ...pickDefined({
+        ...(block as unknown as Record<string, unknown>),
+        spaceAfterPx: normalizeBlockSpaceAfterPx(block.spaceAfterPx),
+      }, ["type", "id", "spaceAfterPx"]),
+      blocks: block.blocks.map((child) => canonicalizeOverlayTextBlock(child as OverlayTextBlock)),
+    } as unknown as OverlayTextBlock;
+  }
+
+  if (block.type === "codeBlock") {
+    return {
+      ...pickDefined({
+        ...(block as unknown as Record<string, unknown>),
+        // Named keys are not enough for these two: an unreadable language or theme has to become
+        // *absent*, not be carried through as a string nothing can draw. The body's schema
+        // normalizes them on the way in and this is the shape's equivalent gate.
+        theme: normalizeCodeBlockTheme(block.theme),
+        spaceAfterPx: normalizeBlockSpaceAfterPx(block.spaceAfterPx),
+      }, ["type", "id", "language", "theme", "spaceAfterPx"]),
       children: block.children.map(canonicalizeInlineNode),
-    })) as OverlayRichTextDocument["blocks"],
-  };
+    } as unknown as OverlayTextBlock;
+  }
+
+  if (block.type === "list") {
+    return {
+      ...pickDefined({
+        ...(block as unknown as Record<string, unknown>),
+        spaceAfterPx: normalizeBlockSpaceAfterPx(block.spaceAfterPx),
+      }, [
+        "type", "id", "listType", "start", "markerStyle", "spaceAfterPx",
+      ]),
+      items: block.items.map((item) => ({
+        ...pickDefined(item as unknown as Record<string, unknown>, ["type", "id", "align"]),
+        children: item.children.map(canonicalizeInlineNode),
+        ...(item.continuations === undefined
+          ? {}
+          : { continuations: item.continuations.map(canonicalizeOverlayTextContinuation) }),
+        ...(item.nested === undefined
+          ? {}
+          : { nested: item.nested.map(canonicalizeOverlayTextBlock) }),
+      })),
+    } as unknown as OverlayTextBlock;
+  }
+
+  return {
+    ...pickDefined({
+      ...(block as unknown as Record<string, unknown>),
+      spaceAfterPx: normalizeBlockSpaceAfterPx(block.spaceAfterPx),
+    }, [
+      "type", "id", "level", "align", "lineHeight", "spaceAfterPx",
+    ]),
+    children: block.children.map(canonicalizeInlineNode),
+  } as unknown as OverlayTextBlock;
+}
+
+function canonicalizeOverlayTextContinuation(
+  block: NonNullable<Extract<OverlayTextBlock, { type: "list" }>["items"][number]["continuations"]>[number],
+): typeof block {
+  const spaceAfterPx = normalizeBlockSpaceAfterPx(block.spaceAfterPx);
+  if (block.type === "divider") {
+    return pickDefined({ ...(block as unknown as Record<string, unknown>), spaceAfterPx }, [
+      "type", "id", "spaceAfterPx",
+    ]) as unknown as typeof block;
+  }
+  return {
+    ...pickDefined({ ...(block as unknown as Record<string, unknown>), spaceAfterPx }, [
+      "type", "id", "level", "align", "lineHeight", "spaceAfterPx",
+    ]),
+    children: block.children.map(canonicalizeInlineNode),
+  } as unknown as typeof block;
 }
 
 function canonicalizeInlineNode(node: InlineNode): InlineNode {

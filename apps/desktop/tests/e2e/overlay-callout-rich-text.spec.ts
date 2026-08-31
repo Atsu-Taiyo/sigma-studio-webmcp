@@ -11,7 +11,7 @@ import { installDesktopRuntimeMock } from "./desktop-runtime-mock";
  * 1. `handleTextChange` in `OverlayCanvasEditorClient.tsx` used to gate on `shape?.type !== "text"`,
  *    which silently dropped every edit made inside a callout's rich text editor: typing, bold,
  *    italic, and inline math all appeared live while editing but vanished the moment the editor
- *    lost focus (e.g. pressing Escape), because the shape's stored `richText` was never updated.
+ *    lost focus (e.g. pressing Escape), because the shape's stored blocks were never updated.
  * 2. The DOM auto-size measurement loop (`text-shape-editor.tsx`) only ever measured `text` shapes
  *    with `autoSize` set, so a callout's saved `props.h` could drift out of sync with what was
  *    actually drawn on screen (which `getCalloutBodySize` already grows to fit content
@@ -59,9 +59,7 @@ function calloutRichTextDocument(): SigmaDocument {
                   baseEnd: { x: 100, y: 28 },
                   tip: { x: 40, y: 52 },
                 },
-                richText: {
-                  blocks: [{ type: "paragraph", children: [] }],
-                },
+                blocks: [{ type: "paragraph", id: "overlay_callout_rich_text_spec_45", children: [] }],
                 color: "#111111",
                 size: "m",
                 dash: "solid",
@@ -91,7 +89,7 @@ interface SavedOverlayRichTextNode {
 
 interface SavedOverlayShape {
   id: string;
-  props?: { h?: number; w?: number; richText?: { blocks?: SavedOverlayRichTextNode[] } };
+  props?: { h?: number; w?: number; blocks?: SavedOverlayRichTextNode[] };
 }
 
 function savedRichTextPlainText(node: SavedOverlayRichTextNode): string {
@@ -157,12 +155,12 @@ test("keeps typed callout text after Escape instead of discarding it", async ({ 
   await page.keyboard.press("Escape");
 
   // Before the fix, `handleTextChange` silently dropped every callout edit, so the shape's
-  // `richText` never changed and this reverted to empty the instant editing ended.
+  // The stored blocks never changed and this reverted to empty the instant editing ended.
   await expect(editorContent).toContainText("係数を確認");
   await expect.poll(async () => {
     const shape = await getSavedOverlayShapeById(page, CALLOUT_ID);
-    return shape?.props?.richText
-      ? savedRichTextPlainText({ children: shape.props.richText.blocks }).trim()
+    return shape?.props?.blocks
+      ? shape.props.blocks.map(savedRichTextPlainText).join("\n").trim()
       : null;
   }).toBe("係数を確認");
 });
@@ -188,7 +186,7 @@ test("keeps bold/italic marks on callout text after Escape", async ({ page }) =>
   await expect(editorContent.locator("em")).toContainText("強調");
   await expect.poll(async () => {
     const shape = await getSavedOverlayShapeById(page, CALLOUT_ID);
-    const marks = shape?.props?.richText?.blocks?.[0]?.children?.[0]?.marks ?? [];
+    const marks = shape?.props?.blocks?.[0]?.children?.[0]?.marks ?? [];
     return [...marks].sort();
   }).toEqual(["bold", "italic"]);
 });
@@ -213,7 +211,7 @@ test("keeps inline math inserted into a callout after Escape", async ({ page }) 
   await expect(callout.locator("[data-sigma-doc-math-inline]")).toHaveCount(1);
   await expect.poll(async () => {
     const shape = await getSavedOverlayShapeById(page, CALLOUT_ID);
-    const inline = shape?.props?.richText?.blocks?.find((block) =>
+    const inline = shape?.props?.blocks?.find((block) =>
       (block.children ?? []).some((child) => child.type === "mathInline"));
     return Boolean(inline);
   }).toBe(true);

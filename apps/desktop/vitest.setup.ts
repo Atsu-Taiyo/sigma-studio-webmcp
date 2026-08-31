@@ -1,12 +1,3 @@
-import { registerOverlayMathMetricsPort } from "@/features/rendering/adapters";
-
-// Registers the real (KaTeX/MathLive-backed) math box measurer for every test in this project,
-// matching every real entry point (editor, print route, MCP server, Electron main), all of which
-// register it too. Without this, `measureOverlayText` would silently exercise its last-resort
-// no-port fallback across the whole suite instead of the path production actually runs -- tests
-// that specifically want the fallback (or a hand-built fake port) pass one explicitly per-call.
-registerOverlayMathMetricsPort();
-
 // happy-dom を使うテスト (`// @vitest-environment happy-dom`) では `navigator.language` が
 // "en-US" になる。エディタは保存値が無ければブラウザロケールに従うので、何もしないと
 // UI テストだけが英語で描かれてしまう。既定 (node 環境) と同じ日本語に固定する。

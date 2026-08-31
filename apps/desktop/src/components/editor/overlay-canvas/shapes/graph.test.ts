@@ -1,3 +1,4 @@
+import { overlayTextBlocksToInlineNodes } from "@/features/document";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -136,13 +137,11 @@ describe("overlay graph shapes", () => {
       expect.objectContaining({ type: "shape", shapeId: shape.id }),
       expect.objectContaining({ type: "shape", shapeId: shape.id }),
     ]);
-    expect(labels[0].shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("x");
-    expect(labels[1].shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("y");
-    expect(labels[2].shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("\\mathrm{O}");
-    expect(labels[0].shape.props.richText.blocks[0]?.children[0]?.type).toBe("mathInline");
+    expect(overlayTextBlocksToInlineNodes(labels[0].shape.props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("x");
+    expect(overlayTextBlocksToInlineNodes(labels[1].shape.props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("y");
+    expect(overlayTextBlocksToInlineNodes(labels[2].shape.props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("\\mathrm{O}");
+    expect(overlayTextBlocksToInlineNodes(labels[0].shape.props.blocks)[0]?.type).toBe("mathInline");
     expect(labels.every((entry) => entry.shape.props.fontSize === 10)).toBe(true);
-    // 本文オーバーレイテキストと同じ autoSize 計測系に乗る。
-    expect(labels.every((entry) => entry.shape.props.autoSize)).toBe(true);
     expect(labels.map((entry) => ({ w: entry.shape.props.w, h: entry.shape.props.h }))).toEqual([
       // Widths now come from the KaTeX-backed math metrics port (PR: math box height/width fix)
       // instead of the old flat per-character heuristic, so "x"/"y"/"O" each get their own
@@ -183,8 +182,7 @@ describe("overlay graph shapes", () => {
     const synced = getGraphOwnedLabelTextSyncedProps(wideLabel.props);
     expect(synced.w).toBe(wideLabel.props.w);
     expect(synced.h).toBe(wideLabel.props.h);
-    expect(synced.richText).toEqual(wideLabel.props.richText);
-    expect(synced.autoSize).toBe(wideLabel.props.autoSize);
+    expect(synced.blocks).toEqual(wideLabel.props.blocks);
     expect(synced.color).toBe(wideLabel.props.color);
     expect(synced.size).toBe(wideLabel.props.size);
   });
@@ -202,8 +200,8 @@ describe("overlay graph shapes", () => {
     });
 
     expect(labels.map((entry) => entry.key)).toEqual(["x", "y"]);
-    expect(labels[0].shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("s");
-    expect(labels[1].shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("t");
+    expect(overlayTextBlocksToInlineNodes(labels[0].shape.props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("s");
+    expect(overlayTextBlocksToInlineNodes(labels[1].shape.props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("t");
   });
 
   it("creates point and annotation labels as graph-anchored text shapes", () => {
@@ -230,8 +228,8 @@ describe("overlay graph shapes", () => {
     expect(annotationLabels.map((entry) => entry.annotationId)).toEqual(["annotation_f"]);
     expect(pointLabels[0].shape.anchor).toEqual(expect.objectContaining({ type: "shape", shapeId: graphShape.id }));
     expect(annotationLabels[0].shape.anchor).toEqual(expect.objectContaining({ type: "shape", shapeId: graphShape.id }));
-    expect(pointLabels[0].shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("2");
-    expect(annotationLabels[0].shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("F");
+    expect(overlayTextBlocksToInlineNodes(pointLabels[0].shape.props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("2");
+    expect(overlayTextBlocksToInlineNodes(annotationLabels[0].shape.props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("F");
     expect(pointLabels[0].shape.props.fontSize).toBe(10);
     expect(annotationLabels[0].shape.props.fontSize).toBe(10);
   });
@@ -429,8 +427,8 @@ describe("overlay graph shapes", () => {
     expect(labels[0].anchor).toEqual(expect.objectContaining({ type: "shape", shapeId: graphShape.id }));
     expect(labels[0].x).toBeGreaterThan(graphShape.x + graphShape.props.w);
     expect(labels[1].y).toBeGreaterThan(labels[0].y);
-    expect(labels[0].props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("y = 2x+1");
-    expect(labels[1].props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("y = \\sin(x)");
+    expect(overlayTextBlocksToInlineNodes(labels[0].props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("y = 2x+1");
+    expect(overlayTextBlocksToInlineNodes(labels[1].props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("y = \\sin(x)");
     expect(labels.every((label) => label.props.fontSize === 12)).toBe(true);
   });
 
@@ -451,12 +449,11 @@ describe("overlay graph shapes", () => {
     );
 
     expect(labels).toHaveLength(1);
-    expect(labels[0].props.autoSize).toBe(true);
     // 共有計測器 (KaTeX/MathLive 実測、math box height/width fix PR) が \begin{cases}...\end{cases}
     // の実ボックス高さ (2段のケース記法+丸括弧つき三角関数、余白込み) を測る。旧字数ヒューリスティック
     // は「\\ 改行 = 2行 * 1行分の高さ」で32pxに過小評価していた。
     expect(labels[0].props.h).toBe(51);
-    expect(labels[0].props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe(
+    expect(overlayTextBlocksToInlineNodes(labels[0].props.blocks).find((node) => node.type === "mathInline")?.tex).toBe(
       "\\begin{cases} x = \\cos(t) \\\\ y = \\sin(t) \\end{cases}",
     );
   });
@@ -489,7 +486,7 @@ describe("overlay graph shapes", () => {
 
     expect(entries).toHaveLength(1);
     expect(entries[0].curveId).toBe("curve_sine");
-    expect(entries[0].shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.tex).toBe("y = \\sin(x)");
+    expect(overlayTextBlocksToInlineNodes(entries[0].shape.props.blocks).find((node) => node.type === "mathInline")?.tex).toBe("y = \\sin(x)");
   });
 
   it("identifies graph-owned text labels", () => {

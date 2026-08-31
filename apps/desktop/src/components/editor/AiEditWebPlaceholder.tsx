@@ -1,89 +1,69 @@
 "use client";
 
-import { Download, Sparkles } from "lucide-react";
-import type { ReactNode } from "react";
+import { Bot, CircleAlert, CircleCheck, CircleHelp, FileText, LoaderCircle } from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import type { RefCallback } from "react";
 
-import { AntigravityMark, ClaudeMark, OpenAiMark } from "@/components/branding/provider-logos";
+import { WEBMCP_STATUS_EVENT, type WebMcpUiStatus } from "@/components/editor/webmcp/WebMcpBridge";
+import { getWebMcpAgentInstructionsStorageKey } from "@/lib/webmcp-tools";
 import { useT } from "@/lib/i18n/react";
 
-const DESKTOP_DOWNLOAD_URL = "https://github.com/Atsu-Taiyo/SIGMA-Studio/releases/latest";
+const EMPTY_STATUS: WebMcpUiStatus = { state: "loading", registeredToolCount: 0, failedToolNames: [], operationCount: 0, changedIds: [] };
 
-interface AiVendorLogo {
-  id: string;
-  name: string;
-  svg: ReactNode;
-}
-
-const VENDORS: AiVendorLogo[] = [
-  {
-    id: "chatgpt",
-    name: "ChatGPT",
-    svg: <OpenAiMark size={22} />,
-  },
-  {
-    id: "claude",
-    name: "Claude",
-    svg: <ClaudeMark size={22} />,
-  },
-  {
-    id: "antigravity",
-    name: "Antigravity",
-    svg: <AntigravityMark size={22} />,
-  },
-  {
-    id: "cursor",
-    name: "Cursor",
-    svg: (
-      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path
-          fill="#0F0F0F"
-          d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23"
-        />
-      </svg>
-    ),
-  },
-];
-
-export function AiEditWebPlaceholder() {
+export function AiEditWebPlaceholder({ instructionScopeId, proposalSurfaceRef }: { instructionScopeId: string; proposalSurfaceRef: RefCallback<HTMLDivElement> }) {
   const t = useT("ai");
+  const instructionsId = useId();
+  const storageKey = getWebMcpAgentInstructionsStorageKey(instructionScopeId);
+  const [instructions, setInstructions] = useState(() => typeof window === "undefined" ? "" : window.localStorage.getItem(storageKey) ?? "");
+  const [status, setStatus] = useState<WebMcpUiStatus>(() => typeof window === "undefined" ? EMPTY_STATUS : (window as typeof window & { __sigmaWebMcpStatus?: WebMcpUiStatus }).__sigmaWebMcpStatus ?? EMPTY_STATUS);
+
+  useEffect(() => {
+    const receiveStatus = (event: Event) => setStatus((event as CustomEvent<WebMcpUiStatus>).detail);
+    window.addEventListener(WEBMCP_STATUS_EVENT, receiveStatus);
+    return () => window.removeEventListener(WEBMCP_STATUS_EVENT, receiveStatus);
+  }, []);
+  const saveInstructions = (value: string) => {
+    setInstructions(value);
+    window.localStorage.setItem(storageKey, value);
+  };
+
+  const connectionStatus = (() => {
+    switch (status.state) {
+      case "loading": return { icon: <LoaderCircle size={16} aria-hidden="true" />, text: t("webPlaceholder.loading") };
+      case "connected": return { icon: <CircleCheck size={16} aria-hidden="true" />, text: t("webPlaceholder.connected", { tools: status.registeredToolCount }) };
+      case "partial": return { icon: <CircleAlert size={16} aria-hidden="true" />, text: t("webPlaceholder.partial", { tools: status.registeredToolCount, failedTools: status.failedToolNames.join(", ") }) };
+      case "failed": return { icon: <CircleAlert size={16} aria-hidden="true" />, text: t("webPlaceholder.failed", { failedTools: status.failedToolNames.join(", ") }) };
+      case "unavailable": return { icon: <CircleHelp size={16} aria-hidden="true" />, text: t("webPlaceholder.unavailable") };
+    }
+  })();
+
   return (
     <div className="ai-edit-panel">
       <div className="ai-web-placeholder">
         <div className="ai-web-placeholder-headline">
-          <span className="ai-web-placeholder-badge">
-            <Sparkles size={14} />
-            <span>{t("webPlaceholder.badge")}</span>
-          </span>
+          <span className="ai-web-placeholder-badge"><Bot size={14} aria-hidden="true" /><span>{t("webPlaceholder.badge")}</span></span>
           <h3>{t("webPlaceholder.title")}</h3>
           <p>{t("webPlaceholder.description")}</p>
         </div>
-
-        <a
-          className="ai-web-placeholder-download"
-          href={DESKTOP_DOWNLOAD_URL}
-          target="_blank"
-          rel="noreferrer noopener"
-        >
-          <Download size={18} />
-          <span>{t("webPlaceholder.download")}</span>
-        </a>
-
-        <div className="ai-web-placeholder-vendors">
-          <div className="ai-web-placeholder-vendors-title">{t("webPlaceholder.supportedAgents")}</div>
-          <ul className="ai-web-placeholder-vendor-list" aria-label={t("webPlaceholder.supportedAgents")}>
-            {VENDORS.map((vendor) => (
-              <li key={vendor.id} className="ai-web-placeholder-vendor">
-                <span className="ai-web-placeholder-vendor-logo" aria-hidden="true">
-                  {vendor.svg}
-                </span>
-                <span className="ai-web-placeholder-vendor-name">{vendor.name}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="ai-web-placeholder-footnote">
-            {t("webPlaceholder.footnote")}
+        <section className="ai-web-placeholder-vendors" aria-labelledby={`${instructionsId}-status`}>
+          <h4 id={`${instructionsId}-status`} className="ai-web-placeholder-vendors-title">{t("webPlaceholder.connectionTitle")}</h4>
+          <p className="ai-web-placeholder-footnote" role="status">
+            {connectionStatus.icon}
+            {connectionStatus.text}
           </p>
-        </div>
+          {status.state === "unavailable" && <p className="ai-web-placeholder-footnote">{t("webPlaceholder.enableSteps")}</p>}
+        </section>
+        <section className="ai-web-placeholder-vendors" aria-labelledby={`${instructionsId}-draft`}>
+          <h4 id={`${instructionsId}-draft`} className="ai-web-placeholder-vendors-title">{t("webPlaceholder.draftTitle")}</h4>
+          <p className="ai-web-placeholder-footnote">{status.operationCount > 0 ? t("webPlaceholder.draftSummary", { operations: status.operationCount, targets: status.changedIds.length }) : t("webPlaceholder.noDraft")}</p>
+          <div ref={proposalSurfaceRef} className="ai-web-proposal-surface" />
+        </section>
+        <section className="ai-web-placeholder-vendors" aria-labelledby={`${instructionsId}-instructions`}>
+          <h4 id={`${instructionsId}-instructions`} className="ai-web-placeholder-vendors-title"><FileText size={15} aria-hidden="true" />{t("webPlaceholder.instructionsTitle")}</h4>
+          <label htmlFor={instructionsId} className="ai-web-placeholder-footnote">{t("webPlaceholder.instructionsDescription")}</label>
+          <textarea id={instructionsId} className="ai-web-instructions-input" value={instructions} onChange={(event) => saveInstructions(event.target.value)} placeholder={t("webPlaceholder.instructionsPlaceholder")} rows={9} />
+          <p className="ai-web-placeholder-footnote">{t("webPlaceholder.savedLocally")}</p>
+        </section>
       </div>
     </div>
   );

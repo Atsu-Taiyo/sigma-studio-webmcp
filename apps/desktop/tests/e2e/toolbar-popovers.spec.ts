@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import { sampleDocument } from "@/lib/sample-document";
 
 import { installDesktopRuntimeMock } from "./desktop-runtime-mock";
+import { expectUiSelectValue, selectUiOption } from "./ui-select";
 
 test.beforeEach(async ({ page }) => {
   await installDesktopRuntimeMock(page, sampleDocument);
@@ -129,10 +130,10 @@ test("main editor omits the overview grid and zoom stops at the 10 percent minim
   await expect(page.getByRole("button", { name: "グリッド表示", exact: true })).toHaveCount(0);
 
   const zoomSelect = page.getByRole("combobox", { name: "ズーム", exact: true });
-  await zoomSelect.selectOption("10");
-  await expect(zoomSelect).toHaveValue("10");
+  await selectUiOption(zoomSelect, "10");
+  await expectUiSelectValue(zoomSelect, "10");
   await page.getByRole("button", { name: "縮小", exact: true }).click();
-  await expect(zoomSelect).toHaveValue("10");
+  await expectUiSelectValue(zoomSelect, "10");
 });
 
 test("page settings dialog closes when its backdrop is pressed", async ({ page }) => {

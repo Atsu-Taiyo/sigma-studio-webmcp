@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import { setAppLocale } from "@/lib/i18n/react";
 
-import { LanguageChangeDialog, LanguageSettingButton } from "./DesktopSettingsModal";
+import { DesktopSettingsModal, LanguageChangeDialog, LanguageSettingButton } from "./DesktopSettingsModal";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -94,5 +94,29 @@ describe("LanguageSettingButton", () => {
 
     await act(async () => button?.click());
     expect(onOpen).toHaveBeenCalledOnce();
+  });
+});
+
+describe("DesktopSettingsModal on the web", () => {
+  it("keeps the display-language setting available without the desktop bridge", async () => {
+    await act(async () => {
+      root.render(<DesktopSettingsModal open onClose={vi.fn()} />);
+    });
+
+    const settingsDialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="設定"]');
+    const languageButton = settingsDialog?.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]');
+    expect(settingsDialog?.textContent).toContain("表示言語");
+    expect(languageButton?.textContent).toContain("日本語");
+
+    await act(async () => languageButton?.click());
+    const englishOption = [...document.querySelectorAll<HTMLButtonElement>('.language-option-card')]
+      .find((button) => button.querySelector('[lang="en"]'));
+    await act(async () => englishOption?.click());
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>('.language-change-actions button')]
+      .find((button) => button.textContent?.includes("Englishへ切り替える"));
+    await act(async () => confirm?.click());
+
+    expect(document.querySelector<HTMLElement>('[role="dialog"][aria-label="Settings"]')).not.toBeNull();
+    expect(window.localStorage.getItem("sigma-studio:ui-locale")).toBe("en");
   });
 });

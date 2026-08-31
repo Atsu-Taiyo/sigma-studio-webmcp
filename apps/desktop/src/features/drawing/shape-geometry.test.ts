@@ -6,6 +6,7 @@ import type {
   OverlayCalloutShape,
   OverlayGeoShape,
   OverlayGraphShape,
+  OverlayGraph3DShape,
   OverlayLineShape,
   OverlayTableShape,
   OverlayTextShape,
@@ -54,7 +55,56 @@ function graphShape(): OverlayGraphShape {
   };
 }
 
+function graph3DShape(): OverlayGraph3DShape {
+  return {
+    id: "shape_graph3d",
+    type: "graph3dShape",
+    x: 40,
+    y: 50,
+    props: {
+      w: 320,
+      h: 220,
+      spec: {
+        version: 1,
+        parameters: [],
+        objects: [],
+        cuts: [],
+        regions: [],
+        annotations: [],
+        camera: {
+          projection: "perspective",
+          position: { x: 5, y: -6, z: 4 },
+          target: { x: 0, y: 0, z: 0 },
+          up: { x: 0, y: 0, z: 1 },
+        },
+        view: {
+          coordinateSystem: "zUp",
+          showAxes: true,
+          showGrid: true,
+          showAxisLabels: true,
+          backgroundColor: "#ffffff",
+        },
+      },
+    },
+  };
+}
+
 describe("overlay shape geometry", () => {
+  it("treats a 3D material as a rotatable, selectable, resizable box", () => {
+    const shape = graph3DShape();
+
+    expect(hitTestShape(shape, { x: 200, y: 160 }, 0)).toBe(true);
+    expect(hitTestShape(shape, { x: 20, y: 20 }, 0)).toBe(false);
+
+    const resized = resizeBoxShape(shape, { x: 10, y: 20, w: 480, h: 300 });
+    expect(resized).toMatchObject({
+      type: "graph3dShape",
+      x: 10,
+      y: 20,
+      props: { w: 480, h: 300 },
+    });
+  });
+
   it("uses the graph plot area as the selectable bounds", () => {
     const shape = graphShape();
 
@@ -451,7 +501,7 @@ describe("overlay shape geometry", () => {
     expect(resized.props.h).toBe(1);
   });
 
-  it("uses measured and scaled text bounds and keeps manual text resize content-fit", () => {
+  it("uses the stored text box and moves only its width on resize", () => {
     const shape: OverlayTextShape = {
       id: "shape_text",
       type: "text",
@@ -459,40 +509,40 @@ describe("overlay shape geometry", () => {
       y: 30,
       props: {
         w: 100,
-        autoSize: true,
+        h: 16,
         color: "black",
         size: "m",
-        richText: {
-          blocks: [
+        blocks: [
             {
-              type: "paragraph",
+              type: "paragraph", id: "shape_geometry_test_1",
               children: [{ type: "text", text: "a" }],
             },
           ],
-        },
       },
     };
 
     expect(getShapeBounds(shape)).toEqual({ x: 20, y: 30, w: 100, h: 16 });
     expect(getShapeBounds({ ...shape, props: { ...shape.props, h: 54 } })).toEqual({ x: 20, y: 30, w: 100, h: 54 });
-    expect(getShapeBounds({ ...shape, props: { ...shape.props, scale: 2 } })).toEqual({ x: 20, y: 30, w: 100, h: 32 });
+    expect(getShapeBounds({ ...shape, props: { ...shape.props, fontSize: 24 } })).toEqual({ x: 20, y: 30, w: 100, h: 32 });
 
     const pointSizedShape = { ...shape, props: { ...shape.props, fontSize: 10.5 } };
     expect(getTextShapeFontSizePt(pointSizedShape)).toBe(10.5);
     expect(getTextShapeRenderedFontSizePx(pointSizedShape)).toBe(14);
-    expect(getShapeBounds(pointSizedShape)).toEqual({ x: 20, y: 30, w: 100, h: 14 });
+    // The stored height stays: the 14px line box is only the floor, and 16 already clears it.
+    expect(getShapeBounds(pointSizedShape)).toEqual({ x: 20, y: 30, w: 100, h: 16 });
+    expect(getShapeBounds({ ...pointSizedShape, props: { ...pointSizedShape.props, h: 1 } }))
+      .toEqual({ x: 20, y: 30, w: 100, h: 14 });
 
+    // Resizing moves the wrap width and nothing else: the font size is no longer part of the
+    // geometry, and the height stays the stored derived value the DOM writes back.
     const resized = resizeBoxShape(shape, { x: 24, y: 34, w: 200, h: 48 }) as OverlayTextShape;
     expect(resized.props.w).toBe(200);
-    expect(resized.props.h).toBe(48);
-    expect(resized.props.scale).toBe(3);
-    expect(resized.props.autoSize).toBe(true);
+    expect(resized.props.h).toBe(16);
+    expect(resized.props.fontSize).toBe(shape.props.fontSize);
+    expect(resized.props.size).toBe("m");
 
-    const resizedConstrained = resizeBoxShape(
-      { ...shape, props: { ...shape.props, maxWidth: 100 } },
-      { x: 24, y: 34, w: 150, h: 32 },
-    ) as OverlayTextShape;
-    expect(resizedConstrained.props.maxWidth).toBe(150);
+    const clamped = resizeBoxShape(shape, { x: 24, y: 34, w: 1, h: 48 }) as OverlayTextShape;
+    expect(clamped.props.w).toBe(8);
   });
 
   it("includes the free callout tip in bounds and scales all three tail points on resize", () => {
@@ -510,7 +560,7 @@ describe("overlay shape geometry", () => {
           baseEnd: { x: 68, y: 72 },
           tip: { x: -20, y: 100 },
         },
-        richText: { blocks: [{ type: "paragraph", children: [] }] },
+        blocks: [{ type: "paragraph", id: "shape_geometry_test_2", children: [] }],
         color: "black",
         size: "m",
         dash: "solid",

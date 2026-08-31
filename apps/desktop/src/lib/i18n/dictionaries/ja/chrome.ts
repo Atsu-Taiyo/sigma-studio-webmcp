@@ -24,6 +24,7 @@ export const chrome = {
       problem: "問題",
       math: "数式",
       graph: "グラフ",
+      graph3d: "3D教材",
       image: "画像",
       shape: "図形",
     },
@@ -214,6 +215,17 @@ export const chrome = {
       diamond: "ひし形",
       dot: "丸",
       bar: "バー",
+      arrowSmall: "矢印（小）",
+      triangleSmall: "三角（小）",
+      openArrowSmall: "矢印（開）（小）",
+      thinArrowSmall: "矢印（細）（小）",
+      diamondSmall: "ひし形（小）",
+      dotSmall: "丸（小）",
+      barSmall: "バー（小）",
+      size: {
+        normal: "標準",
+        small: "小",
+      },
     },
     lineDash: {
       none: "線なし",
@@ -248,6 +260,10 @@ export const chrome = {
     graph: {
       label: "グラフ",
       tooltip: "グラフを挿入",
+    },
+    graph3d: {
+      label: "3D教材",
+      tooltip: "3D教材を挿入",
     },
     table: {
       label: "表",

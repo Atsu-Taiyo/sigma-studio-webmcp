@@ -1,8 +1,24 @@
+import {
+  evaluateTableFormulas,
+  inlineNodesToPlainText,
+  overlayTextBlockInlineRuns,
+  overlayTextBlocksToInlineNodes,
+} from "@/features/document";
 import { describe, expect, it } from "vitest";
 
 import { createGraphShapeProps } from "@/components/editor/overlay-canvas/shapes/graph";
 import { createTableShapeProps } from "@/components/editor/overlay-canvas/shapes/table";
-import type { OverlayAsset, OverlayShape } from "@/features/document";
+import type {
+  InlineNode,
+  ListItemContinuationNode,
+  OverlayAsset,
+  OverlayShape,
+  OverlayTextBlock,
+  SigmaTableSpec,
+} from "@/features/document";
+import { createGraph3DSpecPreset } from "@/features/drawing";
+import { buildGraph3DPresetNames } from "@/lib/graph3d-preset-names";
+import { createTranslator } from "@/lib/i18n";
 import {
   cloneDocumentBlocksForPaste,
   cloneOverlayShapesForPaste,
@@ -23,6 +39,47 @@ import {
 } from "@/lib/editor-clipboard";
 
 describe("editor clipboard", () => {
+  it("copies and remaps a derived 3D preview asset without changing its canonical spec", () => {
+    const preview: OverlayAsset = {
+      id: "preview_source",
+      type: "image",
+      props: {
+        w: 640,
+        h: 440,
+        name: "3D preview.png",
+        isAnimated: false,
+        mimeType: "image/png",
+        src: "data:image/png;base64,AA==",
+        fileSize: 1,
+      },
+    };
+    const spec = createGraph3DSpecPreset("revolution", buildGraph3DPresetNames(createTranslator("ja", "shape")));
+    const shape: OverlayShape = {
+      id: "graph3d_source",
+      type: "graph3dShape",
+      x: 20,
+      y: 30,
+      props: {
+        w: 320,
+        h: 220,
+        spec,
+        previewAssetId: preview.id,
+        previewSourceHash: "fnv1a32:test",
+      },
+    };
+
+    const payload = createOverlayClipboardPayload([shape], { [preview.id]: preview });
+    expect(payload.assets).toEqual({ [preview.id]: preview });
+
+    const pasted = cloneOverlayShapesForPaste(payload);
+    const pastedShape = pasted.shapes[0];
+    expect(pastedShape.type).toBe("graph3dShape");
+    if (pastedShape.type !== "graph3dShape") return;
+    expect(pastedShape.props.spec).toEqual(spec);
+    expect(pastedShape.props.previewAssetId).not.toBe(preview.id);
+    expect(pasted.assets[pastedShape.props.previewAssetId ?? ""]?.props.src).toBe(preview.props.src);
+  });
+
   it("round-trips a mixed text and shapes payload without replacing its rich HTML", () => {
     const shape = {
       id: "mixed_shape",
@@ -55,7 +112,7 @@ describe("editor clipboard", () => {
     expect(toOverlayShapesClipboardPayload(payload)).toMatchObject({ kind: "overlayShapes", shapes: [shape] });
   });
 
-  it("migrates legacy root inline math while parsing an overlay clipboard payload", () => {
+  it("rejects an overlay clipboard payload whose text shape is not in canonical block form", () => {
     const serialized = JSON.stringify({
       type: "application/sigma-studio",
       version: 1,
@@ -76,22 +133,73 @@ describe("editor clipboard", () => {
       assets: {},
     });
 
-    const parsed = parseEditorClipboardPayload(serialized);
-    expect(parsed?.kind).toBe("overlayShapes");
-    expect(parsed?.kind === "overlayShapes" && parsed.shapes[0].type === "text"
-      ? parsed.shapes[0].props.richText.blocks
-      : []).toEqual([
-      {
-        type: "paragraph",
-        children: [{
-          type: "mathInline",
-          id: "m1",
-          tex: "x",
-          display: "inline",
-          semanticRole: "expression",
+    // Pasting is one of the boundaries the schema guards; nothing translates an older content
+    // representation on the way in, so the whole payload is refused rather than half-read.
+    expect(parseEditorClipboardPayload(serialized)).toBeNull();
+  });
+
+  /**
+   * A pasted copy is a new shape holding the same words. Every block, list item and inline math
+   * node therefore needs a fresh id — two blocks sharing one id is what makes an edit to the copy
+   * land on the original — while the text itself must come through untouched.
+   */
+  it("gives a pasted text shape fresh block ids and the same content", () => {
+    const original: OverlayShape = {
+      id: "text_source",
+      type: "text",
+      x: 10,
+      y: 20,
+      rotation: 0,
+      props: {
+        w: 200,
+        h: 48,
+        color: "#111827",
+        size: "m",
+        blocks: [{
+          type: "list",
+          id: "list_1",
+          listType: "bullet",
+          items: [{
+            type: "listItem",
+            id: "li_1",
+            children: [
+              { type: "text", text: "項目" },
+              { type: "mathInline", id: "math_1", tex: "x^2", display: "inline" },
+            ],
+            continuations: [{
+              type: "paragraph",
+              id: "li_1_cont",
+              children: [
+                { type: "text", text: "続き" },
+                { type: "mathInline", id: "math_2", tex: "y=1", display: "inline" },
+              ],
+            }],
+            nested: [{
+              type: "list",
+              id: "list_2",
+              listType: "bullet",
+              items: [{ type: "listItem", id: "li_2", children: [{ type: "text", text: "入れ子" }] }],
+            }],
+          }],
         }],
       },
-    ]);
+    };
+
+    const copy = cloneOverlayShapesForPaste({
+      type: "application/sigma-studio",
+      version: 1,
+      kind: "overlayShapes",
+      shapes: [original],
+      assets: {},
+    }).shapes[0] as Extract<OverlayShape, { type: "text" }>;
+
+    const originalIds = collectBlockIds(original.props.blocks);
+    const copiedIds = collectBlockIds(copy.props.blocks);
+
+    expect(copiedIds).toHaveLength(originalIds.length);
+    expect(copiedIds.some((id) => originalIds.includes(id))).toBe(false);
+    expect(plainTextOf(copy.props.blocks)).toBe(plainTextOf(original.props.blocks));
+    expect(copy.props).toMatchObject({ w: 200, h: 48, size: "m" });
   });
 
   it("round-trips an inline math payload", () => {
@@ -530,22 +638,21 @@ describe("editor clipboard", () => {
         y: 60,
         props: {
           w: 220,
-          autoSize: false,
+          h: 16,
           color: "black",
           size: "m",
-          richText: {
-            blocks: [
-              {
-                type: "paragraph",
-                children: [{
-                  type: "mathInline",
-                  id: "text_math_source",
-                  tex: "x^2",
-                  display: "inline",
-                }],
-              },
-            ],
-          },
+          blocks: [
+            {
+              type: "paragraph",
+              id: "p_clip_text",
+              children: [{
+                type: "mathInline",
+                id: "text_math_source",
+                tex: "x^2",
+                display: "inline",
+              }],
+            },
+          ],
         },
       },
       {
@@ -592,7 +699,7 @@ describe("editor clipboard", () => {
     expect(cloned.shapes[0].id).not.toBe("shape_rect");
 
     const textShape = cloned.shapes.find((shape): shape is Extract<OverlayShape, { type: "text" }> => shape.type === "text");
-    const textMath = textShape?.props.richText.blocks[0]?.children[0];
+    const textMath = overlayTextBlocksToInlineNodes(textShape?.props.blocks ?? [])[0];
     expect(textMath?.type === "mathInline" ? textMath.id : undefined).not.toBe("text_math_source");
 
     const graphShape = cloned.shapes.find((shape): shape is Extract<OverlayShape, { type: "graph2dShape" }> => shape.type === "graph2dShape");
@@ -868,8 +975,8 @@ describe("overlay paste edge cases found in review", () => {
       y: 0,
       props: {
         w: 40,
-        richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "x" }] }] },
-        autoSize: true,
+        h: 16,
+        blocks: [{ type: "paragraph", id: "p_label_x", children: [{ type: "text", text: "x" }] }],
         color: "#111111",
         size: "m",
       },
@@ -945,5 +1052,280 @@ describe("clipboard overlay asset sources", () => {
 
     expect(parsed).not.toBeNull();
     expect(Object.keys((parsed as { assets: Record<string, unknown> }).assets)).toEqual(["asset_2"]);
+  });
+});
+
+/** Every id a text shape's blocks carry: blocks, list items, and inline math nodes. */
+function collectBlockIds(blocks: readonly (OverlayTextBlock | ListItemContinuationNode)[]): string[] {
+  return blocks.flatMap((block): string[] => {
+    if (block.type === "divider") {
+      return [block.id];
+    }
+    if (block.type === "list") {
+      return [
+        block.id,
+        ...block.items.flatMap((item) => [
+          item.id,
+          ...item.children.flatMap((child) => (child.type === "mathInline" ? [child.id] : [])),
+          ...collectBlockIds(item.continuations ?? []),
+          ...collectBlockIds(item.nested ?? []),
+        ]),
+      ];
+    }
+    return [
+      block.id,
+      ...overlayTextBlockInlineRuns(block).flatMap((child) => (child.type === "mathInline" ? [child.id] : [])),
+    ];
+  });
+}
+
+function plainTextOf(blocks: readonly (OverlayTextBlock | ListItemContinuationNode)[]): string {
+  const inlines = (children: readonly InlineNode[]): string => children
+    .map((child) => (child.type === "text" ? child.text : child.type === "mathInline" ? child.tex : ""))
+    .join("");
+  return blocks.map((block) => {
+    if (block.type === "divider") {
+      return "---";
+    }
+    if (block.type === "list") {
+      return block.items.map((item) => [
+        inlines(item.children),
+        plainTextOf(item.continuations ?? []),
+        plainTextOf(item.nested ?? []),
+      ].join("")).join("|");
+    }
+    return inlines(overlayTextBlockInlineRuns(block));
+  }).join("\n");
+}
+
+describe("pasting a chart with its table", () => {
+  function chartTable(): SigmaTableSpec {
+    const rowIds = ["r1", "r2"];
+    const columnIds = ["c1", "c2"];
+    return {
+      version: 1,
+      kind: "plain",
+      columns: columnIds.map((id) => ({ id, width: { mode: "auto" } })),
+      rows: rowIds.map((id) => ({ id, height: { mode: "auto" } })),
+      cells: rowIds.flatMap((rowId) => columnIds.map((columnId) => ({
+        id: `${rowId}-${columnId}`,
+        rowId,
+        columnId,
+        content: [{
+          type: "paragraph" as const,
+          id: `${rowId}-${columnId}-p`,
+          children: [{ type: "text" as const, text: rowId === "r1" ? "Math" : "10" }],
+        }],
+      }))),
+      grid: { borderColor: "#111827", borderWidth: 1 },
+      defaultCellStyle: {},
+    };
+  }
+
+  function pair(): OverlayShape[] {
+    return [
+      {
+        id: "table-1",
+        type: "tableShape",
+        x: 0,
+        y: 0,
+        props: { w: 200, h: 100, table: chartTable() },
+      } as OverlayShape,
+      {
+        id: "chart-1",
+        type: "chartShape",
+        x: 0,
+        y: 140,
+        props: {
+          w: 200,
+          h: 130,
+          spec: {
+            version: 1,
+            kind: "bar",
+            orientation: "columns",
+            headerRow: true,
+            labelColumn: true,
+            legend: true,
+            seriesColors: { c2: "#123456" },
+          },
+          sourceTableShapeId: "table-1",
+          dataSnapshot: { labels: ["10"], series: [{ id: "c2", name: "Math", values: [10] }] },
+        },
+      } as OverlayShape,
+    ];
+  }
+
+  function paste(shapes: OverlayShape[]) {
+    const cloned = cloneOverlayShapesForPaste(createOverlayClipboardPayload(shapes, {}), { x: 20, y: 20 });
+    const table = cloned.shapes.find((shape) => shape.type === "tableShape");
+    const chart = cloned.shapes.find((shape) => shape.type === "chartShape");
+    if (chart?.type !== "chartShape") throw new Error("no chart");
+    return { table, chart };
+  }
+
+  it("re-points the chart at the pasted copy of its table", () => {
+    const { table, chart } = paste(pair());
+
+    expect(chart.props.sourceTableShapeId).toBe(table?.id);
+  });
+
+  it("does not leave the chart pointing at the original table", () => {
+    expect(paste(pair()).chart.props.sourceTableShapeId).not.toBe("table-1");
+  });
+
+  it("re-keys the author's series colours onto the regenerated column ids", () => {
+    // `cloneTableSpecForPaste` mints new row/column ids, and the chart keys its colours on them.
+    const { table, chart } = paste(pair());
+    const columnId = table?.type === "tableShape" ? table.props.table.columns[1].id : "";
+
+    expect(chart.props.spec.seriesColors).toEqual({ [columnId]: "#123456" });
+  });
+
+  it("keeps the colour reachable for the series that is actually derived", () => {
+    const { table, chart } = paste(pair());
+    const columnId = table?.type === "tableShape" ? table.props.table.columns[1].id : "";
+
+    expect(Object.keys(chart.props.spec.seriesColors)).toEqual([columnId]);
+  });
+
+  it("re-keys the snapshot's series ids too", () => {
+    const { table, chart } = paste(pair());
+    const columnId = table?.type === "tableShape" ? table.props.table.columns[1].id : "";
+
+    expect(chart.props.dataSnapshot.series[0].id).toBe(columnId);
+  });
+
+  it("re-keys a pie slice colour, whose key carries the track id plus the label", () => {
+    const shapes = pair();
+    const chartShape = shapes[1];
+    if (chartShape.type !== "chartShape") throw new Error("fixture");
+    chartShape.props.spec = { ...chartShape.props.spec, kind: "pie", seriesColors: { "c2:Math": "#abcdef" } };
+    const { table, chart } = paste(shapes);
+    const columnId = table?.type === "tableShape" ? table.props.table.columns[1].id : "";
+
+    expect(chart.props.spec.seriesColors).toEqual({ [`${columnId}:Math`]: "#abcdef" });
+  });
+
+  it("keeps the live link when a chart alone is duplicated in the same document", () => {
+    // ⌘D and same-document paste run through this path, and the table is still sitting there.
+    const chartOnly = pair().filter((shape) => shape.type === "chartShape");
+    const cloned = cloneOverlayShapesForPaste(createOverlayClipboardPayload(chartOnly, {}), { x: 20, y: 20 });
+    const chart = cloned.shapes[0];
+    if (chart.type !== "chartShape") throw new Error("no chart");
+
+    expect(chart.props.sourceTableShapeId).toBe("table-1");
+  });
+
+  it("freezes a chart pasted into another document onto its snapshot", () => {
+    const chartOnly = pair().filter((shape) => shape.type === "chartShape");
+    const cloned = cloneOverlayShapesForPaste(
+      createOverlayClipboardPayload(chartOnly, {}),
+      { x: 20, y: 20 },
+      { dropBlockAnchors: true },
+    );
+    const chart = cloned.shapes[0];
+    if (chart.type !== "chartShape") throw new Error("no chart");
+
+    expect(chart.props.sourceTableShapeId).toBeUndefined();
+  });
+
+  it("keeps the snapshot data when the table did not come along", () => {
+    const chartOnly = pair().filter((shape) => shape.type === "chartShape");
+    const cloned = cloneOverlayShapesForPaste(
+      createOverlayClipboardPayload(chartOnly, {}),
+      { x: 20, y: 20 },
+      { dropBlockAnchors: true },
+    );
+    const chart = cloned.shapes[0];
+    if (chart.type !== "chartShape") throw new Error("no chart");
+
+    expect(chart.props.dataSnapshot.series[0].values).toEqual([10]);
+  });
+
+  it("re-points the chart even when it is cloned before its table", () => {
+    // Order matters: the chart is cloned first here, so a single-pass remap would miss the table.
+    const [table, chart] = pair();
+    const result = paste([chart, table]);
+
+    expect(result.chart.props.sourceTableShapeId).toBe(result.table?.id);
+  });
+});
+
+describe("pasting a table that holds formulas", () => {
+  function formulaTable(): SigmaTableSpec {
+    const rowIds = ["r1", "r2", "r3"];
+    const texts: Record<string, [string, string]> = {
+      r1: ["月", "点数"],
+      r2: ["1月", "10"],
+      r3: ["合計", "=SUM(B2:B2)"],
+    };
+    return {
+      version: 1,
+      kind: "plain",
+      columns: ["c1", "c2"].map((id) => ({ id, width: { mode: "auto" } })),
+      rows: rowIds.map((id) => ({ id, height: { mode: "auto" } })),
+      cells: rowIds.flatMap((rowId) => ["c1", "c2"].map((columnId, columnIndex) => ({
+        id: `${rowId}-${columnId}`,
+        rowId,
+        columnId,
+        content: [{
+          type: "paragraph" as const,
+          id: `${rowId}-${columnId}-p`,
+          children: [{ type: "text" as const, text: texts[rowId][columnIndex] }],
+        }],
+      }))),
+      grid: { borderColor: "#111827", borderWidth: 1 },
+      defaultCellStyle: {},
+    };
+  }
+
+  function pasteTable(): SigmaTableSpec {
+    const shapes: OverlayShape[] = [{
+      id: "table-formula",
+      type: "tableShape",
+      x: 0,
+      y: 0,
+      props: { w: 200, h: 100, table: formulaTable() },
+    } as OverlayShape];
+    const cloned = cloneOverlayShapesForPaste(createOverlayClipboardPayload(shapes, {}), { x: 20, y: 20 });
+    const pasted = cloned.shapes.find((shape) => shape.type === "tableShape");
+    if (pasted?.type !== "tableShape") {
+      throw new Error("no table");
+    }
+    return pasted.props.table;
+  }
+
+  it("keeps the formula text through the paste", () => {
+    const table = pasteTable();
+    const formulaCell = table.cells[table.cells.length - 1];
+    const content = formulaCell.content[0];
+
+    expect(content.type === "paragraph" ? inlineNodesToPlainText(content.children) : null)
+      .toBe("=SUM(B2:B2)");
+  });
+
+  it("still evaluates to the same value after the row and column ids are regenerated", () => {
+    // A1 references address grid positions, not row or column ids, so re-minting the ids on paste
+    // cannot break them — this is the test that keeps that true.
+    const table = pasteTable();
+    const formulaCell = table.cells[table.cells.length - 1];
+
+    expect(evaluateTableFormulas(table).byCellId.get(formulaCell.id)?.display).toBe("10");
+  });
+
+  it("evaluates the pasted table through its own cells", () => {
+    // The real property: the pasted cell objects are new, and the pasted table's evaluation
+    // resolves *them*. Comparing the two evaluation objects would pass by construction, since they
+    // are memoized per table object and the tables are necessarily different objects.
+    const original = formulaTable();
+    const pasted = pasteTable();
+    const pastedCell = pasted.cells[pasted.cells.length - 1];
+    const originalCell = original.cells[original.cells.length - 1];
+
+    expect([
+      pastedCell === originalCell,
+      evaluateTableFormulas(pasted).byCell.get(pastedCell)?.display,
+      evaluateTableFormulas(pasted).byCell.get(originalCell),
+    ]).toEqual([false, "10", undefined]);
   });
 });

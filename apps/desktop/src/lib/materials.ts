@@ -7,7 +7,6 @@ import {
   createEmptyOverlaySnapshot,
   isValidOverlaySnapshot,
   normalizeOverlaySnapshot,
-  migrateLegacyOverlaySnapshotRichText,
   type OverlayPoint,
   type OverlayShape,
   type OverlaySnapshot,
@@ -21,7 +20,7 @@ import {
   type ProblemNode,
   type RichBlock,
 } from "@/features/document";
-import { getShapesSelectionBounds } from "@/features/drawing";
+import { getShapesSelectionBounds, getTextShapeFontSizePt } from "@/features/drawing";
 
 import { inlineNodesToPlainText } from "@/lib/tiptap-adapter";
 
@@ -214,7 +213,9 @@ export function summarizeMaterialContent(content: MaterialContent): MaterialCont
     hasImages: content.overlaySnapshot.shapes.some((shape) => shape.type === "image"),
     hasBoxBlocks: blockTypes.includes("boxBlock"),
     hasTables: content.overlaySnapshot.shapes.some((shape) => shape.type === "tableShape"),
-    hasGraphs: content.overlaySnapshot.shapes.some((shape) => shape.type === "graph2dShape"),
+    hasGraphs: content.overlaySnapshot.shapes.some((shape) => (
+      shape.type === "graph2dShape" || shape.type === "graph3dShape"
+    )),
   };
 }
 
@@ -249,9 +250,8 @@ export function parseMaterialContent(value: unknown): MaterialContent | null {
     blocks.push(result.data);
   }
 
-  const migratedOverlaySnapshot = migrateLegacyOverlaySnapshotRichText(value.overlaySnapshot);
-  const overlaySnapshot = isValidOverlaySnapshot(migratedOverlaySnapshot)
-    ? normalizeOverlaySnapshot(migratedOverlaySnapshot)
+  const overlaySnapshot = isValidOverlaySnapshot(value.overlaySnapshot)
+    ? normalizeOverlaySnapshot(value.overlaySnapshot)
     : null;
   if (!overlaySnapshot) {
     return null;
@@ -805,8 +805,11 @@ function scaleMaterialShapeProps(
       tip: scalePoint(original.props.tail.tip, scaleX, scaleY),
     };
   }
-  if (original.type === "text" && typeof original.props.scale === "number") {
-    props.scale = original.props.scale * Math.min(scaleX, scaleY);
+  if (original.type === "text" || original.type === "callout") {
+    // Shrinking a material used to ride on `props.scale`, which existed only to multiply the font
+    // size. With that gone the point size is the thing to scale — `w`/`h` above already moved, so
+    // scaling the glyphs by the same factor keeps the text wrapping where the author put it.
+    props.fontSize = getTextShapeFontSizePt(original) * Math.min(scaleX, scaleY);
   }
   return props;
 }

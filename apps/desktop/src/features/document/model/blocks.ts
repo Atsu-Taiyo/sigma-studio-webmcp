@@ -282,7 +282,26 @@ export type BoxDecorationSpec =
       ruleColor?: string;
       guideColor?: string;
     }
-  | { type: "titleBand"; heightPx?: number; backgroundColor?: string }
+  | {
+      type: "titleBand";
+      heightPx?: number;
+      backgroundColor?: string;
+      /** 帯と本文の境に引く罫。TeX の見出し付き枠が持つ「帯の下の 1 本」。 */
+      ruleWidthPx?: number;
+      ruleColor?: string;
+    }
+  /**
+   * 枠の上辺に載せる見出しタブ (tcolorbox の `attach boxed title to top left` 相当)。
+   * `titlePlate` と違って**地色で塗る**ので、タイトルの背景がそのまま見出しになる。
+   */
+  | {
+      type: "titleTab";
+      heightPx?: number;
+      radiusPx?: number;
+      offsetXPx?: number;
+      paddingPx?: BoxSpacingPx;
+      backgroundColor?: string;
+    }
   | {
       type: "titlePlate";
       borderColor?: string;

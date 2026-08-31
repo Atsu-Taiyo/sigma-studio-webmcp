@@ -5,9 +5,10 @@ import type {
   MouseEvent,
   ReactNode,
   Ref,
-  SelectHTMLAttributes,
 } from "react";
 
+import { Select } from "@/components/ui/Select";
+import type { SelectProps } from "@/components/ui/Select";
 import { Tooltip } from "@/components/ui/Tooltip";
 import type { TooltipContent } from "@/components/ui/Tooltip";
 
@@ -164,23 +165,21 @@ export function EditorToolbarMenuButton({
   return tooltip ? <Tooltip {...tooltip}>{button}</Tooltip> : button;
 }
 
+/** ツールバーの選択コントロール。OSのドロップダウンではなく共通の `Select` を着せ替えて使う。 */
 export function EditorToolbarSelect({
   compact = false,
   fontFamily = false,
   className,
-  children,
   ...selectProps
-}: SelectHTMLAttributes<HTMLSelectElement> & {
+}: SelectProps & {
   compact?: boolean;
   fontFamily?: boolean;
 }) {
   return (
-    <select
-      className={joinClassNames("toolbar-select", compact && "compact", fontFamily && "font-family-select", className)}
+    <Select
       {...selectProps}
-    >
-      {children}
-    </select>
+      className={joinClassNames("toolbar-select", compact && "compact", fontFamily && "font-family-select", className)}
+    />
   );
 }
 

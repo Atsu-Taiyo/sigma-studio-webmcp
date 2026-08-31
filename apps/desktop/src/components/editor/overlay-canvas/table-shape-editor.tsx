@@ -22,6 +22,8 @@ import type { TextAlign } from "@/features/document";
 
 import { clamp } from "./math";
 import type { TableShapeResizePatch } from "./shape-editor-types";
+import { getTableCellFormulaResult } from "@/features/document";
+import type { SigmaTableFormulaErrorCode } from "@/features/document";
 import { OverlayTableCellContentEditor } from "./table-cell-content-editor";
 import { OverlayTableRenderedLines } from "./table-rendered-lines";
 import {
@@ -67,6 +69,7 @@ import {
   getTableCellAtGridPosition,
   getTableCellContentLayerStyle,
   getTableCellFocusPlacement,
+  type TableCellFocusPlacement,
   getTableCellPositionFromClientPoint,
   getTableCellSelectionRange,
   getTableCellStyle,
@@ -107,10 +110,44 @@ import type {
   OverlayShape,
   OverlayShapeId,
   OverlayTextSize,
+  SigmaTableCell,
   SigmaTableCellContent,
   SigmaTableGridLineStyle,
   SigmaTableSpec,
 } from "./types";
+
+/**
+ * The sentence for each error value, by the value itself.
+ *
+ * The keys are the canonical Excel strings the document layer produces, so a new error code cannot
+ * be added there without this map failing to compile.
+ */
+const TABLE_FORMULA_ERROR_LABEL_KEYS = {
+  "#DIV/0!": "table.formula.error.divideByZero",
+  "#NAME?": "table.formula.error.name",
+  "#REF!": "table.formula.error.ref",
+  "#VALUE!": "table.formula.error.value",
+  "#NUM!": "table.formula.error.num",
+  "#N/A": "table.formula.error.na",
+  "#CYCLE!": "table.formula.error.cycle",
+  // `as const` keeps the literal key types the translator demands; `satisfies` makes a new error
+  // code in the document layer a compile error here rather than a missing tooltip.
+} as const satisfies Record<SigmaTableFormulaErrorCode, string>;
+
+/** The error a cell's formula ended in, or `null` when it holds no formula or evaluates cleanly. */
+function getTableCellFormulaErrorCode(
+  table: SigmaTableSpec,
+  cell: SigmaTableCell | undefined,
+): SigmaTableFormulaErrorCode | null {
+  if (!cell) {
+    return null;
+  }
+  const paragraph = getFirstTableParagraphContent(cell);
+  if (!paragraph) {
+    return null;
+  }
+  return getTableCellFormulaResult(table, cell, paragraph)?.error ?? null;
+}
 
 const TABLE_ADD_CONTROL_HIDE_DELAY_MS = 500;
 
@@ -223,12 +260,15 @@ export function OverlayTableShapeEditor({
   onFocus,
   onChange,
   onResize,
+  onCreateChart,
 }: {
   shape: Extract<OverlayShape, { type: "tableShape" }>;
   editing: boolean;
   onFocus: (editor: TiptapEditor, shapeId: OverlayShapeId) => void;
   onChange: (shapeId: OverlayShapeId, table: SigmaTableSpec) => void;
   onResize: (shapeId: OverlayShapeId, patch: TableShapeResizePatch) => void;
+  /** Absent on surfaces that cannot insert shapes; the menu item is then hidden. */
+  onCreateChart?: (shapeId: OverlayShapeId) => void;
 }) {
   const tChrome = useT("chrome");
   // 罫線の呼び名は表の設定ダイアログと同じ出典 (`settings.table.line.*`)。
@@ -258,6 +298,21 @@ export function OverlayTableShapeEditor({
   const [activeAddBoundaryKeys, setActiveAddBoundaryKeys] = useState<Set<string>>(() => new Set());
   const addControlHideTimeoutsRef = useRef<Map<string, number>>(new Map());
   const tableCellEditorsRef = useRef<Map<string, TiptapEditor>>(new Map());
+  /**
+   * The cell whose formula is being edited as source, or `null` when every formula cell shows its
+   * value. Only this cell mounts a Tiptap editor for its formula.
+   */
+  const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
+  /**
+   * A focus that has to wait for its editor to mount.
+   *
+   * Reaching a formula cell — by arrow key or by click — makes it show its source, and only then
+   * does its editor exist. Without this, arrow navigation walked straight past every formula cell,
+   * because it looks for an editor that has not been created yet.
+   */
+  const pendingCellFocusRef = useRef<
+    { cellId: string; contentId: string; placement: TableCellFocusPlacement } | null
+  >(null);
   const cellMap = useMemo(() => {
     return new Map(table.cells.map((cell) => [`${cell.rowId}:${cell.columnId}`, cell]));
   }, [table.cells]);
@@ -285,6 +340,11 @@ export function OverlayTableShapeEditor({
       return;
     }
 
+    // Entering edit mode starts with every formula showing its value; `showFormulaSource` is also
+    // gated on `editing`, so leaving edit mode needs no reset of its own.
+    setFocusedCellId(null);
+    pendingCellFocusRef.current = null;
+
     // 表そのものから編集へ入った直後は全セルを対象にする。
     // その後セルをクリック／ドラッグすれば通常のセル範囲指定へ切り替わる。
     setCellSelection({
@@ -299,6 +359,11 @@ export function OverlayTableShapeEditor({
   const registerTableCellEditor = useCallback((cellId: string, contentId: string, editor: TiptapEditor) => {
     const editorKey = getTableParagraphEditorKey(cellId, contentId);
     tableCellEditorsRef.current.set(editorKey, editor);
+    const pending = pendingCellFocusRef.current;
+    if (pending && pending.cellId === cellId && pending.contentId === contentId) {
+      pendingCellFocusRef.current = null;
+      focusTableParagraphEditor(editor, pending.placement);
+    }
     return () => {
       if (tableCellEditorsRef.current.get(editorKey) === editor) {
         tableCellEditorsRef.current.delete(editorKey);
@@ -320,7 +385,20 @@ export function OverlayTableShapeEditor({
         : null;
 
       if (targetEditor && !targetEditor.isDestroyed) {
+        setFocusedCellId(targetCell?.id ?? null);
         focusTableParagraphEditor(targetEditor, getTableCellFocusPlacement(direction));
+        return true;
+      }
+
+      // A formula cell showing its value has no editor to find. Ask for one, and finish the focus
+      // in `registerTableCellEditor` once it exists — otherwise navigation skips the cell entirely.
+      if (targetCell && targetParagraph && getTableCellFormulaResult(table, targetCell, targetParagraph)) {
+        pendingCellFocusRef.current = {
+          cellId: targetCell.id,
+          contentId: targetParagraph.id,
+          placement: getTableCellFocusPlacement(direction),
+        };
+        setFocusedCellId(targetCell.id);
         return true;
       }
 
@@ -455,8 +533,9 @@ export function OverlayTableShapeEditor({
     closeTableContextMenu();
   };
 
-  const handleCellEditorFocus = (editor: TiptapEditor, shapeId: OverlayShapeId) => {
+  const handleCellEditorFocus = (editor: TiptapEditor, shapeId: OverlayShapeId, cellId: string) => {
     setSelectedLines([]);
+    setFocusedCellId(cellId);
     onFocus(editor, shapeId);
   };
 
@@ -475,6 +554,19 @@ export function OverlayTableShapeEditor({
     }
 
     const anchor = { rowIndex, columnIndex };
+    const clickedCell = getTableCellAtGridPosition(table, rowIndex, columnIndex);
+    const clickedParagraph = clickedCell ? getFirstTableParagraphContent(clickedCell) : null;
+    setFocusedCellId(clickedCell?.id ?? null);
+    // The value a formula cell shows is not an editor, so the click never reaches ProseMirror and
+    // there is no caret to keep. The source opens with the caret at the end, which is where a
+    // spreadsheet puts it when you pick a cell and start editing.
+    if (clickedCell && clickedParagraph && getTableCellFormulaResult(table, clickedCell, clickedParagraph)) {
+      pendingCellFocusRef.current = {
+        cellId: clickedCell.id,
+        contentId: clickedParagraph.id,
+        placement: "end",
+      };
+    }
     setSelectedLines([]);
     closeTableContextMenu();
     setCellSelection({ anchor, focus: anchor });
@@ -700,6 +792,11 @@ export function OverlayTableShapeEditor({
       tableElementRef.current?.ownerDocument.getSelection()?.removeAllRanges();
       if (!cellSelectionDrag.active) {
         setCellSelectionDrag({ ...cellSelectionDrag, active: true });
+        // The press that started this drag opened the anchor cell's formula source. Selecting a
+        // range is not editing that cell, so hand it back to its value — otherwise picking a range
+        // to align or border makes one cell change its text under the pointer.
+        setFocusedCellId(null);
+        pendingCellFocusRef.current = null;
       }
       setCellSelection((current) => {
         if (
@@ -1303,6 +1400,21 @@ export function OverlayTableShapeEditor({
           >
             {tShape("table.deleteColumns")}
           </button>
+          {onCreateChart && (
+            <>
+              <div className="overlay-table-context-menu-separator" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setContextMenu(null);
+                  onCreateChart(shape.id);
+                }}
+              >
+                {tShape("table.createChart")}
+              </button>
+            </>
+          )}
           <div className="overlay-table-context-menu-separator" role="separator" />
           <button
             type="button"
@@ -1370,6 +1482,12 @@ export function OverlayTableShapeEditor({
 
                 const cellStyle = getTableCellStyle(table, cell, rowIndex, columnIndex, rowSpan, colSpan);
                 const contentLayerStyle = getTableCellContentLayerStyle(table, cell);
+                // `#DIV/0!` is what the cell shows, and it is the same in every language; this is
+                // the sentence explaining it, which is not.
+                const formulaErrorCode = getTableCellFormulaErrorCode(table, cell);
+                const formulaErrorMessage = formulaErrorCode
+                  ? tShape(TABLE_FORMULA_ERROR_LABEL_KEYS[formulaErrorCode])
+                  : null;
 
                 return (
                   <td
@@ -1381,6 +1499,11 @@ export function OverlayTableShapeEditor({
                     data-table-row-index={rowIndex}
                     data-table-column-index={columnIndex}
                     data-table-cell-id={cell?.id}
+                    data-table-formula-error={formulaErrorCode ?? undefined}
+                    title={formulaErrorMessage ?? undefined}
+                    aria-description={formulaErrorMessage
+                      ? `${tShape("table.formula.errorAria")}: ${formulaErrorMessage}`
+                      : undefined}
                     rowSpan={rowSpan}
                     colSpan={colSpan}
                     style={cellStyle}
@@ -1397,9 +1520,12 @@ export function OverlayTableShapeEditor({
                         <OverlayTableCellContentEditor
                           key={content.id}
                           shapeId={shape.id}
+                          cell={cell}
                           cellId={cell.id}
                           content={content}
                           editing={editing}
+                          showFormulaSource={editing && focusedCellId === cell.id}
+                          table={table}
                           rowIndex={rowIndex}
                           columnIndex={columnIndex}
                           colSpan={colSpan}

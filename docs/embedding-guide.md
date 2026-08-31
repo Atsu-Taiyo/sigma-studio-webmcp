@@ -111,6 +111,8 @@ return <SigmaDocViewer document={document} />;
 
 ホストは`PageOverlay`をSigmaDocの一部として永続化します。`overlaySnapshot`が唯一の正本で、SVG previewは必要なときにsnapshotから再生成します。直列化済みのSVG文字列は保存せず、`overlaySnapshot`を持たないoverlayは正規化時に破棄されます。
 
+`graph3dShape`では`props.spec`が数学的な正本で、Three.js sceneは保存しません。`previewAssetId`が指すPNGはread-only Viewer・印刷用の派生cacheです。ホストはspecとpreview assetをともにSigmaDocへ保存しますが、previewだけから3D内容を復元してはいけません。ViewerはこのPNGを通常の画像assetと同じdata URL制約で検査し、Three.jsや数式評価器を公開read-only画面では起動しません。
+
 ## ViewerのRead-only Boundary
 
 `SigmaDocViewer`内には編集ツールバー、フォーム、`contenteditable`、選択ハンドル、保存ボタン、印刷ボタンを置きません。本文は通常のWebコンテンツとして選択・コピーできますが、オーバーレイは`pointer-events: none`の表示専用レイヤーです。高さ制限時の「すべて表示」は閲覧範囲だけを変更する補助操作です。編集が必要な画面では、Viewerを編集可能に切り替えるのではなく`SigmaDocEditor`へ遷移します。

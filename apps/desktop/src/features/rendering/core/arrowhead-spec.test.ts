@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ARROWHEAD_LINE_WIDTH,
+  arrowheadInkCoversLineAtX,
   ARROWHEAD_MARKER_SPECS,
   getArrowheadInkApexX,
+  getArrowheadInkBounds,
   getArrowheadMarkerRequests,
   getArrowheadTrimInStrokes,
   NO_ARROWHEAD_PLACEMENT,
@@ -35,7 +38,7 @@ describe("arrow head ink reach", () => {
   it.each(ARROWHEAD_MARKER_SPECS.filter((spec) => !spec.reversibleOrient))(
     "anchors $kind on its own centre, since it marks the endpoint rather than points at it",
     (spec) => {
-      expect(spec.tipX).toBe(spec.geometry.kind === "circle" ? spec.geometry.cx : 4);
+      expect(spec.tipX).toBe(spec.geometry.kind === "circle" ? spec.geometry.cx : spec.markerWidth / 2);
       expect(spec.lineStopX).toBe(spec.tipX);
       expect(getArrowheadTrimInStrokes(spec.kind)).toBe(0);
     },
@@ -45,8 +48,13 @@ describe("arrow head ink reach", () => {
     // `<marker>` clips at its own box (the UA stylesheet gives it `overflow: hidden`, and
     // `.overlay-vector-svg { overflow: visible }` only reaches the `<svg>`). A head whose miter
     // overshoots `markerWidth` is silently cut, so the ink the user sees is not the ink this table
-    // describes and the anchor lands in the wrong place.
-    expect(`${spec.kind}:${spec.markerWidth >= getArrowheadInkApexX(spec.geometry)}`).toBe(`${spec.kind}:true`);
+    // describes and the anchor lands in the wrong place. Both directions: flooring a small head's
+    // pen widens it across the line as well as along it.
+    const ink = getArrowheadInkBounds(spec.geometry);
+    const inside = ink.minX >= 0 && ink.maxX <= spec.markerWidth &&
+      ink.minY >= 0 && ink.maxY <= spec.markerHeight;
+
+    expect(`${spec.kind}:${inside}`).toBe(`${spec.kind}:true`);
     expect(spec.markerWidth).toBeGreaterThanOrEqual(spec.tipX);
   });
 
@@ -55,6 +63,40 @@ describe("arrow head ink reach", () => {
       expect(spec.lineStopX).toBeLessThanOrEqual(spec.tipX);
     }
   });
+
+  it.each(ARROWHEAD_MARKER_SPECS)("hides the line's square end under $kind", (spec) => {
+    // The reported bug, pinned at its cause: a head drawn small, or drawn with a pen thinner than
+    // the line, is narrower than the line it ends, and the line's butt cap then pokes out of the
+    // point as a blunt stub. Marker units are stroke widths, so covering the line here covers it at
+    // every size at once.
+    const covered = arrowheadInkCoversLineAtX(spec.geometry, spec.lineStopX, spec.refY);
+
+    expect(`${spec.kind}:${covered}`).toBe(`${spec.kind}:true`);
+  });
+
+  it.each(ARROWHEAD_MARKER_SPECS)("draws $kind with a pen at least as wide as the line", (spec) => {
+    // A filled outline covers the line by its own area. A stroked one covers it only if its pen is
+    // no thinner than the line — no distance back from the point can make two thin whiskers hide a
+    // wider stub — so scaling a head down must stop scaling its pen.
+    if (spec.geometry.kind !== "polyline" || spec.geometry.filled) {
+      return;
+    }
+
+    expect(`${spec.kind}:${spec.geometry.strokeWidth >= ARROWHEAD_LINE_WIDTH}`).toBe(`${spec.kind}:true`);
+  });
+
+  it.each(ARROWHEAD_MARKER_SPECS.filter((spec) => spec.reversibleOrient))(
+    "gives up no more line than $kind needs to hide it",
+    (spec) => {
+      // The other half of the same balance. The line pays for the cover with its own length, so the
+      // stop belongs just inside the place the head becomes wide enough — not at the widest point of
+      // the head, which would hide a dashed line's last dash and double the ink of a translucent one.
+      // A whole overlap further back the head is narrower than the line again.
+      const tooFar = arrowheadInkCoversLineAtX(spec.geometry, spec.lineStopX - 0.55, spec.refY);
+
+      expect(`${spec.kind}:${tooFar}`).toBe(`${spec.kind}:false`);
+    },
+  );
 
   it("reads nothing off Object.prototype", () => {
     expect(getArrowheadTrimInStrokes("__proto__")).toBe(0);
@@ -81,9 +123,10 @@ describe("planArrowheadEndpoints", () => {
   it("scales the trim with the line, because marker units are stroke widths", () => {
     const thin = planArrowheadEndpoints("none", "diamond", overlayStrokeWidth("s"), 10_000, LONG_ENOUGH);
     const thick = planArrowheadEndpoints("none", "diamond", overlayStrokeWidth("xl"), 10_000, LONG_ENOUGH);
+    const trim = getArrowheadTrimInStrokes("diamond");
 
-    expect(thin.end.trimPx).toBeCloseTo(7.5 * 1.25, 6);
-    expect(thick.end.trimPx).toBeCloseTo(7.5 * 5, 6);
+    expect(thin.end.trimPx).toBeCloseTo(trim * 1.25, 6);
+    expect(thick.end.trimPx).toBeCloseTo(trim * 5, 6);
   });
 
   it("declares nothing at an endpoint with no head", () => {
@@ -136,8 +179,8 @@ describe("marker requests", () => {
     const requests = getArrowheadMarkerRequests("shape_1", plan);
 
     expect(requests.map((request) => request.id)).toEqual(["diamond-shape_1-start", "triangle-shape_1-end"]);
-    expect(requests[0].refX).toBeCloseTo(9 - 7.5, 6);
-    expect(requests[1].refX).toBeCloseTo(7 - 5.5, 6);
+    expect(requests[0].refX).toBeCloseTo(9 - getArrowheadTrimInStrokes("diamond"), 6);
+    expect(requests[1].refX).toBeCloseTo(7 - getArrowheadTrimInStrokes("triangle"), 6);
   });
 
   it("declares nothing for a suppressed endpoint", () => {

@@ -9,6 +9,8 @@ import {
   type BoxBlockChildBlock,
   type BoxBlockNode,
   type BoxFrameSpec,
+  type DividerNode,
+  type HeadingNode,
   type LayoutSectionChildBlock,
   type LayoutSectionNode,
   type ListItemContinuationNode,
@@ -18,6 +20,7 @@ import {
   type ParagraphNode,
   type QuoteBlockNode,
   type QuoteChildBlock,
+  type SectionNode,
 } from "@/features/document";
 import {
   inlineNodesToTiptapNodes,
@@ -36,6 +39,17 @@ import {
   type TextFlowBlock,
 } from "@/features/text-editing";
 
+/**
+ * The editor's converter between body blocks and Tiptap's JSON. Every editing surface goes through
+ * it, a shape's text included (`overlay-tiptap-adapter.ts` narrows the result, it does not convert).
+ *
+ * There is a second, far narrower projection in `lib/classic-format/tiptap-blocks.ts`. The EditorMath
+ * import builds and rewrites Tiptap-shaped JSON as a *data shape* inside a headless service, and a
+ * headless service may not reach into `components/` (`features/headless-boundaries.test.ts`), so it
+ * cannot call this. It affords that only because `.legacy` carries nothing but paragraphs and
+ * headings. Unifying the two means moving this adapter down into `features/text-editing` where both
+ * layers can reach it — not teaching that one about lists.
+ */
 export function textFlowToTiptap(blocks: TextFlowBlock[]): TiptapDoc {
   return {
     type: "doc",
@@ -646,7 +660,8 @@ function tiptapNodesToBoxBlockChildren(nodes: TiptapNode[]): BoxBlockChildBlock[
       if (node.type === "layoutSection") {
         return tiptapLayoutSectionNodeToTextBlock(node);
       }
-      return tiptapNodeToLayoutSectionChildBlock(node);
+      const block = tiptapNodeToTextBlock(node);
+      return isBoxBlockChildBlock(block) ? block : degradeToParagraph(block);
     });
 }
 
@@ -658,13 +673,21 @@ function tiptapNodesToLayoutSectionChildren(nodes: TiptapNode[]): LayoutSectionC
 
 function tiptapNodeToLayoutSectionChildBlock(node: TiptapNode): LayoutSectionChildBlock {
   const block = tiptapNodeToTextBlock(node);
-  return isLayoutSectionChildBlock(block)
-    ? block
-    : {
-      type: "paragraph",
-      id: createId("p"),
-      children: [],
-    };
+  return isLayoutSectionChildBlock(block) ? block : degradeToParagraph(block);
+}
+
+/**
+ * 受け取れない種別を段落へ落とすときは、**文章を持ったまま**落とす (引用の子と同じ規約)。
+ *
+ * 空の段落へ差し替えると、入れ物の中で種別を変えた瞬間に書いた文字ごと消える。実際に
+ * 「箱の中で引用ボタンを押すと本文が空になる」という形で出ていた。
+ */
+function degradeToParagraph(block: TextFlowBlock): ParagraphNode {
+  return {
+    type: "paragraph",
+    id: block.id,
+    children: getTextFlowBlockChildren(block),
+  };
 }
 
 function tiptapListNodeToTextBlock(node: TiptapNode): ListNode {
@@ -722,6 +745,34 @@ function normalizePositiveInteger(value: unknown): number | undefined {
   return Number.isInteger(number) && number > 0 ? number : undefined;
 }
 
-function isLayoutSectionChildBlock(block: TextFlowBlock): block is LayoutSectionChildBlock {
-  return block.type === "section" || block.type === "heading" || block.type === "paragraph" || block.type === "list" || block.type === "boxBlock";
+/**
+ * n 段組の中に置ける子。SigmaDoc の `LayoutSectionChildBlock` は引用とコードも許すが、
+ * 編集面の `LayoutSectionExtension` の content 式
+ * (`paragraph | heading | bulletList | orderedList | divider | boxBlock`) は持てない。
+ * **PM が持てる集合**をここで型にしておく — 広げると SigmaDoc → PM で content 式に合わない
+ * ノードを作ってしまう。
+ */
+type EditableLayoutSectionChildBlock =
+  | SectionNode
+  | HeadingNode
+  | ParagraphNode
+  | ListNode
+  | DividerNode
+  | BoxBlockNode;
+
+function isLayoutSectionChildBlock(block: TextFlowBlock): block is EditableLayoutSectionChildBlock {
+  return block.type === "section"
+    || block.type === "heading"
+    || block.type === "paragraph"
+    || block.type === "list"
+    || block.type === "divider"
+    || block.type === "boxBlock";
+}
+
+/**
+ * 箱の中に置ける子。`boxBlockBody` の content 式は `block+` なので、引用とコードも入る
+ * (段組の子より広い)。ここを狭めると、箱の中で引用にした瞬間に保存で潰れる。
+ */
+function isBoxBlockChildBlock(block: TextFlowBlock): block is LayoutSectionChildBlock {
+  return block.type !== "layoutSection";
 }

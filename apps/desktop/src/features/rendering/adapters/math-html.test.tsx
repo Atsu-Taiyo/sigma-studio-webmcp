@@ -126,13 +126,10 @@ describe("the document macros reach every static outlet", () => {
           h: 80,
           color: "#111111",
           size: "m",
-          autoSize: false,
-          richText: {
-            blocks: [{
-              type: "paragraph",
+          blocks: [{
+              type: "paragraph", id: "math_html_test_17",
               children: [{ type: "mathInline", id: "math_outlet", tex, display: "inline" }],
             }],
-          },
         },
       }], {}, { width: 400, height: 200 }, { mathEnvironment: environment });
       expect(svg).toContain(expected);

@@ -70,7 +70,7 @@ export interface BoxedRunLineConnection {
 }
 
 export function annotateBoxedInlineRuns(
-  children: InlineNode[],
+  children: readonly InlineNode[],
   options: { runIdPrefix?: string } = {},
 ): AnnotatedInlineNode[] {
   return annotateBoxedRunItems(children, getBoxedInlineCandidate, options).map((entry) => ({
@@ -81,7 +81,7 @@ export function annotateBoxedInlineRuns(
 }
 
 export function annotateBoxedRunItems<TItem>(
-  items: TItem[],
+  items: readonly TItem[],
   getCandidate: (item: TItem) => { kind: "boxed"; styleKey: string } | { kind: "break" } | { kind: "ignored" },
   options: { runIdPrefix?: string } = {},
 ): Array<AnnotatedBoxedRunItem<TItem>> {
@@ -131,7 +131,7 @@ export function annotateBoxedRunItems<TItem>(
   return annotated;
 }
 
-export function boxedInlineRunSignature(children: InlineNode[]): string {
+export function boxedInlineRunSignature(children: readonly InlineNode[]): string {
   return children.map((child) => {
     if (child.type === "text") {
       return [

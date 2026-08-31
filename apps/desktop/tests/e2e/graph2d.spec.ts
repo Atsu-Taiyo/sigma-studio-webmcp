@@ -59,6 +59,64 @@ test("hides graph chrome while choosing the initial origin", async ({ page }) =>
   await expect(page.getByRole("button", { name: "原点をクリックで指定" })).toBeVisible();
 });
 
+test("keeps an axis label attached while its graph moves and resizes", async ({ page }) => {
+  await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
+  await expect(page.getByText("準備完了")).toBeVisible();
+
+  await chooseInsert(page, "グラフ");
+  const graph = page.locator(".graph-shape").first();
+  const initial = await graph.boundingBox();
+  expect(initial).not.toBeNull();
+  await page.mouse.click(initial!.x + initial!.width * 0.3, initial!.y + initial!.height * 0.38);
+
+  await openGraphSettingsFromContextMenu(page, graph);
+  await expandGraphDisclosure(page, "軸名");
+  await page.getByTestId("overlay-graph-axis-label-x").check();
+  const label = page.locator(".overlay-shape-text").first();
+  await expect(label).toBeVisible();
+  await closeGraphSettingsPanel(page);
+
+  const graphBeforeMove = await graph.boundingBox();
+  const labelBeforeMove = await label.boundingBox();
+  expect(graphBeforeMove).not.toBeNull();
+  expect(labelBeforeMove).not.toBeNull();
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.up("Shift");
+
+  await expect.poll(async () => (await graph.boundingBox())?.x ?? 0)
+    .toBeGreaterThan(graphBeforeMove!.x + 10);
+  const graphAfterMove = await graph.boundingBox();
+  const labelAfterMove = await label.boundingBox();
+  expect(graphAfterMove).not.toBeNull();
+  expect(labelAfterMove).not.toBeNull();
+  expect(labelAfterMove!.x - labelBeforeMove!.x)
+    .toBeCloseTo(graphAfterMove!.x - graphBeforeMove!.x, 1);
+  expect(labelAfterMove!.y - labelBeforeMove!.y)
+    .toBeCloseTo(graphAfterMove!.y - graphBeforeMove!.y, 1);
+
+  const eastHandle = page.locator(".overlay-resize-handle.e");
+  await expect(eastHandle).toBeVisible();
+  const handleBox = await eastHandle.boundingBox();
+  expect(handleBox).not.toBeNull();
+  await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handleBox!.x + handleBox!.width / 2 + 80, handleBox!.y + handleBox!.height / 2, { steps: 8 });
+  await page.mouse.up();
+
+  await expect.poll(async () => (await graph.boundingBox())?.width ?? 0)
+    .toBeGreaterThan(graphAfterMove!.width + 40);
+  const graphAfterResize = await graph.boundingBox();
+  const labelAfterResize = await label.boundingBox();
+  expect(graphAfterResize).not.toBeNull();
+  expect(labelAfterResize).not.toBeNull();
+  const relativeLabelXBefore = (labelAfterMove!.x - graphAfterMove!.x) / graphAfterMove!.width;
+  const relativeLabelXAfter = (labelAfterResize!.x - graphAfterResize!.x) / graphAfterResize!.width;
+  expect(relativeLabelXAfter).toBeCloseTo(relativeLabelXBefore, 1);
+});
+
 test("toggles graph point fill between solid and open styles", async ({ page }) => {
   await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
   await expect(page.getByText("準備完了")).toBeVisible();
@@ -127,16 +185,14 @@ test("edits point coordinates with math input", async ({ page }) => {
 
   // 保存される座標は評価用の正規化式 + 入力 TeX。
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("sigma-studio:flush-overlay-changes")));
+  // 座標は1つずつ確定するので、x だけを待って y を読むと「x は入ったが y はまだ」の
+  // 途中の保存を読んでしまう。4つまとめて待つ。
   await expect
     .poll(async () => {
       const point = await getSavedFirstGraphPoint(page);
-      return point?.x ?? null;
+      return point ? { x: point.x, y: point.y, xTex: point.xTex, yTex: point.yTex } : null;
     })
-    .toBe("(3)/(2)");
-  const savedPoint = await getSavedFirstGraphPoint(page);
-  expect(savedPoint?.y).toBe("sqrt(2)");
-  expect(savedPoint?.xTex).toBe("\\frac{3}{2}");
-  expect(savedPoint?.yTex).toBe("\\sqrt{2}");
+    .toEqual({ x: "3/2", y: "sqrt(2)", xTex: "\\frac{3}{2}", yTex: "\\sqrt{2}" });
 });
 
 test("shows the shared TeX editor above graph settings without a graph-local mode switch", async ({ page }) => {
@@ -296,9 +352,11 @@ test("runs editor shortcuts while the settings panel is open", async ({ page }) 
   await expect(page.locator('[data-testid="graph2d-curve"]')).toHaveCount(1);
 
   await page.keyboard.press(process.platform === "darwin" ? "Meta+z" : "Control+z");
-  // Undo がエディタへ届いた証拠。対象の図形が消えるのでパネルが閉じるのは正しい挙動。
-  await expect(page.locator(".graph-shape")).toHaveCount(0);
-  await expect(panel(page)).toHaveCount(0);
+  // Undo がエディタへ届いた証拠。戻るのは直前の「関数を追加」だけで、図形もパネルもそのまま残る
+  // (デバウンス中の図形編集は Undo の前に確定させるので、挿入まで巻き戻ることはない)。
+  await expect(page.locator('[data-testid="graph2d-curve"]')).toHaveCount(0);
+  await expect(page.locator(".graph-shape")).toHaveCount(1);
+  await expect(panel(page)).toBeVisible();
 });
 
 function panel(page: import("@playwright/test").Page) {

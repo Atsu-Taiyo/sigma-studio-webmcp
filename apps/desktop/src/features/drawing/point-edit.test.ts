@@ -46,7 +46,7 @@ function createCalloutShape(): OverlayCalloutShape {
         baseEnd: { x: 68, y: 72 },
         tip: { x: 24, y: 100 },
       },
-      richText: { blocks: [{ type: "paragraph", children: [] }] },
+      blocks: [{ type: "paragraph", id: "point_edit_test_4", children: [] }],
       color: "black",
       size: "m",
       dash: "solid",

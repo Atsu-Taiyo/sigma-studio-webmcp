@@ -26,8 +26,6 @@ import { overlayTextSizeToPx } from "./overlay-rich-text-format";
  * that rule for this module.
  */
 
-export const MIN_TEXT_SHAPE_SCALE = 0.25;
-export const MAX_TEXT_SHAPE_SCALE = 8;
 export const CSS_PX_PER_PT = 96 / 72;
 export const TEXT_SHAPE_LINE_HEIGHT = 1;
 
@@ -43,37 +41,14 @@ export function roundFontSize(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
-export function normalizeTextShapeScale(scale: unknown): number {
-  if (typeof scale !== "number" || !Number.isFinite(scale)) {
-    return 1;
-  }
-
-  return Math.max(MIN_TEXT_SHAPE_SCALE, Math.min(MAX_TEXT_SHAPE_SCALE, scale));
-}
-
-export function getTextShapeScale(
-  shape: Extract<OverlayShape, { type: "text" | "callout" }>,
-): number {
-  return normalizeTextShapeScale(shape.type === "text" ? shape.props.scale : 1);
-}
-
 /**
  * Px font size for the `size` enum alone. This is the enum-only API — it takes no point size, so it
  * stays on plain px arithmetic instead of detouring through `pt`, and there is nothing to gain from
  * changing that: callers that have a whole shape — and therefore a possible `props.fontSize` in
  * points — must use `getTextShapeRenderedFontSizePx`, which is the one path that reads it.
- *
- * The detour is *close to* lossless but not identically so, in case anyone is tempted: while
- * `ptToPx(pxToPt(x))` is exactly `x` for all four table values and a 0.001-step sweep of the whole
- * clamped scale range yields no `Math.ceil` difference, adversarial scales do differ (`size:"s"` at
- * `scale = 0.6923076923076924` gives 10 here and 9 through `pt`). Do not route this through
- * `getTextShapeFontSizePt` on the assumption that the two agree.
  */
-export function getTextShapeFontSizePx(
-  size: OverlayTextSize,
-  scale = 1,
-): number {
-  return overlayTextSizeToPx(size) * normalizeTextShapeScale(scale);
+export function getTextShapeFontSizePx(size: OverlayTextSize): number {
+  return overlayTextSizeToPx(size);
 }
 
 /**
@@ -92,7 +67,7 @@ export function getTextShapeFontSizePt(
   )
     ? shape.props.fontSize
     : pxToPt(overlayTextSizeToPx(shape.props.size));
-  return baseFontSize * getTextShapeScale(shape);
+  return baseFontSize;
 }
 
 export function getTextShapeRenderedFontSizePx(
@@ -104,7 +79,7 @@ export function getTextShapeRenderedFontSizePx(
 /**
  * Height of one rendered line box. Both the drawing feature's text box estimator and this
  * feature's `getShapeBounds` (group bounds) go through this function, so the *stored* geometry of
- * an auto-sized text shape cannot drift from what the renderers draw.
+ * a text shape cannot drift from what the renderers draw.
  */
 export function getTextShapeRenderedLineHeightPx(
   shape: Extract<OverlayShape, { type: "text" | "callout" }>,
@@ -115,11 +90,6 @@ export function getTextShapeRenderedLineHeightPx(
 }
 
 /** Line box for the `size` enum alone — the px counterpart of `getTextShapeFontSizePx`. */
-export function getTextShapeLineHeightPx(
-  size: OverlayTextSize,
-  scale = 1,
-): number {
-  return Math.ceil(
-    getTextShapeFontSizePx(size, scale) * TEXT_SHAPE_LINE_HEIGHT,
-  );
+export function getTextShapeLineHeightPx(size: OverlayTextSize): number {
+  return Math.ceil(getTextShapeFontSizePx(size) * TEXT_SHAPE_LINE_HEIGHT);
 }

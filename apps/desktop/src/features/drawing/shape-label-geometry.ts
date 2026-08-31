@@ -8,7 +8,7 @@ import type {
 import { overlayLabelFontSize } from "@/features/rendering/core";
 
 import { getLineMidpoint } from "./line-geometry";
-import { measureOverlayText, TEXT_ASCENT_EM, TEXT_DESCENT_EM } from "./overlay-text-measure";
+import { estimateTextWidthEm, TEXT_ASCENT_EM, TEXT_DESCENT_EM } from "./svg-label-metrics";
 
 /**
  * Where a line's or arrow's `props.label` is drawn, in page coordinates.
@@ -67,8 +67,8 @@ export function getShapeLabelPlacement(shape: OverlayShape): OverlayShapeLabelPl
  *
  * The `<text>` is drawn with `text-anchor: middle` and no `dominant-baseline`, so the anchor is
  * the middle of the baseline: the box hangs an ascent above it and a descent below. Widths come
- * from the same DOM-free estimator the rest of the overlay measures with, which reads Latin
- * glyphs as a flat 0.58em — wider than they really are, so no safety factor is added on top.
+ * from `svg-label-metrics.ts`, the DOM-free estimator this caption owns: it reads Latin glyphs as
+ * a flat 0.58em — wider than they really are, so no safety factor is added on top.
  */
 export function getShapeLabelBounds(shape: OverlayShape): OverlayBounds | null {
   const placement = getShapeLabelPlacement(shape);
@@ -80,7 +80,7 @@ export function getShapeLabelBounds(shape: OverlayShape): OverlayBounds | null {
   // SVG collapses whitespace, so a caption with a newline in it is drawn on one line. Splitting it
   // into two would over-estimate the height and under-estimate the width.
   const oneLine = placement.text.replace(/\s+/g, " ");
-  const { w } = measureOverlayText({ lines: [oneLine], fontSizePx });
+  const w = Math.ceil(estimateTextWidthEm(oneLine) * fontSizePx);
 
   return {
     x: anchor.x - w / 2,

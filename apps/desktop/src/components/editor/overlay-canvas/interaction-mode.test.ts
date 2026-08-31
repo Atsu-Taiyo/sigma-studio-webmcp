@@ -19,8 +19,8 @@ const textShape: OverlayShape = {
   rotation: 0,
   props: {
     w: 220,
-    richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "Text" }] }] },
-    autoSize: false,
+    h: 16,
+    blocks: [{ type: "paragraph", id: "interaction_mode_test_30", children: [{ type: "text", text: "Text" }] }],
     color: "black",
     size: "m",
   },

@@ -17,9 +17,10 @@ const globalCss = readFileSync(new URL("../../app/globals.css", import.meta.url)
 describe("GraphSettingsPanel contract", () => {
   it("keeps the dialog role and label that assistive tech and e2e rely on", () => {
     expect(panelSource).toContain('role="dialog"');
+    expect(panelSource).toContain('ariaLabel={t("graphPanel.title")}');
+    expect(panelSource).toContain("aria-label={ariaLabel}");
     // 文言は辞書へ移った。**e2e が掴むのは描画後の名前**なので、ソースの呼び出し形と
     // 日本語ロケールでの実値の両方を固定する (どちらか片方だと名前が黙って変わる)。
-    expect(panelSource).toContain('aria-label={t("graphPanel.title")}');
     expect(createTranslator("ja", "shape")("graphPanel.title")).toBe("グラフの設定");
   });
 
@@ -66,7 +67,8 @@ describe("GraphSettingsPanel contract", () => {
     // body へ落ちると次の Delete がキャンバスへ届き、選択中のグラフごと消える。
     expect(editorSettingsSource).toContain('document.querySelector<HTMLElement>("[data-graph-settings-panel]")');
     const removeHandlers = editorSettingsSource.match(/focusGraphSettingsSurface\(\);\n\s+onRemove\(\);/g);
-    expect(removeHandlers?.length).toBe(2);
+    // 2D曲線・2D点・3D項目の各削除操作が同じフォーカス退避を行う。
+    expect(removeHandlers?.length).toBe(3);
   });
 
   it("closes the panel when the document instance is replaced", () => {

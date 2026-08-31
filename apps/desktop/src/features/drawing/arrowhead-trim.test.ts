@@ -6,7 +6,11 @@ import type {
   OverlayLineShape,
   OverlayPoint,
 } from "@/features/document";
-import { ARROWHEAD_MARKER_SPECS, overlayStrokeWidth } from "@/features/rendering/core";
+import {
+  ARROWHEAD_MARKER_SPECS,
+  getArrowheadTrimInStrokes,
+  overlayStrokeWidth,
+} from "@/features/rendering/core";
 
 import { getArcDrawnAngles, getArrowheadPathTrim, getShapeArrowheadPlan } from "./arrowhead-trim";
 import { getLineSvgPath, trimPolylinePoints } from "./line-geometry";
@@ -84,11 +88,11 @@ function drawnPoints(shape: OverlayLineShape | OverlayArrowShape): OverlayPoint[
 
 describe("how far the drawn path is pulled back", () => {
   it("stops a diamond-tipped line short of the endpoint by the head's own length", () => {
-    // 7.5 marker units at `m` (2px per unit): the diamond's point is at 9 and the line has to stop
-    // half a unit inside its back vertex at 1.
+    // The diamond's point is at 9 and the line has to stop where the diamond is already wider than
+    // the line, which `arrowhead-spec.ts` measures off the outline. At `m` that is 2px per unit.
     const points = drawnPoints(arrow({ arrowheadEnd: "diamond" }));
 
-    expect(points[1].x).toBeCloseTo(200 - 7.5 * 2, 6);
+    expect(points[1].x).toBeCloseTo(200 - getArrowheadTrimInStrokes("diamond") * 2, 6);
     expect(points[0].x).toBe(0);
   });
 
@@ -155,7 +159,7 @@ describe("shapes that draw no head", () => {
 
 describe("clamping", () => {
   it("never eats the terminal segment, so the head keeps pointing along it", () => {
-    // 7.5 units at `xl` is 37.5px, more than this last segment is long. Consuming it would hand
+    // A diamond at `xl` asks for far more than this last segment is long. Consuming it would hand
     // `orient="auto"` the direction of the segment before it and swing the head sideways.
     const shape = line({
       points: [{ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 20 }],
@@ -252,7 +256,7 @@ describe("curves", () => {
     });
     const plan = getShapeArrowheadPlan(shape);
 
-    expect(plan.start.trimPx).toBeCloseTo(7.5 * 5, 6);
+    expect(plan.start.trimPx).toBeCloseTo(getArrowheadTrimInStrokes("diamond") * 5, 6);
     expect(plan.end.trimPx).toBeCloseTo(plan.start.trimPx, 6);
   });
 
@@ -265,7 +269,7 @@ describe("curves", () => {
     const plan = getShapeArrowheadPlan(shape);
     const trimmed = getLineSvgPath(points, "curve", getArrowheadPathTrim(plan));
 
-    expect(plan.end.trimPx).toBeCloseTo(7.5 * 5, 6);
+    expect(plan.end.trimPx).toBeCloseTo(getArrowheadTrimInStrokes("diamond") * 5, 6);
     expect(pathLengthOf(trimmed)).toBeCloseTo(pathLengthOf(getLineSvgPath(points, "curve")) - plan.end.trimPx, 1);
   });
 

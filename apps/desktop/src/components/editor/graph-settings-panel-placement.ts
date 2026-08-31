@@ -16,6 +16,11 @@ export interface GraphSettingsPanelRect {
 export interface GraphSettingsPanelSize {
   width: number;
   height: number;
+  /**
+   * 横に置けないときに縮めてよい下限。省略時は `width` (= 縮めない)。
+   * 広いパネルを固定幅のまま扱うと、狭い viewport で「グラフを覆わない」を満たせなくなる。
+   */
+  minWidth?: number;
 }
 
 export interface GraphSettingsPanelViewport {
@@ -51,34 +56,53 @@ export function getGraphSettingsPanelPlacement(
 ): GraphSettingsPanelPlacement {
   const margin = GRAPH_SETTINGS_PANEL_MARGIN_PX;
   const gap = GRAPH_SETTINGS_PANEL_GAP_PX;
-  const width = Math.min(
+  const viewportWidth = Math.max(1, viewport.width - margin * 2);
+  const preferredWidth = Math.min(
     Math.max(1, panelSize.width || GRAPH_SETTINGS_PANEL_WIDTH_PX),
-    Math.max(1, viewport.width - margin * 2),
+    viewportWidth,
   );
+  const minWidth = Math.min(Math.max(1, panelSize.minWidth ?? preferredWidth), preferredWidth);
   const maxHeight = Math.max(1, viewport.height - margin * 2);
   const height = Math.min(Math.max(1, panelSize.height), maxHeight);
   const graphRight = graphRect.left + graphRect.width;
   const graphBottom = graphRect.top + graphRect.height;
+
+  // 横に置ける幅。希望幅に足りなくても下限まで縮めば置けるなら、覆うより縮むほうがよい。
+  const roomOnRight = viewport.width - margin - (graphRight + gap);
+  const roomOnLeft = graphRect.left - gap - margin;
+
+  let side: GraphSettingsPanelSide;
+  let width: number;
+
+  if (roomOnRight >= minWidth) {
+    side = "right";
+    width = Math.min(preferredWidth, roomOnRight);
+  } else if (roomOnLeft >= minWidth) {
+    side = "left";
+    width = Math.min(preferredWidth, roomOnLeft);
+  } else if (graphBottom + gap + height <= viewport.height - margin) {
+    side = "below";
+    width = preferredWidth;
+  } else {
+    side = "clamped";
+    width = preferredWidth;
+  }
 
   const clampLeft = (value: number): number =>
     Math.max(margin, Math.min(value, viewport.width - margin - width));
   const clampTop = (value: number): number =>
     Math.max(margin, Math.min(value, viewport.height - margin - height));
 
-  let side: GraphSettingsPanelSide;
   let left: number;
   let top: number;
 
-  if (graphRight + gap + width <= viewport.width - margin) {
-    side = "right";
+  if (side === "right") {
     left = graphRight + gap;
     top = clampTop(graphRect.top);
-  } else if (graphRect.left - gap - width >= margin) {
-    side = "left";
+  } else if (side === "left") {
     left = graphRect.left - gap - width;
     top = clampTop(graphRect.top);
-  } else if (graphBottom + gap + height <= viewport.height - margin) {
-    side = "below";
+  } else if (side === "below") {
     left = clampLeft(graphRect.left);
     top = graphBottom + gap;
   } else {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { OverlayCalloutShape, OverlayRichTextDocument } from "@/features/document";
+import type { OverlayCalloutShape, OverlayTextBlock } from "@/features/document";
 
 import {
   getCalloutGeometry,
@@ -10,10 +10,10 @@ import {
 } from "./callout-geometry";
 import { getCalloutBodySize } from "./overlay-text-box";
 
-function richTextOf(text: string): OverlayRichTextDocument {
-  return {
-    blocks: [{ type: "paragraph", children: [{ type: "text", text }] }],
-  };
+let blockId = 0;
+
+function blocksOf(text: string): OverlayTextBlock[] {
+  return [{ type: "paragraph", id: `p_${blockId += 1}`, children: [{ type: "text", text }] }];
 }
 
 function callout(overrides: Partial<OverlayCalloutShape["props"]> = {}): OverlayCalloutShape {
@@ -31,7 +31,7 @@ function callout(overrides: Partial<OverlayCalloutShape["props"]> = {}): Overlay
         baseEnd: { x: 68, y: 72 },
         tip: { x: 24, y: 100 },
       },
-      richText: richTextOf("説明"),
+      blocks: blocksOf("説明"),
       color: "#111111",
       size: "m",
       dash: "solid",
@@ -42,13 +42,13 @@ function callout(overrides: Partial<OverlayCalloutShape["props"]> = {}): Overlay
 }
 
 /**
- * A callout whose content is long enough (40 CJK glyphs, each ~1 estimator unit, wrapped at the
- * 136px content width this 160px-wide box leaves after padding) that `getCalloutBodySize` grows
- * its effective height well past the stored 72px — the regime every test below cares about.
+ * A callout whose content occupies more lines (7 hard-broken lines at the 16px default line box,
+ * plus padding on both sides) than the stored 72px height allows, so `getCalloutBodySize` grows
+ * its effective height — the regime every test below cares about.
  */
 function growingCallout(overrides: Partial<OverlayCalloutShape["props"]> = {}): OverlayCalloutShape {
   return callout({
-    richText: richTextOf("説明".repeat(20)),
+    blocks: blocksOf("説明\n説明\n説明\n説明\n説明\n説明\n説明"),
     ...overrides,
   });
 }

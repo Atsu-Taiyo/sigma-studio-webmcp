@@ -20,9 +20,20 @@ type IntentionalJapaneseRule = {
  */
 export const INTENTIONAL_RUNTIME_JAPANESE: readonly IntentionalJapaneseRule[] = [
   {
+    path: /^src\/lib\/heading-numbering\.ts$/,
+    value: /^(?:第|章)$/,
+    classification: "document numbering format",
+    reason: "The persisted chapterJa style selects a language-invariant Japanese chapter-number format, not locale-dependent interface copy.",
+  },
+  {
     path: /^src\/lib\/tex-(?:command-reference|environment-examples|import)\.ts$/,
     classification: "TeX grammar and teaching examples",
     reason: "Stable Japanese source examples and 問題/解答 parser tokens; locale-specific views resolve separate dictionaries.",
+  },
+  {
+    path: /^src\/lib\/classic-format(?:-import|\/.*)\.ts$/,
+    classification: "external format grammar",
+    reason: "EditorMath legacy parser tokens and source-format diagnostics are compatibility data.",
   },
   {
     path: /^src\/lib\/inline-math-symbol-buttons\.ts$/,
@@ -222,7 +233,10 @@ function isIntentional(literal: JapaneseLiteral): boolean {
 }
 
 describe("runtime Japanese literal gate", () => {
-  it("keeps user-facing Japanese behind i18n dictionaries", () => {
+  // src/ と electron/ の全ファイルを TypeScript の構文木に起こすので、フルスイートと
+  // 並走すると既定の 5 秒を実測で超える (単独実行では ~2 秒)。負荷で赤くなるゲートは
+  // 信用されなくなるため、走査の実時間に余裕を持たせる。
+  it("keeps user-facing Japanese behind i18n dictionaries", { timeout: 30_000 }, () => {
     const desktopRoot = path.resolve(process.cwd());
     const violations = collectJapaneseLiterals(desktopRoot).filter((literal) => !isIntentional(literal));
     expect(

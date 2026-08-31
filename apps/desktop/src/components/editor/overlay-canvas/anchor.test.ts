@@ -472,8 +472,7 @@ function textShape(id: string, x: number, y: number): OverlayShape {
     props: {
       w: 40,
       h: 22,
-      richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: id }] }] },
-      autoSize: false,
+      blocks: [{ type: "paragraph", id: "anchor_test_22", children: [{ type: "text", text: id }] }],
       color: "black",
       size: "s",
     },

@@ -591,6 +591,9 @@ button:disabled {
   gap: 18px;
   min-width: 0;
   padding-bottom: 0;
+  /* メニュー群と教材タブは別のグループ。列 gap (8px) だけだと項目内の 18px より
+     狭くなり「設定」がタブにくっついて見えるので、群の末尾に境界の余白を持たせる。 */
+  padding-right: var(--space-lg);
 }
 
 .app-menu-anchor {
@@ -778,7 +781,7 @@ button:disabled {
 }
 
 .page-settings-dialog input,
-.page-settings-dialog select {
+.page-settings-dialog .ui-select {
   width: 100%;
   min-width: 0;
   height: 34px;
@@ -791,7 +794,7 @@ button:disabled {
 }
 
 .page-settings-dialog input:focus-visible,
-.page-settings-dialog select:focus-visible {
+.page-settings-dialog .ui-select:focus-visible {
   border-color: var(--border-strong);
   outline: 2px solid color-mix(in srgb, var(--accent) 24%, transparent);
 }
@@ -1025,7 +1028,8 @@ button:disabled {
 }
 
 .custom-command-panel input,
-.custom-command-panel select {
+.custom-command-panel .ui-select,
+.custom-command-color-button {
   width: 100%;
   min-width: 0;
   height: 32px;
@@ -1037,13 +1041,29 @@ button:disabled {
   font-size: 12.5px;
 }
 
-.custom-command-panel input:not([type="color"]),
-.custom-command-panel select {
+.custom-command-panel input,
+.custom-command-panel .ui-select,
+.custom-command-color-button {
   padding: 0 var(--space-sm);
 }
 
-.custom-command-panel input[type="color"] {
-  padding: var(--space-xs);
+.custom-command-color-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.custom-command-color-button code {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.custom-command-color-swatch {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 .command-shortcuts-table {
@@ -1489,20 +1509,21 @@ button:disabled {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 6px;
-  align-items: start;
+  align-items: center;
 }
 
-.table-border-line-type select {
+.table-border-line-type .ui-select {
   width: 100%;
+  min-height: 26px;
   border: 1px solid var(--border);
   border-radius: 3px;
   background: #ffffff;
   color: var(--text-primary);
   font-size: 12px;
-  padding: 2px;
+  padding: 2px 4px;
 }
 
-.table-border-line-type select:disabled {
+.table-border-line-type .ui-select:disabled {
   opacity: 0.5;
 }
 
@@ -2305,7 +2326,7 @@ button:disabled {
 }
 
 .endpoint-menu {
-  min-width: 168px;
+  min-width: 196px;
   padding: 5px;
   gap: 1px;
 }
@@ -2317,13 +2338,52 @@ button:disabled {
   font-weight: 600;
 }
 
-.endpoint-menu button {
+.endpoint-menu button.endpoint-menu-row {
   display: grid;
   grid-template-columns: 18px 64px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 36px;
   padding: 0 9px 0 7px;
+}
+
+/* 行がかたち、列が大きさ。見出しぶんの1列を左に空けて名前を置く。 */
+.endpoint-size-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(2, auto);
+  align-items: center;
+  gap: 1px 6px;
+  padding: 2px 7px 0;
+}
+
+.endpoint-size-heading {
+  padding-bottom: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.endpoint-shape-label {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.endpoint-menu button.endpoint-menu-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+}
+
+.endpoint-menu button.endpoint-menu-cell.selected {
+  border-color: var(--accent);
 }
 
 .endpoint-menu button:focus-visible {
@@ -2634,7 +2694,8 @@ button:disabled {
 .toolbar-select {
   min-width: 108px;
   height: 34px;
-  padding: 0 28px 0 9px;
+  /* シェブロンは Select 自身が描くので、ネイティブの矢印ぶんの右余白は要らない。 */
+  padding: 0 9px;
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
@@ -2642,8 +2703,9 @@ button:disabled {
   font-size: 13px;
 }
 
-.toolbar-select:hover,
-.toolbar-select:focus-visible {
+.toolbar-select:not(:disabled):hover,
+.toolbar-select:focus-visible,
+.toolbar-select[aria-expanded="true"] {
   border-color: var(--border);
   background: var(--surface-muted);
   outline: none;
@@ -6007,7 +6069,7 @@ button.workspace-breadcrumb-item:focus-visible {
 }
 
 .folder-edit-row input,
-.folder-edit-row select {
+.folder-edit-row .ui-select {
   min-width: 0;
   height: 36px;
   border: 1px solid var(--border);
@@ -6021,7 +6083,7 @@ button.workspace-breadcrumb-item:focus-visible {
   padding: 0 10px;
 }
 
-.folder-edit-row select {
+.folder-edit-row .ui-select {
   flex: 0 0 auto;
   padding: 0 8px;
 }
@@ -8382,8 +8444,14 @@ code {
   margin: 0;
 }
 
+/*
+ * 見せる帯は「上端から可視高さまで」で決める。隠す量 (= 全高 − 可視高) を書くと、打鍵で
+ * 中身が伸びてからページ割りが追いつくまでの 1〜2 フレームだけ、伸びた分そのまま帯が下へ
+ * 伸びて箱がページ下端をはみ出して見える。可視高さを上端から測れば、ページ割りが遅れても
+ * 帯はページ境界に留まる (落ち着いた状態では両者は同じ値)。
+ */
 .text-flow-editor .text-flow-box-fragment-source {
-  clip-path: inset(0 0 var(--text-flow-box-fragment-hidden-bottom, 0px) 0);
+  clip-path: inset(0 0 max(0px, 100% - var(--text-flow-box-fragment-visible-height, 100%)) 0);
 }
 
 .page-box-fragment-layer {
@@ -10696,9 +10764,129 @@ code {
 }
 
 .overlay-graph-shape,
+.overlay-graph3d-shape,
 .overlay-callout-shape {
   width: 100%;
   height: 100%;
+}
+
+.graph3d-preview,
+.graph3d-preview-viewport,
+.graph3d-preview-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.graph3d-preview {
+  position: relative;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.graph3d-annotation-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.graph3d-annotation-label {
+  position: absolute;
+  z-index: 2;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 82%);
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+}
+
+.graph3d-annotation-overlay[data-graph3d-static-label-overlay="true"] .graph3d-annotation-label {
+  background: #ffffff;
+}
+
+.graph3d-preview-canvas {
+  display: block;
+  touch-action: none;
+}
+
+.graph3d-preview-help {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  padding: 3px 7px;
+  border: 1px solid rgb(15 23 42 / 12%);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 84%);
+  color: #52606d;
+  font-size: 10px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.graph3d-preview-diagnostics {
+  position: absolute;
+  right: 8px;
+  left: 8px;
+  bottom: 8px;
+  max-height: 42%;
+  overflow: auto;
+  padding: 7px 9px;
+  border: 1px solid #e7b75f;
+  border-radius: 6px;
+  background: rgb(255 248 229 / 94%);
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.graph3d-preview.is-interactive .graph3d-preview-diagnostics {
+  bottom: 34px;
+}
+
+.overlay-graph3d-placeholder {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  border: 1px solid #d8dde2;
+  border-radius: 4px;
+  background:
+    linear-gradient(30deg, transparent 48%, #e9edf1 49%, #e9edf1 51%, transparent 52%),
+    #fafbfc;
+  color: #52606d;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.04em;
+}
+
+.overlay-graph3d-shape {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #e1e5e9;
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.overlay-graph3d-live-window {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.overlay-graph3d-stale {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 86%);
+  color: var(--text-muted);
+  font-size: 9px;
+  pointer-events: none;
 }
 
 .overlay-canvas-editor.origin-picking .graph-shape {
@@ -11414,6 +11602,69 @@ code {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
+/* Chart settings panel rows. The panel reuses the graph frame, so only its own fields need rules. */
+.chart-settings-source {
+  font-size: 12px;
+  /* `--text-secondary`, not `--text-muted`: this line carries the chart's live/broken state, and
+     #8a8a8a at 12px is 3.45:1 — below the 4.5:1 body text has to clear. The value this rule used
+     to fall through to (#6b7280, from an undefined token) passed, so the token fix must not
+     quietly lower it. */
+  color: var(--text-secondary);
+}
+
+.chart-settings-source.broken {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  color: var(--danger);
+}
+
+.chart-settings-hint {
+  font-size: 11px;
+  /* Carries the empty state ("グラフにできる数値がありません"), so it has to be readable too. */
+  color: var(--text-secondary);
+}
+
+/* 枠と focus の出し方は隣に並ぶ `.graph-number-input` と同じ作法にする
+   (border は `--border`、focus は border-color を `--accent` へ動かして 18% のリングを足す)。 */
+.chart-settings-text-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--background);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.chart-settings-text-input::placeholder {
+  color: var(--text-muted);
+}
+
+.chart-settings-text-input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* このパネルの縦リズムは Stack の gap が持つ。`.field-label` と `.checkbox-field` が自前で持つ
+   margin と二重に効かせない (design-rules: 子要素の margin で間隔を作らず親の gap で管理する)。 */
+.chart-settings-panel .field-label,
+.chart-settings-panel .checkbox-field {
+  margin: 0;
+}
+
+
+.chart-settings-series-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .graph-color-button-swatch {
   width: 22px;
   height: 14px;
@@ -11978,7 +12229,7 @@ code {
   font-weight: 650;
 }
 
-.text-format-context-field > select {
+.text-format-context-field > .ui-select {
   width: 100%;
   min-height: 34px;
   padding: 0 var(--space-md);
@@ -11989,7 +12240,7 @@ code {
   font-size: 13px;
 }
 
-.text-format-context-field > select:focus-visible {
+.text-format-context-field > .ui-select:focus-visible {
   border-color: var(--border-strong);
   outline: 2px solid color-mix(in srgb, var(--accent) 16%, transparent);
   outline-offset: 1px;
@@ -12599,13 +12850,7 @@ code {
   min-width: 0;
 }
 
-.ai-inline-preview-problem-meta {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.ai-inline-preview-operation p {
+.ai-inline-preview-placeholder {
   margin: 0;
   color: var(--text-secondary);
   font-size: 12px;
@@ -12617,6 +12862,14 @@ code {
   /* No inter-block gap: consecutive inserted blocks should read as one
      continuous run, identical to how they look once applied to the body. */
   gap: 0;
+}
+
+.ai-inline-preview-paper {
+  background: #ffffff;
+  color: #111111;
+  font-family: "Yu Gothic", "Hiragino Sans", "Meiryo", system-ui, sans-serif;
+  font-size: var(--editor-font-size, 12pt);
+  line-height: 1.78;
 }
 
 /* 「提案された変更」見出し。サイドバーの .ai-chat-result-proposal-diff-heading と
@@ -12750,90 +13003,6 @@ button.ai-source-ref-chip--document:focus-visible {
   line-height: 1.78;
 }
 
-.ai-inline-preview-section,
-.ai-inline-preview-heading,
-.ai-inline-preview-paragraph {
-  margin: 0;
-}
-
-/* AI プレビューの引用・コード・区切り線。紙面 (document-surface.css の .print-quote /
-   .print-code / .print-divider) と同じ見せ方を、プレビュー用の控えめな寸法で写したもの。 */
-.ai-inline-preview-quote {
-  margin: 4px 0;
-  padding: 2px 0 2px 10px;
-  border-left: 3px solid rgba(17, 17, 17, 0.28);
-  color: rgba(17, 17, 17, 0.78);
-}
-
-.ai-inline-preview-code {
-  margin: 4px 0;
-  padding: 6px 10px;
-  border: 1px solid rgba(17, 17, 17, 0.16);
-  border-radius: 4px;
-  background: rgba(17, 17, 17, 0.04);
-  font-family: "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: inherit;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.ai-inline-preview-divider {
-  margin: 8px 0;
-  border: 0;
-  border-top: 1px solid rgba(17, 17, 17, 0.24);
-}
-
-.ai-inline-preview-content.text-flow-editor .ai-inline-preview-section,
-.ai-inline-preview-content.text-flow-editor .ai-inline-preview-heading.level-1 {
-  margin: 18px 0 14px;
-  font-size: calc(var(--editor-font-size, 12pt) * 1.85);
-  line-height: 1.28;
-  font-weight: 760;
-}
-
-.ai-inline-preview-content.text-flow-editor .ai-inline-preview-heading.level-2 {
-  margin: 16px 0 8px;
-  font-size: calc(var(--editor-font-size, 12pt) * 1.42);
-  line-height: 1.34;
-  font-weight: 720;
-}
-
-.ai-inline-preview-content.text-flow-editor .ai-inline-preview-heading.level-3 {
-  margin: 12px 0 6px;
-  font-size: calc(var(--editor-font-size, 12pt) * 1.18);
-  line-height: 1.42;
-  font-weight: 700;
-}
-
-.ai-inline-preview-content.text-flow-editor .ai-inline-preview-paragraph {
-  min-height: 1.78em;
-  margin: 2px 0;
-}
-
-.ai-inline-preview-rich-blocks strong {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.ai-inline-preview-text {
-  white-space: pre-wrap;
-}
-
-.ai-inline-preview-problem,
-.ai-inline-preview-rich-blocks {
-  display: grid;
-  gap: 6px;
-}
-
-/* Problem proposals keep the same semantic rail used by the page canvas:
-   the area label remains visually separate from the proposed prompt/solution
-   instead of flattening both into an anonymous green paragraph. */
-.ai-inline-preview-problem-layout {
-  display: grid;
-  gap: var(--space-sm);
-}
-
 .ai-inline-preview-problem-area-row {
   display: grid;
   grid-template-columns: minmax(58px, 76px) minmax(0, 1fr);
@@ -12868,20 +13037,6 @@ button.ai-source-ref-chip--document:focus-visible {
 
 .ai-inline-preview-problem-area-body > :last-child {
   margin-bottom: 0;
-}
-
-.ai-inline-preview-problem-meta {
-  gap: 6px;
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.ai-inline-preview-problem-meta span {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
 }
 
 .ai-inline-preview-actions {
@@ -13424,6 +13579,10 @@ button.ai-source-ref-chip--document:focus-visible {
 
 .inline-math-field {
   --caret-color: currentColor;
+  /* 開き括弧を打つと MathLive (smartFence) が閉じ括弧も入れる。既定ではその閉じ括弧を
+     50% の濃さで「仮」として描くので、入力されていないように見える。同時に打った文字
+     として見せるため、本文と同じ濃さにする。 */
+  --smart-fence-opacity: 1;
   --composition-background-color: transparent;
   --contains-highlight-background-color: transparent;
   --contains-highlight-color: currentColor;
@@ -14987,7 +15146,6 @@ button.ai-source-ref-chip--document:focus-visible {
  * left-aligned block like the body, not centered.
  */
 .comment-message .rich-inline-content .math-preview,
-.ai-inline-preview-text .math-preview,
 .ai-stream-render.rich-inline-content .math-preview {
   font-size: var(--editor-font-size, 12pt);
 }
@@ -17739,6 +17897,8 @@ button.ai-source-ref-chip--document:focus-visible {
     grid-row: 2;
     max-width: 100%;
     gap: 10px;
+    /* 狭幅ではタブが独立した行へ降りるので、群の境界余白は要らない。 */
+    padding-right: 0;
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -19412,6 +19572,422 @@ button.ai-source-ref-chip--document:focus-visible {
   overflow: visible;
   display: flex;
   align-items: flex-start;
+}
+
+/* WebMCP writes remain proposals until the person editing the document accepts
+   them. This dock is independent from the desktop AI runtime and uses the same
+   compact editor chrome tokens as the task and comment docks. */
+.webmcp-proposal-dock {
+  position: fixed;
+  inset-block-start: 112px;
+  inset-inline-end: var(--space-md);
+  z-index: 140;
+  display: flex;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(68vh, 620px);
+  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--background);
+  box-shadow: 0 20px 48px -20px rgb(15 23 42 / 0.35);
+  overflow: hidden;
+}
+
+.webmcp-proposal-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-sm);
+  padding: 12px 14px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+.webmcp-proposal-header h2,
+.webmcp-proposal-header p {
+  margin: 0;
+}
+
+.webmcp-proposal-header h2 {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.webmcp-proposal-header p {
+  margin-block-start: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.webmcp-proposal-mark {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: var(--radius-round);
+  background: var(--surface-soft);
+  color: var(--text-primary);
+}
+
+.webmcp-proposal-count {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  padding-inline: 6px;
+  place-items: center;
+  border-radius: var(--radius-round);
+  background: var(--text-primary);
+  color: var(--background);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.webmcp-proposal-list {
+  display: grid;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.webmcp-proposal-apply-all {
+  appearance: none;
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: var(--space-sm) var(--space-sm) 0;
+  padding-inline: 12px;
+  border: 1px solid var(--text-primary);
+  border-radius: 9px;
+  background: var(--text-primary);
+  color: var(--background);
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition-property: transform, opacity;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+
+.webmcp-proposal-apply-all:hover {
+  opacity: 0.88;
+}
+
+.webmcp-proposal-apply-all:active {
+  transform: scale(0.96);
+}
+
+.webmcp-proposal-card {
+  display: grid;
+  gap: var(--space-sm);
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.webmcp-proposal-target {
+  appearance: none;
+  display: inline-flex;
+  width: fit-content;
+  min-height: 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.webmcp-proposal-target:hover:not(:disabled) {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.webmcp-proposal-target:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.webmcp-proposal-target:focus-visible,
+.webmcp-proposal-actions button:focus-visible,
+.webmcp-proposal-apply-all:focus-visible,
+.webmcp-proposal-history button:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+
+.webmcp-proposal-diff {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.webmcp-proposal-diff del,
+.webmcp-proposal-diff ins {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.webmcp-proposal-diff del {
+  background: color-mix(in srgb, var(--danger, #b42318) 9%, transparent);
+  color: var(--text-secondary);
+}
+
+.webmcp-proposal-diff del::before {
+  content: "− ";
+  color: var(--danger, #b42318);
+  font-weight: 700;
+}
+
+.webmcp-proposal-diff ins {
+  background: color-mix(in srgb, var(--success, #157347) 10%, transparent);
+  color: var(--text-primary);
+}
+
+.webmcp-proposal-diff ins::before {
+  content: "+ ";
+  color: var(--success, #157347);
+  font-weight: 700;
+}
+
+.webmcp-proposal-error {
+  margin: 10px 12px 0;
+  color: var(--danger, #b42318);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.webmcp-proposal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  padding: 10px 12px;
+}
+
+.webmcp-proposal-actions button {
+  appearance: none;
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding-inline: 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition-property: transform, background-color;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+
+.webmcp-proposal-actions button:active {
+  transform: scale(0.96);
+}
+
+.webmcp-proposal-reject {
+  background: var(--background);
+  color: var(--text-primary);
+}
+
+.webmcp-proposal-reject:hover {
+  background: var(--surface-strong);
+}
+
+.webmcp-proposal-actions .webmcp-proposal-apply {
+  border-color: var(--text-primary);
+  background: var(--text-primary);
+  color: var(--background);
+}
+
+.webmcp-proposal-apply:hover {
+  background: #000000;
+}
+
+.webmcp-proposal-history {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px 12px;
+  border-block-start: 1px solid var(--border-subtle);
+}
+
+.webmcp-proposal-history h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.webmcp-proposal-history ul {
+  display: grid;
+  gap: 4px;
+  max-height: 116px;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.webmcp-proposal-history li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.webmcp-proposal-history [data-status="applied"]::before {
+  content: "✓ ";
+}
+
+.webmcp-proposal-history [data-status="rejected"]::before {
+  content: "× ";
+}
+
+.webmcp-proposal-history button {
+  appearance: none;
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.webmcp-proposal-history button:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.webmcp-edit-target {
+  border-radius: 4px;
+  outline: 2px solid color-mix(in srgb, var(--accent, #2563eb) 62%, transparent);
+  outline-offset: 2px;
+  background: color-mix(in srgb, var(--accent, #2563eb) 8%, transparent);
+  cursor: not-allowed;
+}
+
+.overlay-shape.webmcp-edit-target-shape {
+  cursor: not-allowed;
+  filter: drop-shadow(0 0 0.5px var(--accent, #2563eb)) drop-shadow(0 0 4px color-mix(in srgb, var(--accent, #2563eb) 42%, transparent));
+}
+
+.webmcp-edit-lock-notice {
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-start: 50%;
+  z-index: 12;
+  max-width: min(420px, calc(100% - 32px));
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--text-primary);
+  color: var(--background);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.18);
+  font-size: 12px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.webmcp-proposal-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ai-web-placeholder-vendors-title,
+.ai-web-placeholder-footnote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-web-instructions-input {
+  width: 100%;
+  min-height: 10rem;
+  resize: vertical;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text-primary);
+  background: var(--surface-primary);
+  font: inherit;
+  line-height: 1.5;
+}
+
+.ai-web-instructions-input:focus-visible {
+  outline: 2px solid var(--focus-ring-color, #2563eb);
+  outline-offset: 2px;
+}
+
+.ai-web-proposal-surface:empty {
+  display: none;
+}
+
+.webmcp-proposal-panel {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  margin-block-start: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--background);
+  overflow: hidden;
+}
+
+@media (max-width: 640px) {
+  .webmcp-proposal-dock {
+    inset-block: auto calc(var(--space-md) + env(safe-area-inset-bottom));
+    inset-inline: var(--space-sm);
+    width: auto;
+    max-height: min(56vh, 520px);
+  }
+
+  .webmcp-proposal-apply-all {
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .webmcp-proposal-actions button,
+  .webmcp-proposal-apply-all {
+    transition: none;
+  }
+
+  .webmcp-proposal-actions button:active,
+  .webmcp-proposal-apply-all:active {
+    transform: none;
+  }
 }
 
 .ai-task-dock-hover-bridge {

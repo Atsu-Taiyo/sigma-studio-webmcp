@@ -285,6 +285,16 @@ const BoxDecorationSchema = z.discriminatedUnion("type", [
     type: z.literal("titleBand"),
     heightPx: z.number().positive().optional(),
     backgroundColor: z.string().optional(),
+    ruleWidthPx: z.number().nonnegative().optional(),
+    ruleColor: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("titleTab"),
+    heightPx: z.number().positive().optional(),
+    radiusPx: z.number().nonnegative().optional(),
+    offsetXPx: z.number().optional(),
+    paddingPx: BoxSpacingPxSchema.optional(),
+    backgroundColor: z.string().optional(),
   }),
   z.object({
     type: z.literal("titlePlate"),
@@ -336,7 +346,7 @@ const BoxDecorationSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const BoxFrameSchema = z.object({
+export const BoxFrameSchema = z.object({
   borderWidthPx: z.number().nonnegative().optional(),
   borderColor: z.string().optional(),
   borderStyle: z.enum(["solid", "dashed", "dotted", "double", "none"]).optional(),
@@ -573,7 +583,7 @@ const SigmaDocumentInputSchema = z.object({
   metadata: z.object({
     title: z.string(),
     source: z.object({
-      format: z.enum(["external-document", "presentation"]).optional(),
+      format: z.enum(["classic-format", "presentation"]).optional(),
       layoutMode: z.literal("fixedOverlay").optional(),
       printFlowContent: z.boolean().optional(),
       originalFileName: z.string().optional(),
@@ -590,6 +600,11 @@ const SigmaDocumentInputSchema = z.object({
       fontSize: z.literal("pt").optional(),
     }).optional(),
     mathFractionSizing: z.enum(["uniform", "texDefault"]).optional(),
+    headingNumbering: z.object({
+      enabled: z.boolean(),
+      style: z.enum(["decimal", "sectionSign", "chapterJa"]).optional(),
+      depth: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+    }).optional(),
     texPreamble: z.string().max(20_000).optional(),
   }),
   content: z.array(SigmaBlockSchema),

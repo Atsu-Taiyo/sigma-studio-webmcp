@@ -49,6 +49,10 @@ export interface AiEditPreviewState {
   turnId?: string;
   // グループのラベル (チャットのセッションタイトル、または最初の指示の抜粋)。
   sessionLabel?: string;
+  /** Web proposals rely on their revision/content freshness guards and remain
+   * directly editable while their on-page preview is visible. Desktop AI
+   * proposals omit this field and keep the established target reservation. */
+  lockTargets?: boolean;
   // Phase 1: Agentic RAG。このグループの全提案が参照した過去教材・素材・Webページを
   // 集約・重複排除したもの (存在する場合のみ、空配列にはしない)。
   sourceReferences?: DesktopAiSourceReference[];
@@ -1007,6 +1011,9 @@ export function derivePendingAiProposalLockTargets(previews: AiEditPreviewState[
   const shapeIds = new Set<string>();
 
   for (const preview of previews) {
+    if (preview.lockTargets === false) {
+      continue;
+    }
     const allOperations = preview.draft.operations;
     for (const operation of allOperations) {
       if (operation.operation === "insertOverlayShape" || operation.operation === "insertTableShape") {

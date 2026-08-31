@@ -4,28 +4,28 @@ import { History } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 
-import { listMarkerTypographyDomSpec } from "@/features/rendering/adapters";
-import { InlineContent } from "@/features/rendering/adapters/react";
+import {
+  buildProblemAreaPrintUnits,
+  PrintBlock,
+  PrintProblemArea,
+} from "@/components/print/print-static-blocks";
+import { HeadingNumberingProvider } from "@/components/editor/text-flow/HeadingNumberingContext";
 import { AiProposalActions } from "@/components/ui/ai";
 import { buildShapeOnlyPreview, buildShapesSvgPreview } from "@/lib/ai/ai-edit-shape-preview";
 import { findProblemAreaBlockLocation } from "@/lib/document-tree";
 import {
-  listItemContinuationInlineNodes,
-  normalizeLineHeight,
-  type BoxBlockChildBlock,
-  type InlineNode,
   type ListItemNode,
+  type MathFractionSizing,
   type OverlayAsset,
   type OverlayShape,
-  type ProblemAreaBlock,
   type ProblemAreaKind,
-  type RichBlock,
   type SigmaBlock,
   type SigmaDocument,
 } from "@/features/document";
 import { createCurrentLocaleTranslator, type Translate } from "@/lib/i18n";
 import { useT } from "@/lib/i18n/react";
 import { formatProblemNumber, getProblemNumberMap } from "@/lib/problem-numbering";
+import { getHeadingNumberMap } from "@/lib/heading-numbering";
 import {
   createAiEditSessionDocumentDraft,
   primarySigmaDocMutationOpTargetId,
@@ -68,6 +68,8 @@ export interface AiEditInlineOperationEntry {
    * so preserve that context while grouping the proposal. */
   problemArea?: ProblemAreaKind;
   problemNumber?: number;
+  headingNumber?: string;
+  headingNumbers?: ReadonlyMap<string, string>;
 }
 
 // mutationOperations (deleteBlocks/moveBlocks/updateOverlayShape/alignOverlayShapes/
@@ -275,6 +277,7 @@ function groupSinglePreviewEntries(
 ): Map<string, AiEditInlinePreviewEntry[]> {
   const entriesByAnchorId = new Map<string, AiEditInlinePreviewEntry[]>();
   const problemNumbers = resolvePreviewProblemNumbers(preview, document);
+  const headingNumbers = resolvePreviewHeadingNumbers(preview, document);
   const allOperations = preview.draft.operations;
   const operations = allOperations.filter((operation) => !isOverlayOwnedAiEditDraft(operation, allOperations));
   const mutationOperations = (preview.draft.mutationOperations ?? []).filter(
@@ -321,6 +324,8 @@ function groupSinglePreviewEntries(
       operationIndex,
       operationCount: totalCount,
       sessionSummary: preview.draft.summary,
+      headingNumber: proposedBlock ? headingNumbers.get(proposedBlock.id) : undefined,
+      headingNumbers,
       ...(problemLocation ? {
         problemArea: problemLocation.area,
         problemNumber: proposedProblemId ? problemNumbers.get(proposedProblemId) : undefined,
@@ -389,6 +394,21 @@ function resolvePreviewProblemNumbers(
   }
 }
 
+function resolvePreviewHeadingNumbers(
+  preview: AiEditPreviewState,
+  document?: SigmaDocument,
+): Map<string, string> {
+  if (!document) {
+    return new Map();
+  }
+  try {
+    const previewDocument = createAiEditSessionDocumentDraft(document, null, preview.draft).nextDocument;
+    return getHeadingNumberMap(previewDocument.content, previewDocument.metadata?.headingNumbering);
+  } catch {
+    return getHeadingNumberMap(document.content, document.metadata?.headingNumbering);
+  }
+}
+
 /**
  * Merges the per-anchor entries of *every* current preview group (one per
  * run/proposal-group — see ai-edit-preview-types.ts's Decision B) into a
@@ -427,6 +447,7 @@ export function groupAiEditPreviewEntries(
 export function AiEditInlinePreviewCard({
   entries,
   applying,
+  mathFractionSizing,
   sourceReferences,
   onOpenConversation,
   onOpenSourceDocument,
@@ -436,6 +457,7 @@ export function AiEditInlinePreviewCard({
   entries: AiEditInlinePreviewEntry[];
   providers: McpEditProposalProvider[];
   applying: boolean;
+  mathFractionSizing?: MathFractionSizing;
   /** Attribution stays in the surrounding AI surfaces; the body widget itself
    * deliberately renders only the real diff and proposal actions. */
   sessionLabel?: string;
@@ -513,7 +535,7 @@ export function AiEditInlinePreviewCard({
             />
           </div>
         ) : (
-          <div className="ai-inline-preview-operation-list" aria-label={title}>
+          <div className="ai-inline-preview-operation-list ai-inline-preview-paper" aria-label={title}>
             {visibleEntries.map((entry, index) => {
               const previousEntry = visibleEntries[index - 1];
               const previousProblemArea = previousEntry?.kind === "operation"
@@ -523,6 +545,7 @@ export function AiEditInlinePreviewCard({
                 <AiEditInlineOperationPreview
                   key={entry.kind === "operation" ? `op:${entry.draft.targetId}:${entry.operationIndex}` : `mut:${entry.operationIndex}`}
                   entry={entry}
+                  mathFractionSizing={mathFractionSizing}
                   showProblemAreaLabel={entry.kind === "operation" && Boolean(entry.problemArea) && entry.problemArea !== previousProblemArea}
                 />
               );
@@ -640,9 +663,11 @@ export function AiEditOverlayApprovalWidget({
 
 function AiEditInlineOperationPreview({
   entry,
+  mathFractionSizing,
   showProblemAreaLabel = true,
 }: {
   entry: AiEditInlinePreviewEntry;
+  mathFractionSizing?: MathFractionSizing;
   showProblemAreaLabel?: boolean;
 }) {
   const t = useT("ai");
@@ -661,9 +686,12 @@ function AiEditInlineOperationPreview({
   // renderer alive for output nobody can see, the branch degrades to naming the shape -- with the
   // same noun the change summary uses, not the internal shape type it used to print.
   const previewContent = isTextDraft ? (
-    <AiEditableBlockPreview
+    <AiStaticBlockPreview
       block={draft.operation === "insertAfter" ? draft.insertedBlock : draft.replacementBlock}
       problemNumber={entry.problemNumber}
+      mathFractionSizing={mathFractionSizing}
+      headingNumber={entry.headingNumber}
+      headingNumbers={entry.headingNumbers}
     />
   ) : (
     <p className="ai-inline-preview-placeholder">
@@ -740,134 +768,75 @@ function AiEditInlineMutationPreview({ entry }: { entry: AiEditInlineMutationEnt
   );
 }
 
-function blockPreviewStyle(block: SigmaBlock | RichBlock | ListItemNode): CSSProperties | undefined {
-  const style: CSSProperties = {};
-  if ("align" in block && block.align) {
-    style.textAlign = block.align;
-  }
-  if ("lineHeight" in block && block.lineHeight) {
-    const lineHeight = normalizeLineHeight(block.lineHeight);
-    if (lineHeight) {
-      style.lineHeight = lineHeight;
-    }
-  }
-  return Object.keys(style).length > 0 ? style : undefined;
-}
+const AI_PREVIEW_COLUMN_GAP_MM = 8;
 
-export function AiEditableBlockPreview({
+function AiStaticBlockPreview({
   block,
   problemNumber,
+  mathFractionSizing,
+  headingNumber,
+  headingNumbers,
 }: {
-  block: SigmaBlock | RichBlock | ListItemNode;
+  block: SigmaBlock | ListItemNode;
   problemNumber?: number;
+  mathFractionSizing?: MathFractionSizing;
+  headingNumber?: string;
+  headingNumbers?: ReadonlyMap<string, string>;
 }) {
-  const tEditor = useT("editor");
-  const alignStyle = blockPreviewStyle(block);
-
-  if (block.type === "section") {
-    return (
-      <h1 className="ai-inline-preview-section" style={alignStyle}>
-        {block.title || tEditor("block.section")}
-      </h1>
-    );
+  const resolvedHeadingNumbers = new Map(headingNumbers);
+  if (headingNumber) {
+    resolvedHeadingNumbers.set(block.id, headingNumber);
   }
 
-  if (block.type === "heading") {
-    const HeadingTag = block.level === 1 ? "h1" : block.level === 2 ? "h2" : "h3";
+  if (block.type === "problem") {
     return (
-      <HeadingTag className={`ai-inline-preview-heading level-${block.level}`} style={alignStyle}>
-        <InlineNodesPreview nodes={block.children} />
-      </HeadingTag>
-    );
-  }
-
-  if (block.type === "paragraph") {
-    return (
-      <p className="ai-inline-preview-paragraph" style={alignStyle}>
-        <InlineNodesPreview nodes={block.children} />
-      </p>
-    );
-  }
-
-  if (block.type === "listItem") {
-    return (
-      <p className="ai-inline-preview-paragraph">
-        <InlineNodesPreview nodes={block.children} />
-      </p>
-    );
-  }
-
-  if (block.type === "list") {
-    return <ListPreview block={block} />;
-  }
-
-  if (block.type === "layoutSection") {
-    return (
-      <div className="ai-inline-preview-problem">
-        <div className="ai-inline-preview-problem-meta">
-          <span>{tEditor("block.columns", { replace: { columns: block.layout.columnCount } })}</span>
-        </div>
-        {block.children.map((child) => (
-          <AiEditableBlockPreview key={child.id} block={child} />
+      <HeadingNumberingProvider numbers={resolvedHeadingNumbers}>
+        {buildProblemAreaPrintUnits(block, problemNumber).map((unit) => (
+          <PrintProblemArea
+            key={unit.id}
+            problemId={unit.problemId}
+            area={unit.area}
+            blocks={unit.blocks}
+            minHeightMm={unit.minHeightMm}
+            problemNumber={unit.problemNumber}
+            numberFontSize={unit.numberFontSize}
+            hasFrame={unit.hasFrame}
+            frameStyleId={unit.frameStyleId}
+            isFirstProblemArea={unit.isFirstProblemArea}
+            isFirstProblemFrameArea={unit.isFirstProblemFrameArea}
+            isLastProblemFrameArea={unit.isLastProblemFrameArea}
+            columnGapMm={AI_PREVIEW_COLUMN_GAP_MM}
+            mathFractionSizing={mathFractionSizing}
+          />
         ))}
-      </div>
+      </HeadingNumberingProvider>
     );
   }
 
-  if (block.type === "divider") {
-    return <hr className="ai-inline-preview-divider" />;
-  }
-
-  if (block.type === "quote") {
-    return (
-      <blockquote className="ai-inline-preview-quote">
-        {block.blocks.map((child) => (
-          <AiEditableBlockPreview key={child.id} block={child} />
-        ))}
-      </blockquote>
-    );
-  }
-
-  if (block.type === "codeBlock") {
-    return (
-      <pre className="ai-inline-preview-code">
-        <InlineNodesPreview nodes={block.children} />
-      </pre>
-    );
-  }
-
-  if (block.type === "boxBlock") {
-    return (
-      <div className="ai-inline-preview-problem">
-        <div className="ai-inline-preview-problem-meta">
-          <span>{tEditor("block.box")}</span>
-        </div>
-        {block.title && block.title.length > 0 && (
-          <p className="ai-inline-preview-paragraph">
-            <InlineNodesPreview nodes={block.title} />
-          </p>
-        )}
-        <BoxBlockChildrenPreview title={tEditor("block.paragraph")} blocks={block.blocks} />
-      </div>
-    );
-  }
+  const printableBlock: SigmaBlock = block.type === "listItem"
+    ? {
+        id: block.id,
+        type: "paragraph",
+        children: block.children,
+        align: block.align,
+      }
+    : block;
 
   return (
-    <div className="ai-inline-preview-problem-layout">
-      {block.lead.length > 0 && (
-        <ProblemAreaPreview area="lead" blocks={block.lead} problemNumber={problemNumber} />
-      )}
-      <ProblemAreaPreview area="prompt" blocks={block.prompt} problemNumber={problemNumber} />
-      {block.hints.length > 0 && (
-        <ProblemAreaPreview area="hints" blocks={block.hints} problemNumber={problemNumber} />
-      )}
-      {block.solution.length > 0 && (
-        <ProblemAreaPreview area="solution" blocks={block.solution} problemNumber={problemNumber} />
-      )}
-    </div>
+    <HeadingNumberingProvider numbers={resolvedHeadingNumbers}>
+      <PrintBlock
+        unit={{
+          type: "block",
+          id: printableBlock.id,
+          block: printableBlock,
+          pagination: printableBlock.pagination,
+        }}
+        columnGapMm={AI_PREVIEW_COLUMN_GAP_MM}
+        mathFractionSizing={mathFractionSizing}
+      />
+    </HeadingNumberingProvider>
   );
 }
-
 /** 区分の呼び名は本文編集面と同じ語 (`editor.block.problem*` / `editor.pageCanvas.areaPrompt`)。 */
 function problemAreaPreviewLabel(
   area: ProblemAreaKind,
@@ -882,78 +851,4 @@ function problemAreaPreviewLabel(
   }
   if (area === "hints") return tEditor("block.problemHints");
   return tEditor("block.problemSolution");
-}
-
-function ProblemAreaPreview({
-  area,
-  blocks,
-  problemNumber,
-}: {
-  area: ProblemAreaKind;
-  blocks: ProblemAreaBlock[];
-  problemNumber?: number;
-}) {
-  const tEditor = useT("editor");
-  return (
-    <section className="ai-inline-preview-problem-area-row" data-problem-area={area}>
-      <span className="ai-inline-preview-problem-area-label">
-        {problemAreaPreviewLabel(area, problemNumber, tEditor)}
-      </span>
-      <div className="ai-inline-preview-problem-area-body">
-        {blocks.map((block) => (
-          <AiEditableBlockPreview key={block.id} block={block} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ListPreview({ block }: { block: Extract<RichBlock, { type: "list" }> }) {
-  const items = block.items.map((item) => {
-    // 本文の静的描画と同じ派生値。片方だけ出すと「提案 ≠ 適用」の見え方に戻る。
-    const markerTypography = listMarkerTypographyDomSpec(item.children);
-    return (
-      <li key={item.id} {...markerTypography?.attrs} style={markerTypography?.style as CSSProperties | undefined}>
-        <span style={{ display: "block", textAlign: item.align ?? "left" }}>
-          <InlineNodesPreview nodes={item.children} />
-        </span>
-        {(item.continuations ?? []).map((paragraph) => (
-          <p key={paragraph.id} className="ai-inline-preview-paragraph" style={blockPreviewStyle(paragraph)}>
-            <InlineNodesPreview nodes={listItemContinuationInlineNodes(paragraph)} />
-          </p>
-        ))}
-        {(item.nested ?? []).map((nested) => (
-          <ListPreview key={nested.id} block={nested} />
-        ))}
-      </li>
-    );
-  });
-
-  return block.listType === "ordered"
-    ? (
-      // 提案プレビューと適用結果でマーカーが食い違わないよう、本文の静的描画と同じ属性を出す。
-      <ol
-        className="ai-inline-preview-list"
-        data-list-marker={block.markerStyle === "paren" ? "paren" : undefined}
-        start={block.start}
-      >
-        {items}
-      </ol>
-    )
-    : <ul className="ai-inline-preview-list">{items}</ul>;
-}
-
-function BoxBlockChildrenPreview({ title, blocks }: { title: string; blocks: BoxBlockChildBlock[] }) {
-  return (
-    <div className="ai-inline-preview-rich-blocks">
-      <strong>{title}</strong>
-      {blocks.map((block) => (
-        <AiEditableBlockPreview key={block.id} block={block} />
-      ))}
-    </div>
-  );
-}
-
-function InlineNodesPreview({ nodes }: { nodes: InlineNode[] }) {
-  return <InlineContent nodes={nodes} className="ai-inline-preview-text" />;
 }

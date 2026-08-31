@@ -20,6 +20,7 @@ import {
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
   BringToFront,
+  ChartColumnBig,
   ChevronRight,
   Copy,
   Crop,
@@ -47,25 +48,43 @@ import type { Editor as TiptapEditor } from "@tiptap/core";
 
 import {
   GRAPH_FILL_UNRESOLVED_EVENT,
+  OPEN_OVERLAY_CHART_SETTINGS_EVENT,
   OPEN_OVERLAY_GRAPH_SETTINGS_EVENT,
+  SELECT_OVERLAY_CHART_EVENT,
+  type SelectedOverlayChart,
   SELECT_OVERLAY_GRAPH_EVENT,
   type SelectedOverlayGraph,
 } from "@/components/editor/EditorSettings";
-import { requestInlineMathEdit } from "@/components/tiptap/inline-math-extension";
 import {
-  appendOverlayRichTextInline,
+  OPEN_OVERLAY_GRAPH3D_SETTINGS_EVENT,
+  SELECT_OVERLAY_GRAPH3D_EVENT,
+  type Graph3DDerivedImage,
+  type SelectedOverlayGraph3D,
+} from "@/components/editor/Graph3DSettingsPanel";
+import { dispatchGraph3DAnimationPreview } from "@/components/editor/graph3d-animation-preview";
+import { requestInlineMathEdit } from "@/components/tiptap/inline-math-extension";
+import { applyTextFormatCommand } from "@/components/tiptap/text-format-controller";
+import { createId } from "@/lib/id";
+import {
+  appendOverlayTextInline,
   fontSizeToOverlaySize,
-  formatRichTextDocument,
+  formatOverlayTextBlocks,
   type InlineNode,
-  type OverlayRichTextDocument,
+  type OverlayTextBlock,
   type OverlayTextCommand,
   normalizeLineHeight,
   type BoxedVariant,
   type Graph2DSpec,
+  type Graph3DCamera,
+  type Graph3DExpressionVector3,
+  type Graph3DObject,
   type PageOverlay,
+  type SigmaChartSpec,
   normalizeOverlaySnapshot,
+  resolveChartData,
   patchShape,
   removeShapes,
+  syncChartDataSnapshots,
   upsertShape,
 } from "@/features/document";
 import {
@@ -79,6 +98,7 @@ import {
   fitShapesWithinPage,
   flipShapesAround,
   getCurveDrawingPreviewPoints,
+  getGraph3DPreviewSourceHash,
   getOnlySelectedTextShape,
   getSelectionResizeFrame,
   getSelectionRotationPivot,
@@ -298,6 +318,8 @@ import {
   CORNER_RESIZE_HANDLES,
   EDGE_RESIZE_HANDLES,
   getLocalResizeDelta,
+  getResizeHandleSet,
+  isCornerResizeHandle,
 } from "./overlay-canvas/resize";
 import {
   fitImageRowToWidth,
@@ -374,6 +396,7 @@ import {
   TABLE_SHAPE_TYPE,
   createPlainTableSpec,
 } from "./overlay-canvas/shapes/table";
+import { createChartShapeProps, getChartBoundsForTable } from "./overlay-canvas/shapes/chart";
 import {
   normalizeLineKind,
 } from "./overlay-canvas/shapes/line";
@@ -406,6 +429,7 @@ import type {
   SigmaTableSpec,
   OverlayGraphAxisLabelKey,
   OverlayGraphShape,
+  OverlayGraph3DShape,
   OverlayPoint,
   OverlayShape,
   OverlayShapePatch,
@@ -951,10 +975,14 @@ export default function OverlayCanvasEditorClient({
           getBlockAnchorScope(),
         ))
       : normalizeOverlayGroups(shapesRef.current);
-    if (reanchored !== shapesRef.current) {
-      shapesRef.current = reanchored;
+    // Refresh chart snapshots at the single point every edit funnels through, rather than hooking
+    // each path that can change or delete a table. Copy-on-write: an unchanged document keeps its
+    // array identity and no save is queued.
+    const synced = syncChartDataSnapshots(reanchored);
+    if (synced !== shapesRef.current) {
+      shapesRef.current = synced;
       suppressNextSaveRef.current = true;
-      setShapes(reanchored);
+      setShapes(synced);
     }
 
     const snapshot: OverlaySnapshot = {
@@ -984,6 +1012,12 @@ export default function OverlayCanvasEditorClient({
   }, []);
 
   const flushOverlayChange = useCallback(() => {
+    // Nothing queued means the document already holds this overlay. Emitting anyway would stamp a
+    // fresh `updatedAt` onto an unchanged snapshot, which the shell cannot tell from a real edit:
+    // it would record an undo step and mark the document dirty for a flush that changed nothing.
+    if (saveTimeoutRef.current === undefined && !imageCropDirtyRef.current) {
+      return;
+    }
     const history = pendingOverlayHistoryRef.current ?? "record";
     clearQueuedOverlaySave();
     emitOverlayChange({ history });
@@ -1078,13 +1112,23 @@ export default function OverlayCanvasEditorClient({
     const currentMode = modeRef.current;
     const textEditingShapeId = currentMode.id === "overlay.textEditing" ? currentMode.shapeId : null;
     const nextShapes = normalizeOverlayGroups(snapshot.shapes);
+    const nextShapeIds = new Set(nextShapes.map((shape) => shape.id));
     const nextTextEditingShape = textEditingShapeId
       ? nextShapes.find((shape) => shape.id === textEditingShapeId && isOverlayRichTextShape(shape))
+      : null;
+    // An undo/redo swaps the whole snapshot in, but it is still the same shape on screen: keeping
+    // it selected is what lets ⌘Z after ⌘Z keep walking back through its edits. A 3D material also
+    // stays in its direct-edit mode, so its live window is never torn down and rebuilt (a rebuild
+    // costs a WebGL context and blanks the preview for a moment).
+    const survivingSelection = selectedIdsRef.current.filter((id) => nextShapeIds.has(id));
+    const graph3DEditingShape = currentMode.id === "overlay.graph3dEditing"
+      && nextShapes.some((shape) => shape.id === currentMode.shapeId && shape.type === "graph3dShape")
+      ? currentMode.shapeId
       : null;
     shapesRef.current = nextShapes;
     assetsRef.current = snapshot.assets;
     extensionsRef.current = snapshot.extensions;
-    selectedIdsRef.current = nextTextEditingShape ? [nextTextEditingShape.id] : [];
+    selectedIdsRef.current = nextTextEditingShape ? [nextTextEditingShape.id] : survivingSelection;
     setShapes(nextShapes);
     setAssets(snapshot.assets);
     setSelectedIds(selectedIdsRef.current);
@@ -1095,6 +1139,9 @@ export default function OverlayCanvasEditorClient({
       activeTextEditorRef.current?.commands.blur();
       activeTextEditorRef.current = null;
       transitionMode({ type: "select" });
+      if (graph3DEditingShape) {
+        transitionMode({ type: "editGraph3D", shapeId: graph3DEditingShape });
+      }
     }
   }, [clearQueuedOverlaySave, transitionMode]);
 
@@ -1226,7 +1273,7 @@ export default function OverlayCanvasEditorClient({
       const previousBounds = getShapeBounds(previousShape);
       const patchedBounds = getShapeBounds(patchedShape);
       if (previousBounds.w !== patchedBounds.w || previousBounds.h !== patchedBounds.h) {
-        // Typing, DOM auto-size, font size, size presets and maxWidth all reach this funnel.
+        // Typing, the measured-height write-back, font size and size presets all reach this funnel.
         // Correcting here keeps one resize rule for every content-derived box change, while
         // explicit drag/handle patches stay authoritative because they carry x/y themselves.
         next = normalizeOverlayGroups(upsertShape(
@@ -1542,6 +1589,54 @@ export default function OverlayCanvasEditorClient({
     setTableInsertPicker(null);
   }, [createShapeFromInsertDrag, transitionMode]);
 
+  /**
+   * Creates a chart from an existing table and selects it.
+   *
+   * The chart is placed directly beneath the table and clamped into the canvas. It carries **no
+   * anchor of its own** — only x/y — because `emitOverlayChange` re-anchors against the canvas on
+   * the way out. Writing an anchor here as well is the "x/y and anchor offset held twice" trap:
+   * one of the two silently wins on the next save and the shape jumps back.
+   */
+  const createChartFromTable = useCallback((tableShapeId: OverlayShapeId) => {
+    const tableShape = shapesRef.current.find((shape) => shape.id === tableShapeId);
+    if (tableShape?.type !== "tableShape") {
+      return;
+    }
+    const bounds = getChartBoundsForTable({
+      x: tableShape.x,
+      y: tableShape.y,
+      w: tableShape.props.w,
+      h: tableShape.props.h,
+    });
+    const x = clamp(bounds.x, 0, Math.max(0, canvasWidthRef.current - bounds.w));
+    const y = clamp(bounds.y, 0, Math.max(0, canvasHeightRef.current - bounds.h));
+    const props = createChartShapeProps(
+      tableShape.props.table,
+      tableShapeId,
+      bounds.w,
+      bounds.h,
+    );
+
+    const shapeId = createShapeFromInsertDrag(
+      {
+        kind: "insert",
+        command: "chart",
+        chart: {
+          sourceTableShapeId: tableShapeId,
+          spec: props.spec,
+          dataSnapshot: props.dataSnapshot,
+        },
+      },
+      { x, y },
+      { x: x + bounds.w, y: y + bounds.h },
+    );
+    if (shapeId) {
+      // Selected, not opened for editing: a chart is configured from its floating panel, and the
+      // author's next move is normally to place it rather than to change its settings.
+      setSelectedShapeIds([shapeId]);
+    }
+  }, [createShapeFromInsertDrag, setSelectedShapeIds]);
+
   const finishCurveDrawing = useCallback((tool: InsertTool, points: OverlayPoint[], closed = false) => {
     const finalPoints = removeNearDuplicateDrawingPoints(points, 2);
     if (finalPoints.length < (tool.command === "threePointArc" ? 3 : 2)) {
@@ -1577,6 +1672,7 @@ export default function OverlayCanvasEditorClient({
           kind: "insert",
           command: request.command,
           graphPreset: request.graphPreset,
+          graph3dPreset: request.graph3dPreset,
           ...(request.command === "callout" ? { calloutRadius: lastCalloutCornerRadiusRef.current } : {}),
         },
       });
@@ -2265,10 +2361,13 @@ export default function OverlayCanvasEditorClient({
       transitionMode({ type: "select" });
     } else if (request.type === "insertTextAtPoint") {
       activeTextEditorRef.current?.commands.blur();
+      // No drag, so no width was asked for: an empty rect at the point lets the builder apply the
+      // one default width. A box made this way and a box made by a click have to come out the same
+      // size — a second size spelled out here would be a different answer to the same question.
       createShapeFromInsertDrag(
         { kind: "insert", command: "text" },
         request.point,
-        { x: request.point.x + 160, y: request.point.y + 44 },
+        request.point,
       );
     }
 
@@ -2569,6 +2668,49 @@ export default function OverlayCanvasEditorClient({
     queueOverlaySave();
   }, [queueOverlaySave]);
 
+  /**
+   * Announces the selected chart to the shell, which owns the floating settings panel.
+   *
+   * The shell bails on an equal payload (`areSelectedOverlayChartsEqual`). Without that guard this
+   * effect — which depends on `shapes` — dispatches on every commit, the shell calls `setState`, and
+   * the two re-render each other indefinitely.
+   */
+  const handleChartSpecChange = useCallback((shapeId: OverlayShapeId, spec: SigmaChartSpec) => {
+    setShapes((current) => {
+      const next = current.map((shape) => (
+        shape.id === shapeId && shape.type === "chartShape"
+          ? { ...shape, props: { ...shape.props, spec } }
+          : shape
+      ));
+      shapesRef.current = next;
+      return next;
+    });
+    queueOverlaySave();
+  }, [queueOverlaySave]);
+
+  useEffect(() => {
+    const selected = selectedIds.length === 1
+      ? shapes.find((shape) => shape.id === selectedIds[0])
+      : undefined;
+    if (selected?.type !== "chartShape") {
+      window.dispatchEvent(new CustomEvent<SelectedOverlayChart | null>(SELECT_OVERLAY_CHART_EVENT, { detail: null }));
+      return;
+    }
+    const sourceTable = selected.props.sourceTableShapeId
+      ? shapes.find((shape) => shape.id === selected.props.sourceTableShapeId)
+      : undefined;
+    const table = sourceTable?.type === "tableShape" ? sourceTable.props.table : null;
+    window.dispatchEvent(new CustomEvent<SelectedOverlayChart | null>(SELECT_OVERLAY_CHART_EVENT, {
+      detail: {
+        shapeId: selected.id,
+        spec: selected.props.spec,
+        data: resolveChartData(selected.props, table),
+        linked: table !== null,
+        onSpecChange: (spec) => handleChartSpecChange(selected.id, spec),
+      },
+    }));
+  }, [handleChartSpecChange, selectedIds, shapes]);
+
   useEffect(() => {
     const selectedShape = getSelectedGraphShapeForSettings(shapes, selectedIds);
     if (!selectedShape) {
@@ -2774,6 +2916,286 @@ export default function OverlayCanvasEditorClient({
     };
   }, []);
 
+  const handleGraph3DSpecChange = useCallback((
+    shapeId: OverlayShapeId,
+    nextSpec: OverlayGraph3DShape["props"]["spec"],
+    options?: { save?: boolean },
+  ) => {
+    setShapes((current) => {
+      const next = current.map((shape) => shape.id === shapeId && shape.type === "graph3dShape"
+        ? { ...shape, props: { ...shape.props, spec: nextSpec } }
+        : shape);
+      shapesRef.current = next;
+      return next;
+    });
+    if (options?.save !== false) queueOverlaySave();
+  }, [queueOverlaySave]);
+
+  const handleGraph3DCameraChange = useCallback((shapeId: OverlayShapeId, camera: Graph3DCamera) => {
+    const currentShape = shapesRef.current.find((shape): shape is OverlayGraph3DShape => (
+      shape.id === shapeId && shape.type === "graph3dShape"
+    ));
+    if (!currentShape) return;
+    handleGraph3DSpecChange(shapeId, { ...currentShape.props.spec, camera });
+  }, [handleGraph3DSpecChange]);
+
+  const handleGraph3DObjectRotationChange = useCallback((
+    shapeId: OverlayShapeId,
+    objectId: string,
+    rotation: Graph3DExpressionVector3,
+  ) => {
+    const currentShape = shapesRef.current.find((shape): shape is OverlayGraph3DShape => (
+      shape.id === shapeId && shape.type === "graph3dShape"
+    ));
+    if (!currentShape) return;
+    handleGraph3DSpecChange(shapeId, {
+      ...currentShape.props.spec,
+      objects: currentShape.props.spec.objects.map((object) => (
+        object.id === objectId ? { ...object, rotation } : object
+      )),
+    });
+  }, [handleGraph3DSpecChange]);
+
+  const handleGraph3DObjectTransformChange = useCallback((
+    shapeId: OverlayShapeId,
+    objectId: string,
+    transform: Pick<Graph3DObject, "rotation" | "translation" | "scale">,
+  ) => {
+    const currentShape = shapesRef.current.find((shape): shape is OverlayGraph3DShape => (
+      shape.id === shapeId && shape.type === "graph3dShape"
+    ));
+    if (!currentShape) return;
+    handleGraph3DSpecChange(shapeId, {
+      ...currentShape.props.spec,
+      objects: currentShape.props.spec.objects.map((object) => (
+        object.id === objectId ? { ...object, ...transform } : object
+      )),
+    });
+  }, [handleGraph3DSpecChange]);
+
+  const handleGraph3DPreviewReady = useCallback((
+    shapeId: OverlayShapeId,
+    dataUrl: string,
+    size: { width: number; height: number },
+    renderedSourceHash: string,
+    options: { animated: boolean },
+  ) => {
+    const currentShape = shapesRef.current.find((shape): shape is OverlayGraph3DShape => (
+      shape.id === shapeId && shape.type === "graph3dShape"
+    ));
+    if (!currentShape) return;
+    const previewSourceHash = getGraph3DPreviewSourceHash(currentShape.props.spec);
+    // Encoding finishes after the WebGL frame was drawn. A newer edit may already be current;
+    // never label an older bitmap with the newer spec's hash.
+    if (renderedSourceHash !== previewSourceHash) return;
+    const assetId = currentShape.props.previewAssetId ?? `asset_graph3d_preview_${shapeId}`;
+    const currentAsset = assetsRef.current[assetId];
+    if (
+      currentAsset?.props.src === dataUrl &&
+      currentShape.props.previewSourceHash === previewSourceHash
+    ) return;
+    const fileSize = Math.max(0, Math.floor((dataUrl.split(",")[1]?.length ?? 0) * 0.75));
+    const asset: OverlayAsset = {
+      id: assetId,
+      type: "image",
+      props: {
+        // The capture is supersampled above the shape's document size so it stays sharp when the
+        // document is zoomed in or printed; the asset records what was actually rendered.
+        w: Math.max(1, Math.round(size.width)),
+        h: Math.max(1, Math.round(size.height)),
+        name: options.animated ? tShape("graph3d.animationFileName") : tShape("graph3d.previewFileName"),
+        // An animated PNG: the page and the viewer play it, print and the SVG export read the
+        // still frame it also carries.
+        isAnimated: options.animated,
+        mimeType: "image/png",
+        src: dataUrl,
+        fileSize,
+      },
+    };
+    setAssets((current) => {
+      const next = { ...current, [assetId]: asset };
+      assetsRef.current = next;
+      return next;
+    });
+    setShapes((current) => {
+      const next = current.map((shape) => shape.id === shapeId && shape.type === "graph3dShape"
+        ? {
+            ...shape,
+            props: {
+              ...shape.props,
+              previewAssetId: assetId,
+              previewSourceHash,
+            },
+          }
+        : shape);
+      shapesRef.current = next;
+      explicitlySavedShapeStatesRef.current.add(next);
+      return next;
+    });
+    // The PNG is derived from the spec, not something the user did: it folds into the edit that
+    // changed the spec instead of becoming its own undo step. Recording it would also make undo
+    // unusable — restoring a state whose PNG is one edit behind puts the live window back on
+    // screen, which captures again, records again, and drops the redo branch every time.
+    queueOverlaySave({ history: "coalesce" });
+  }, [queueOverlaySave, tShape]);
+
+  /**
+   * Puts something derived from a 3D material onto the page next to the material it came from.
+   *
+   * Beside it when the page has the width, under it otherwise, and always carrying the source's
+   * block anchor so the new shape travels with the same paragraph. Position lives in both `x`/`y`
+   * and the anchor offset: writing only one of them makes the shape jump back on the next save.
+   */
+  const insertShapeBesideGraph3D = useCallback((
+    sourceShapeId: OverlayShapeId,
+    build: () => { shape: OverlayShape; asset?: OverlayAsset },
+  ) => {
+    const source = shapesRef.current.find((shape) => shape.id === sourceShapeId);
+    if (!source || source.type !== "graph3dShape") return;
+    const built = build();
+    const size = getShapeBounds(built.shape);
+    const fitsBeside = source.x + source.props.w + IMAGE_INSERT_GAP + size.w <= canvasWidthRef.current;
+    // Clamping happens before the anchor offsets are worked out, not after: `fitShapesWithinPage`
+    // moves `x`/`y` alone, and a block-anchored shape whose offset disagrees with its cached
+    // position snaps back the first time the anchor is resolved again.
+    const x = Math.max(0, Math.min(
+      source.x + (fitsBeside ? source.props.w + IMAGE_INSERT_GAP : 0),
+      Math.max(0, canvasWidthRef.current - size.w),
+    ));
+    const offsetX = x - source.x;
+    const offsetY = fitsBeside ? 0 : source.props.h + IMAGE_INSERT_GAP;
+    const blockAnchor = source.anchor?.type === "block" ? source.anchor : null;
+    const y = blockAnchor
+      ? source.y + offsetY
+      : Math.max(0, Math.min(source.y + offsetY, Math.max(0, canvasHeightRef.current - size.h)));
+    const anchor = blockAnchor
+      ? {
+          ...blockAnchor,
+          ...(typeof blockAnchor.dx === "number" ? { dx: blockAnchor.dx + offsetX } : {}),
+          dy: blockAnchor.dy + offsetY,
+          ...(blockAnchor.line
+            ? { line: { ...blockAnchor.line, dy: blockAnchor.line.dy + offsetY } }
+            : {}),
+        }
+      : undefined;
+    const nextShapes = normalizeOverlayGroups([{
+      ...built.shape,
+      x,
+      y,
+      ...(anchor ? { anchor } : {}),
+      ...(source.parentId ? { parentId: source.parentId } : {}),
+    } as OverlayShape]);
+    if (built.asset) {
+      const asset = built.asset;
+      setAssets((current) => {
+        const next = { ...current, [asset.id]: asset };
+        assetsRef.current = next;
+        return next;
+      });
+    }
+    setShapes((current) => {
+      const next = normalizeOverlayGroups([...current, ...nextShapes]);
+      shapesRef.current = next;
+      return next;
+    });
+    setSelectedShapeIds(nextShapes.map((shape) => shape.id));
+    transitionMode({ type: "select" });
+    queueOverlaySave();
+  }, [queueOverlaySave, setSelectedShapeIds, transitionMode]);
+
+  const handleGraph3DInsertImage = useCallback((
+    sourceShapeId: OverlayShapeId,
+    image: Graph3DDerivedImage,
+  ) => {
+    insertShapeBesideGraph3D(sourceShapeId, () => {
+      const asset: OverlayAsset = {
+        id: createOverlayAssetId(),
+        type: "image",
+        props: {
+          w: image.width,
+          h: image.height,
+          name: image.name,
+          isAnimated: false,
+          mimeType: "image/svg+xml",
+          src: image.dataUrl,
+          // The picture is drawn here, not read off disk: its bytes are the data URL itself.
+          fileSize: image.dataUrl.length,
+        },
+      };
+      return {
+        asset,
+        shape: {
+          id: createOverlayShapeId(),
+          type: "image",
+          x: 0,
+          y: 0,
+          rotation: 0,
+          props: { assetId: asset.id, w: image.width, h: image.height },
+        },
+      };
+    });
+  }, [insertShapeBesideGraph3D]);
+
+  const handleGraph3DInsertSpec = useCallback((
+    sourceShapeId: OverlayShapeId,
+    spec: OverlayGraph3DShape["props"]["spec"],
+  ) => {
+    insertShapeBesideGraph3D(sourceShapeId, () => {
+      const source = shapesRef.current.find((shape) => shape.id === sourceShapeId);
+      const size = source?.type === "graph3dShape"
+        ? { w: source.props.w, h: source.props.h }
+        : { w: 240, h: 200 };
+      return {
+        shape: {
+          id: createOverlayShapeId(),
+          type: "graph3dShape",
+          x: 0,
+          y: 0,
+          rotation: 0,
+          props: { ...size, spec },
+        },
+      };
+    });
+  }, [insertShapeBesideGraph3D]);
+
+  useEffect(() => {
+    const selectedShape = selectedIds.length === 1
+      ? shapes.find((shape): shape is OverlayGraph3DShape => shape.id === selectedIds[0] && shape.type === "graph3dShape")
+      : undefined;
+    if (!selectedShape) {
+      window.dispatchEvent(new CustomEvent<SelectedOverlayGraph3D | null>(SELECT_OVERLAY_GRAPH3D_EVENT, { detail: null }));
+      return;
+    }
+
+    const shapeId = selectedShape.id;
+    const detail: SelectedOverlayGraph3D = {
+      shapeId,
+      spec: selectedShape.props.spec,
+      size: { width: selectedShape.props.w, height: selectedShape.props.h },
+      onSpecChange: (nextSpec, options) => handleGraph3DSpecChange(shapeId, nextSpec, options),
+      onAnimationPreview: (overrides, playing) => dispatchGraph3DAnimationPreview({
+        shapeId,
+        overrides,
+        playing,
+      }),
+      onInsertImage: (image) => handleGraph3DInsertImage(shapeId, image),
+      onInsertSpec: (nextSpec) => handleGraph3DInsertSpec(shapeId, nextSpec),
+      onClose: () => setSelectedShapeIds([]),
+    };
+    window.dispatchEvent(new CustomEvent<SelectedOverlayGraph3D | null>(SELECT_OVERLAY_GRAPH3D_EVENT, { detail }));
+  }, [
+    handleGraph3DInsertImage,
+    handleGraph3DInsertSpec,
+    handleGraph3DSpecChange,
+    selectedIds,
+    setSelectedShapeIds,
+    shapes,
+  ]);
+
+  useEffect(() => () => {
+    window.dispatchEvent(new CustomEvent<SelectedOverlayGraph3D | null>(SELECT_OVERLAY_GRAPH3D_EVENT, { detail: null }));
+  }, []);
+
   useEffect(() => {
     const handleGraphEdit = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail as { shapeId?: string } | undefined : undefined;
@@ -2796,7 +3218,7 @@ export default function OverlayCanvasEditorClient({
       id: shape.id,
       type: shape.type,
       props: {
-        richText: appendOverlayRichTextInline(shape.props.richText, content),
+        blocks: appendOverlayTextInline(shape.props.blocks, content, () => createId("p")),
       },
     }, { commit: true });
   }, [editingShapeId, updateShape]);
@@ -2811,7 +3233,7 @@ export default function OverlayCanvasEditorClient({
       id: shape.id,
       type: shape.type,
       props: {
-        richText: formatRichTextDocument(shape.props.richText, command, value),
+        blocks: formatOverlayTextBlocks(shape.props.blocks, command, value),
       },
     }, { commit: true });
   }, [editingShapeId, updateShape]);
@@ -2828,7 +3250,6 @@ export default function OverlayCanvasEditorClient({
       props: {
         fontSize,
         size: fontSizeToOverlaySize(fontSize),
-        ...(shape.type === "text" ? { scale: 1 } : {}),
       },
     }, { commit: true });
   }, [editingShapeId, updateShape]);
@@ -2883,7 +3304,7 @@ export default function OverlayCanvasEditorClient({
         return;
       }
 
-      const command = detail.command as OverlayTextCommand | "fontSize";
+      const command = detail.command as OverlayTextCommand | "blockStyle" | "fontSize";
       const value = typeof detail.value === "string" ? detail.value : undefined;
       const textEditor = activeTextEditorRef.current;
 
@@ -2929,8 +3350,14 @@ export default function OverlayCanvasEditorClient({
           }
         } else if (command === "textAlign" && value) {
           textEditor.chain().focus().updateAttributes("paragraph", { textAlign: value }).run();
+        } else if (command === "blockStyle" && value) {
+          applyTextFormatCommand(textEditor, { command, value }, {
+            selection: null,
+            blockNodeType: "paragraph",
+            allowBlockStyle: true,
+          });
         }
-      } else if (command !== "fontSize") {
+      } else if (command !== "fontSize" && command !== "blockStyle") {
         formatSelectedTextShape(command, value);
       }
 
@@ -4566,6 +4993,14 @@ export default function OverlayCanvasEditorClient({
       );
       if (interaction.tool.command === "graph" && insertedShapeId) {
         transitionMode({ type: "pickOrigin", shapeId: insertedShapeId, initial: true });
+      } else if (interaction.tool.command === "graph3d" && insertedShapeId) {
+        transitionMode({ type: "setTool", tool: { kind: "select" } });
+        transitionMode({ type: "editGraph3D", shapeId: insertedShapeId });
+        window.setTimeout(() => {
+          window.dispatchEvent(new CustomEvent(OPEN_OVERLAY_GRAPH3D_SETTINGS_EVENT, {
+            detail: { shapeId: insertedShapeId },
+          }));
+        }, 0);
       } else if (interaction.tool.command === "text" && insertedShapeId) {
         transitionMode({ type: "setTool", tool: { kind: "select" } });
         transitionMode({ type: "editText", shapeId: insertedShapeId });
@@ -4645,6 +5080,10 @@ export default function OverlayCanvasEditorClient({
   const selectionCanRotate = !transformSelectedShapes.some((shape) => shape.type === "tableShape");
   const selectionIsGraphCropping =
     mode.id === "overlay.graphEditing" &&
+    selectedShapes.length === 1 &&
+    selectedShapes[0]?.id === mode.shapeId;
+  const selectionIsGraph3DEditing =
+    mode.id === "overlay.graph3dEditing" &&
     selectedShapes.length === 1 &&
     selectedShapes[0]?.id === mode.shapeId;
   const selectionImageCropShape =
@@ -4915,6 +5354,37 @@ export default function OverlayCanvasEditorClient({
     });
   }, [pageGapPx, pageHeightPx, pinnedShapeIds, visiblePageRange, visibleShapes]);
 
+  /**
+   * The table each chart reads, keyed by chart id.
+   *
+   * Built from **`shapes`**, not `windowedVisibleShapes`: a chart on page 3 may reference a table on
+   * page 1, and the window drops the table long before the chart. The same reason the SVG export
+   * builds its map before narrowing. The value is `props.table` **by reference** so that
+   * `OverlayShapeView`'s `memo` sees a new identity only when that table actually changed —
+   * deriving the chart data here instead would re-render every chart on every keystroke.
+   */
+  const chartSourceTables = useMemo(() => {
+    const charts = shapes.filter((shape) => shape.type === "chartShape");
+    if (charts.length === 0) {
+      return new Map<OverlayShapeId, SigmaTableSpec>();
+    }
+    const tables = new Map<OverlayShapeId, SigmaTableSpec>();
+    for (const shape of shapes) {
+      if (shape.type === "tableShape") {
+        tables.set(shape.id, shape.props.table);
+      }
+    }
+    const byChart = new Map<OverlayShapeId, SigmaTableSpec>();
+    for (const chart of charts) {
+      const sourceId = chart.type === "chartShape" ? chart.props.sourceTableShapeId : undefined;
+      const table = sourceId ? tables.get(sourceId) : undefined;
+      if (table) {
+        byChart.set(chart.id, table);
+      }
+    }
+    return byChart;
+  }, [shapes]);
+
   const backgroundVisibleShapes = useMemo(
     () => windowedVisibleShapes.filter((shape) => backgroundShapeIds.has(shape.id) && editingShapeId !== shape.id),
     [backgroundShapeIds, editingShapeId, windowedVisibleShapes],
@@ -4935,6 +5405,18 @@ export default function OverlayCanvasEditorClient({
   const contextGraphShape = contextMenuSelectionCount === 1 && selectedShapes[0]?.type === "graph2dShape"
     ? selectedShapes[0]
     : null;
+  const contextGraph3DShape = contextMenuSelectionCount === 1 && selectedShapes[0]?.type === "graph3dShape"
+    ? selectedShapes[0]
+    : null;
+  // The table's own menu only exists while the table is being edited, so selecting a table and
+  // right-clicking has to offer this too — otherwise the feature is unreachable without first
+  // double-clicking into the table.
+  const contextTableShape = contextMenuSelectionCount === 1 && selectedShapes[0]?.type === "tableShape"
+    ? selectedShapes[0]
+    : null;
+  const contextChartShape = contextMenuSelectionCount === 1 && selectedShapes[0]?.type === "chartShape"
+    ? selectedShapes[0]
+    : null;
   const contextImageEditable = Boolean(
     contextImageShape &&
     !isShapeLockedInTree(shapes, contextImageShape) &&
@@ -4944,6 +5426,11 @@ export default function OverlayCanvasEditorClient({
     contextGraphShape &&
     !isShapeLockedInTree(shapes, contextGraphShape) &&
     !isShapeEditPolicyLockedInTree(shapes, contextGraphShape, editPolicyLockedShapeIds),
+  );
+  const contextGraph3DEditable = Boolean(
+    contextGraph3DShape &&
+    !isShapeLockedInTree(shapes, contextGraph3DShape) &&
+    !isShapeEditPolicyLockedInTree(shapes, contextGraph3DShape, editPolicyLockedShapeIds),
   );
 
   const changeSelectedShapeType = useCallback((command: ShapeTypeChangeCommand) => {
@@ -5023,8 +5510,24 @@ export default function OverlayCanvasEditorClient({
       event.preventDefault();
       event.stopPropagation();
       transitionMode({ type: "editGraph", shapeId: targetShape.id });
+    } else if (targetShape.type === "graph3dShape") {
+      event.preventDefault();
+      event.stopPropagation();
+      transitionMode({ type: "editGraph3D", shapeId: targetShape.id });
+      window.dispatchEvent(new CustomEvent(OPEN_OVERLAY_GRAPH3D_SETTINGS_EVENT, {
+        detail: { shapeId: targetShape.id },
+      }));
     } else if (targetShape.type === "tableShape") {
       transitionMode({ type: "editTable", shapeId: targetShape.id });
+    } else if (targetShape.type === "chartShape") {
+      // A chart has no in-place editing mode — its settings live in the floating panel — so this
+      // opens the panel instead of transitioning. `graph2d`/`graph3d` are handled at the capture
+      // stage upstream; a chart is neither, so it arrives here in the ordinary stage.
+      event.preventDefault();
+      event.stopPropagation();
+      window.dispatchEvent(new CustomEvent(OPEN_OVERLAY_CHART_SETTINGS_EVENT, {
+        detail: { shapeId: targetShape.id },
+      }));
     }
   }, [graphFillPickShapeId, handleCurveDrawingDoubleClick, pagePointFromClient, selectShape, setSelectedShapeIds, transitionMode]);
 
@@ -5050,11 +5553,13 @@ export default function OverlayCanvasEditorClient({
   }, [getOpenStrokeShapeAtPoint, getShapeAtPoint, handleCurveDrawingDoubleClick, handleShapeDoubleClick, pagePointFromClient]);
 
   const handleCanvasContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    if (event.defaultPrevented) {
+    const target = event.target instanceof Element ? event.target : null;
+    // OrbitControls blocks the browser's native context menu on its canvas. Keep that prevention,
+    // but still route the event into Sigma Studio's own shape menu.
+    if (event.defaultPrevented && !target?.closest(".overlay-graph3d-live-window")) {
       return;
     }
 
-    const target = event.target instanceof Element ? event.target : null;
     if (target?.closest(".overlay-table-context-menu")) {
       return;
     }
@@ -5118,60 +5623,38 @@ export default function OverlayCanvasEditorClient({
     selectShape(shapeId);
   }, [selectShape]);
 
-  const handleTextAutoSize = useCallback((shapeId: OverlayShapeId, width: number, height: number) => {
+  /**
+   * The box height a shape's text turned out to need, reported by whichever surface drew it (the
+   * static view on this canvas, or the Tiptap editor while the shape is focused).
+   *
+   * Height is a derived value now, so a text shape takes the measurement as-is — deleting a line
+   * has to make the box shorter, or the selection outline keeps the old size. A callout still only
+   * grows: its height is also the bubble the user can drag, and silently shrinking that would undo
+   * a deliberate size. Coalesced into one history entry so a re-measure never costs an undo step.
+   */
+  const handleTextMeasuredHeight = useCallback((shapeId: OverlayShapeId, height: number) => {
     const shape = shapesRef.current.find((item) => item.id === shapeId);
-    if (!shape) {
+    if (!shape || !isOverlayRichTextShape(shape)) {
       return;
     }
 
-    if (shape.type === "callout") {
-      // Height-only, grow-only write-back. `getCalloutBodySize` already renders every callout
-      // at `max(props.h, content height + padding*2)`, so the user could never draw a callout
-      // smaller than its content before this -- this just keeps the *saved* `props.h` in sync
-      // with what's already on screen. Width is never touched here (PR #333 fixed callout
-      // width at `props.w`), and height only ever grows, so it can't fight a user-enlarged box
-      // or shrink one that briefly measures smaller (e.g. mid-edit while text is selected).
-      const nextHeight = Math.max(shape.props.h, height);
-      if (Math.abs(shape.props.h - nextHeight) < 1) {
-        return;
-      }
-
-      updateShape({
-        id: shapeId,
-        type: "callout",
-        props: {
-          h: nextHeight,
-        },
-      }, { history: "coalesce" });
-      return;
-    }
-
-    if (
-      shape.type !== "text" ||
-      !shape.props.autoSize ||
-      (
-        Math.abs(shape.props.w - width) < 1 &&
-        Math.abs((shape.props.h ?? 0) - height) < 1
-      )
-    ) {
+    const nextHeight = shape.type === "callout" ? Math.max(shape.props.h, height) : height;
+    if (Math.abs(shape.props.h - nextHeight) < 1) {
       return;
     }
 
     updateShape({
       id: shapeId,
-      type: "text",
-      props: {
-        w: width,
-        h: height,
-      },
+      type: shape.type,
+      props: { h: nextHeight },
     }, { history: "coalesce" });
   }, [updateShape]);
 
-  const handleTextChange = useCallback((shapeId: OverlayShapeId, richText: OverlayRichTextDocument) => {
+  const handleTextChange = useCallback((shapeId: OverlayShapeId, blocks: OverlayTextBlock[]) => {
     const shape = shapesRef.current.find((item) => item.id === shapeId);
     // onTextChange fires from both text and callout OverlayTextShapeEditor instances
     // (shape-renderer.tsx), so this must accept callout too or its edits are silently dropped.
-    if (!shape || !isOverlayRichTextShape(shape) || areOverlayRichTextDocumentsEqual(shape.props.richText, richText)) {
+    if (!shape || !isOverlayRichTextShape(shape) || areOverlayTextBlocksEqual(shape.props.blocks, blocks)) {
       return;
     }
 
@@ -5185,7 +5668,7 @@ export default function OverlayCanvasEditorClient({
     updateShape({
       id: shapeId,
       type: shape.type,
-      props: { richText },
+      props: { blocks },
     }, { commit: true });
   }, [updateShape]);
 
@@ -5238,10 +5721,15 @@ export default function OverlayCanvasEditorClient({
   }, [transitionMode]);
 
   const shapeEditorRenderers = useOverlayShapeEditorRenderers({
+    onCreateChartFromTable: createChartFromTable,
+    onGraph3DCameraChange: handleGraph3DCameraChange,
+    onGraph3DObjectRotationChange: handleGraph3DObjectRotationChange,
+    onGraph3DObjectTransformChange: handleGraph3DObjectTransformChange,
+    onGraph3DPreviewReady: handleGraph3DPreviewReady,
     onTableChange: handleTableChange,
     onTableEditorFocus: handleTableEditorFocus,
     onTableResize: handleTableResize,
-    onTextAutoSize: handleTextAutoSize,
+    onTextMeasuredHeight: handleTextMeasuredHeight,
     onTextChange: handleTextChange,
     onTextEditorCancel: handleTextEditorCancel,
     onTextEditorFocus: handleTextEditorFocus,
@@ -5294,6 +5782,7 @@ export default function OverlayCanvasEditorClient({
                 key={shape.id}
                 shape={shape}
                 assets={assets}
+                chartSourceTable={chartSourceTables.get(shape.id) ?? null}
                 externalRevision={appliedSnapshotRevision}
                 selected={false}
                 editing={false}
@@ -5319,6 +5808,7 @@ export default function OverlayCanvasEditorClient({
           key={shape.id}
           shape={shape}
           assets={assets}
+          chartSourceTable={chartSourceTables.get(shape.id) ?? null}
           externalRevision={appliedSnapshotRevision}
           selected={selectedIdSet.has(shape.id)}
           editing={editingShapeId === shape.id}
@@ -5333,6 +5823,7 @@ export default function OverlayCanvasEditorClient({
           diffClassName={diffShapeClassNames?.get(shape.id)}
           decoration={shapeDecorations?.get(shape.id) ?? null}
           editorRenderers={shapeEditorRenderers}
+          onTextMeasuredHeight={handleTextMeasuredHeight}
           textPaintRevision={getTextPaintRevision(shape, textRepaint)}
         />
       ))}
@@ -5358,8 +5849,8 @@ export default function OverlayCanvasEditorClient({
           shapes={selectedShapes}
           allShapes={shapes}
           bounds={selectionBounds}
-          resizable={selectionCanResize && !selectedLocked && !selectionIsGraphCropping}
-          rotatable={selectionCanRotate && !selectedLocked && !selectionIsGraphCropping}
+          resizable={selectionCanResize && !selectedLocked && !selectionIsGraphCropping && !selectionIsGraph3DEditing}
+          rotatable={selectionCanRotate && !selectedLocked && !selectionIsGraphCropping && !selectionIsGraph3DEditing}
           cropShape={selectionImageCropShape}
           dragTranslate={dragOffset}
           movingShapeIds={movingShapeIds}
@@ -5441,6 +5932,23 @@ export default function OverlayCanvasEditorClient({
           imageOpacity={clamp(contextImageShape?.opacity ?? 1, 0, 1)}
           graphEditable={contextGraphEditable}
           graphCanFill={contextGraphShape?.props.spec.kind === "cartesian"}
+          graph3dEditable={contextGraph3DEditable}
+          onCreateChartFromTable={contextTableShape ? () => runContextMenuAction(() => {
+            createChartFromTable(contextTableShape.id);
+          }) : undefined}
+          onChartSettings={contextChartShape ? () => runContextMenuAction(() => {
+            setSelectedShapeIds([contextChartShape.id]);
+            window.dispatchEvent(new CustomEvent(OPEN_OVERLAY_CHART_SETTINGS_EVENT, {
+              detail: { shapeId: contextChartShape.id },
+            }));
+          }) : undefined}
+          onGraph3DSettings={contextGraph3DShape ? () => runContextMenuAction(() => {
+            setSelectedShapeIds([contextGraph3DShape.id]);
+            transitionMode({ type: "editGraph3D", shapeId: contextGraph3DShape.id });
+            window.dispatchEvent(new CustomEvent(OPEN_OVERLAY_GRAPH3D_SETTINGS_EVENT, {
+              detail: { shapeId: contextGraph3DShape.id },
+            }));
+          }) : undefined}
           onGraphSettings={contextGraphShape ? () => runContextMenuAction(() => {
             window.dispatchEvent(new CustomEvent(OPEN_OVERLAY_GRAPH_SETTINGS_EVENT, {
               detail: { shapeId: contextGraphShape.id },
@@ -5502,7 +6010,11 @@ function OverlayShapeContextMenu({
   imageOpacity,
   graphEditable,
   graphCanFill,
+  graph3dEditable,
+  onChartSettings,
+  onCreateChartFromTable,
   onGraphSettings,
+  onGraph3DSettings,
   onGraphCrop,
   onGraphOriginPick,
   onGraphFillPick,
@@ -5535,7 +6047,11 @@ function OverlayShapeContextMenu({
   imageOpacity: number;
   graphEditable: boolean;
   graphCanFill: boolean;
+  graph3dEditable: boolean;
+  onChartSettings?: () => void;
+  onCreateChartFromTable?: () => void;
   onGraphSettings?: () => void;
+  onGraph3DSettings?: () => void;
   onGraphCrop?: () => void;
   onGraphOriginPick?: () => void;
   onGraphFillPick?: () => void;
@@ -5570,12 +6086,34 @@ function OverlayShapeContextMenu({
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
     >
+      {onCreateChartFromTable && (
+        <>
+          <ContextMenuButton icon={<ChartColumnBig size={14} />} onClick={onCreateChartFromTable}>
+            {tShape("table.createChart")}
+          </ContextMenuButton>
+          <div className="overlay-shape-context-menu-separator" role="separator" />
+        </>
+      )}
+      {onChartSettings && (
+        <>
+          <ContextMenuButton icon={<Settings2 size={14} />} onClick={onChartSettings}>
+            {tShape("chartPanel.title")}
+          </ContextMenuButton>
+          <div className="overlay-shape-context-menu-separator" role="separator" />
+        </>
+      )}
       {onGraphSettings && onGraphCrop && onGraphOriginPick && onGraphFillPick && (
         <>
           <ContextMenuButton icon={<Settings2 size={14} />} disabled={!graphEditable} onClick={onGraphSettings}>{tShape("menu.graphSettings")}</ContextMenuButton>
           <ContextMenuButton icon={<Crop size={14} />} disabled={!graphEditable} onClick={onGraphCrop}>{tShape("graph.trim")}</ContextMenuButton>
           <ContextMenuButton icon={<Crosshair size={14} />} disabled={!graphEditable} onClick={onGraphOriginPick}>{tShape("graph.pickOrigin")}</ContextMenuButton>
           <ContextMenuButton icon={<PaintBucket size={14} />} disabled={!graphEditable || !graphCanFill} onClick={onGraphFillPick}>{tShape("graph.fillArea")}</ContextMenuButton>
+          <div className="overlay-shape-context-menu-separator" role="separator" />
+        </>
+      )}
+      {onGraph3DSettings && (
+        <>
+          <ContextMenuButton icon={<Settings2 size={14} />} disabled={!graph3dEditable} onClick={onGraph3DSettings}>{tShape("graph3d.menuSettings")}</ContextMenuButton>
           <div className="overlay-shape-context-menu-separator" role="separator" />
         </>
       )}
@@ -6342,10 +6880,10 @@ function SelectionBox({
   const rotation = onlyShape ? getShapeRotation(onlyShape) : 0;
   const transformOrigin = onlyShape && rotation ? getSelectionTransformOrigin(onlyShape, bounds) : undefined;
   const pointOnly = onlyShape ? hasPointOnlySelection(onlyShape) : false;
-  // 図中テキストと表は上下左右(辺)の持ち手を出さない（角の持ち手は残す）。
-  // arc/扇形は角度ハンドルと重なる装飾バーだけを隠し、辺の透明なヒット領域は残す。
-  const hideEdgeHandles = onlyShape?.type === "text" || onlyShape?.type === "tableShape" || onlyShape?.type === "arc";
-  const keepInvisibleEdgeHandles = onlyShape?.type === "arc";
+  // どの持ち手を出すかは「その図形が動かせる軸」で決まる (`getResizeHandleSet`)。
+  // 図中テキストは幅だけなので左右のみ — 高さは内容から決まるので、上下や角をドラッグしても
+  // 次の計測で戻ってしまう。
+  const resizeHandles = getResizeHandleSet(shapes);
   const multi = shapes.length > 1;
   const outerTranslate = dragTranslate && shapes.every((shape) => movingShapeIds?.has(shape.id)) ? dragTranslate : null;
   const handleStyle = getAdaptiveSelectionHandleStyle(bounds, pointOnly);
@@ -6417,18 +6955,15 @@ function SelectionBox({
         )}
         {!cropShape && !pointOnly && resizable && (
           <>
-            {(!hideEdgeHandles || keepInvisibleEdgeHandles) && EDGE_RESIZE_HANDLES.map((handle) => (
+            {[
+              ...resizeHandles.visible.map((handle) => ({ handle, hitOnly: false })),
+              ...resizeHandles.hitOnly.map((handle) => ({ handle, hitOnly: true })),
+            ].map(({ handle, hitOnly }) => (
               <div
                 key={handle}
-                className={`overlay-resize-handle ${handle} ${keepInvisibleEdgeHandles ? "hit-only" : ""}`}
-                style={getEdgeResizeHandleStyle(handle, bounds)}
-                onPointerDown={(event) => onResizePointerDown(event, handle)}
-              />
-            ))}
-            {CORNER_RESIZE_HANDLES.map((handle) => (
-              <div
-                key={handle}
-                className={`overlay-resize-handle ${handle}`}
+                className={`overlay-resize-handle ${handle} ${hitOnly ? "hit-only" : ""}`}
+                // Corners are placed by CSS; edges have to be sized to the box.
+                style={isCornerResizeHandle(handle) ? undefined : getEdgeResizeHandleStyle(handle, bounds)}
                 onPointerDown={(event) => onResizePointerDown(event, handle)}
               />
             ))}
@@ -6486,14 +7021,35 @@ function getEdgeResizeHandleStyle(handle: ResizeHandle, bounds: OverlayBounds): 
   if (handle === "n" || handle === "s") {
     return {
       "--overlay-resize-handle-length": `${getAdaptiveEdgeHandleLength(bounds.w)}px`,
+      // Physical sides on purpose: the stylesheet places these with `left`/`right`, and a logical
+      // property would swap axes under a vertical writing mode and move the strip off its edge.
+      left: `${getEdgeResizeHandleInsetPx(bounds.w)}px`,
+      right: `${getEdgeResizeHandleInsetPx(bounds.w)}px`,
     } as CSSProperties;
   }
   if (handle === "e" || handle === "w") {
     return {
       "--overlay-resize-handle-length": `${getAdaptiveEdgeHandleLength(bounds.h)}px`,
+      top: `${getEdgeResizeHandleInsetPx(bounds.h)}px`,
+      bottom: `${getEdgeResizeHandleInsetPx(bounds.h)}px`,
     } as CSSProperties;
   }
   return undefined;
+}
+
+/**
+ * How far an edge handle's grab strip is held back from the two corners it runs between.
+ *
+ * The stylesheet's 12px keeps the strip clear of the corner handles on a normal box, but it is a
+ * subtraction: on a short box it takes the whole strip and leaves only the drawn pill to grab. A
+ * one-line text shape is exactly that box, and since a text shape has no corner handles to fall
+ * back on, the strip is the only way to resize it. So the inset yields once the box is short
+ * enough that it would eat the strip. Where the two do overlap the corner still wins — corners are
+ * drawn on the layer above (`.overlay-resize-handle` vs the edges' `z-index: 1`).
+ */
+function getEdgeResizeHandleInsetPx(axisLength: number): number {
+  const MIN_GRAB_LENGTH = 12;
+  return Math.max(0, Math.min(12, (axisLength - MIN_GRAB_LENGTH) / 2));
 }
 
 function getAdaptiveEdgeHandleLength(axisLength: number): number {
@@ -7211,7 +7767,10 @@ function isTextInputTarget(target: EventTarget | null): boolean {
   );
 }
 
-function areOverlayRichTextDocumentsEqual(left: OverlayRichTextDocument, right: OverlayRichTextDocument): boolean {
+function areOverlayTextBlocksEqual(
+  left: readonly OverlayTextBlock[],
+  right: readonly OverlayTextBlock[],
+): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -7270,6 +7829,10 @@ function getModeStatus(mode: OverlayInteractionMode, selectedCount: number): Ove
     return { id: "overlay.graphEditing", labelId: "graphEditing" };
   }
 
+  if (mode.id === "overlay.graph3dEditing") {
+    return { id: "overlay.graph3dEditing", labelId: "graph3dEditing" };
+  }
+
   if (mode.id === "overlay.tableEditing") {
     return { id: "overlay.tableEditing", labelId: "tableEditing" };
   }
@@ -7290,7 +7853,10 @@ function getModeStatus(mode: OverlayInteractionMode, selectedCount: number): Ove
   }
 
   if (mode.id === "overlay.insertDrag") {
-    return { id: "overlay.insertDrag", labelId: mode.tool.command === "graph" ? "pickViewport" : "placeShape" };
+    return {
+      id: "overlay.insertDrag",
+      labelId: mode.tool.command === "graph" || mode.tool.command === "graph3d" ? "pickViewport" : "placeShape",
+    };
   }
 
   if (mode.tool.kind === "insert") {

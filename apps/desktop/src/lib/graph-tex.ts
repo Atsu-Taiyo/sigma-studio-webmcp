@@ -37,6 +37,70 @@ const IGNORABLE_TEX_COMMANDS = new Set([",", ";", "!", ":", " ", "quad", "qquad"
 const LESS_COMPARATORS = new Set(["le", "leq", "leqq", "leqslant", "lt", "<"]);
 const GREATER_COMPARATORS = new Set(["ge", "geq", "geqq", "geqslant", "gt", ">"]);
 
+/**
+ * 生成した評価式を「いちばんゆるく結んでいる演算子」で分類したもの。丸括弧の中は数えない。
+ *
+ * 括弧は**付けないと意味が変わるときだけ**付ける。以前は `x^2` を必ず `(x)^(2)` に
+ * 書き換えていたが、保存された式はそのまま人の目に触れる: 表示用 TeX が作れなかったときは
+ * 評価式がそのまま数式として描かれるので、`x^2` と入力した式が `(x)²` と表示されていた。
+ * AI が読む文字列にも、MCP が返す文字列にも同じ式が出る。
+ */
+type ExpressionBinding = "atom" | "power" | "product" | "sum";
+
+const BINDING_RANK: Record<ExpressionBinding, number> = { sum: 0, product: 1, power: 2, atom: 3 };
+
+function expressionBinding(expression: string): ExpressionBinding {
+  const text = expression.trim();
+  let depth = 0;
+  let loosest: ExpressionBinding = "atom";
+  for (const char of text) {
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth > 0) {
+      continue;
+    }
+    // 先頭の符号もここで sum になる。`-x` は冪の底に置くと `-(x^2)` に読まれてしまうので、
+    // 「括弧が要る位置」の判定としては和と同じ扱いが正しい。
+    if (char === "+" || char === "-") return "sum";
+    if ((char === "*" || char === "/") && BINDING_RANK.product < BINDING_RANK[loosest]) {
+      loosest = "product";
+    } else if (char === "^" && BINDING_RANK.power < BINDING_RANK[loosest]) {
+      loosest = "power";
+    }
+  }
+  return loosest;
+}
+
+/** その位置に置いても読み方が変わらない形にする。すでに十分固く結ばれていれば触らない。 */
+function wrapExpression(expression: string, required: ExpressionBinding): string {
+  const text = expression.trim();
+  return BINDING_RANK[expressionBinding(text)] < BINDING_RANK[required] ? `(${text})` : text;
+}
+
+/** 式全体を包んでいる丸括弧だけを外す。`(a)+(b)` は全体を包んでいないので触らない。 */
+function unwrapExpression(expression: string): string {
+  let text = expression.trim();
+  for (;;) {
+    if (!text.startsWith("(") || !text.endsWith(")")) return text;
+    let depth = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      if (text[index] === "(") depth += 1;
+      else if (text[index] === ")") {
+        depth -= 1;
+        if (depth === 0 && index < text.length - 1) return text;
+      }
+    }
+    if (depth !== 0) return text;
+    text = text.slice(1, -1).trim();
+  }
+}
+
 export function texToGraphExpression(tex: string): string | null {
   try {
     return new TexToExpressionConverter(tex).convert();
@@ -102,13 +166,13 @@ export function parseGraphImplicitEquationTex(tex: string): GraphExpressionTexPa
   }
   if (isZeroExpression(leftExpression)) {
     return {
-      expression: `-(${rightExpression})`,
+      expression: `-${wrapExpression(rightExpression, "product")}`,
       tex: `${leftTex}=${rightTex}`,
     };
   }
 
   return {
-    expression: `(${leftExpression})-(${rightExpression})`,
+    expression: `${leftExpression}-${wrapExpression(rightExpression, "product")}`,
     tex: `${leftTex}=${rightTex}`,
   };
 }
@@ -203,6 +267,68 @@ export function parseGraphRangeTex(tex: string, variableName: GraphExpressionVar
   }
 
   return null;
+}
+
+export type GraphInequalityOperator = "<=" | ">=" | "<" | ">";
+
+export interface GraphInequalityTexParts {
+  left: string;
+  operator: GraphInequalityOperator;
+  right: string;
+  leftTex: string;
+  rightTex: string;
+}
+
+const INEQUALITY_OPERATOR_BY_COMMAND: Record<string, GraphInequalityOperator> = {
+  le: "<=", leq: "<=", leqq: "<=", leqslant: "<=",
+  ge: ">=", geq: ">=", geqq: ">=", geqslant: ">=",
+  lt: "<", "<": "<",
+  gt: ">", ">": ">",
+};
+
+const TEX_BY_INEQUALITY_OPERATOR: Record<GraphInequalityOperator, string> = {
+  "<=": "\\leqq",
+  ">=": "\\geqq",
+  "<": "<",
+  ">": ">",
+};
+
+/**
+ * `x + y \leqq 1` のような不等式ひとつを、評価式の左辺・不等号・右辺へ分解する。
+ * 不等号が2つ以上ある連鎖 (`a \le x \le b`) は範囲入力の担当なのでここでは受け付けない。
+ */
+export function parseGraphInequalityTex(tex: string): GraphInequalityTexParts | null {
+  const { segments, delimiters } = splitTexTopLevel(tex.trim(), (token) => (
+    Object.hasOwn(INEQUALITY_OPERATOR_BY_COMMAND, token)
+  ));
+  if (delimiters.length !== 1 || segments.length !== 2) {
+    return null;
+  }
+  const leftTex = segments[0].trim();
+  const rightTex = segments[1].trim();
+  if (!leftTex || !rightTex) {
+    return null;
+  }
+  const left = texToGraphExpression(leftTex);
+  const right = texToGraphExpression(rightTex);
+  if (left === null || right === null) {
+    return null;
+  }
+  return {
+    left,
+    right,
+    leftTex,
+    rightTex,
+    operator: INEQUALITY_OPERATOR_BY_COMMAND[delimiters[0]],
+  };
+}
+
+export function formatGraphInequalityTex(
+  left: string,
+  operator: GraphInequalityOperator,
+  right: string,
+): string {
+  return `${graphExpressionToTex(left)} ${TEX_BY_INEQUALITY_OPERATOR[operator]} ${graphExpressionToTex(right)}`;
 }
 
 export function formatGraphRangeTex(
@@ -340,11 +466,11 @@ class TexToExpressionConverter {
       base = this.parseParenGroup();
     } else if (char === "{") {
       this.index += 1;
-      base = `(${this.parseSequence(new Set(["}"]), new Set())})`;
+      base = wrapExpression(this.parseSequence(new Set(["}"]), new Set()), "atom");
       this.expectChar("}");
     } else if (char === "|") {
       this.index += 1;
-      base = `abs(${this.parseSequence(new Set(["|"]), new Set())})`;
+      base = `abs(${unwrapExpression(this.parseSequence(new Set(["|"]), new Set()))})`;
       this.expectChar("|");
     } else if (char === "π") {
       this.index += 1;
@@ -371,7 +497,8 @@ class TexToExpressionConverter {
     if (command === "frac" || command === "dfrac" || command === "tfrac") {
       const numerator = this.parseBracedGroup();
       const denominator = this.parseBracedGroup();
-      return `(${numerator})/(${denominator})`;
+      // 分子は積のままで足りる (`a*b/c` は `(a*b)/c`)。分母は次の因子と結ばれてしまうので冪まで固める。
+      return `${wrapExpression(numerator, "product")}/${wrapExpression(denominator, "power")}`;
     }
     if (command === "sqrt") {
       this.skipIgnorable();
@@ -380,7 +507,8 @@ class TexToExpressionConverter {
         const degree = this.parseSequence(new Set(["]"]), new Set());
         this.expectChar("]");
         const radicand = this.parseBracedGroup();
-        return `(${radicand})^(1/(${degree}))`;
+        const exponent = `1/${wrapExpression(degree, "power")}`;
+        return `${wrapExpression(radicand, "atom")}^${wrapExpression(exponent, "atom")}`;
       }
       const radicand = this.parseBracedGroup();
       return `sqrt(${radicand})`;
@@ -391,7 +519,7 @@ class TexToExpressionConverter {
     if (command === "lvert" || command === "vert") {
       const inner = this.parseSequence(new Set(), new Set(["rvert", "vert"]));
       this.expectCommand(new Set(["rvert", "vert"]));
-      return `abs(${inner})`;
+      return `abs(${unwrapExpression(inner)})`;
     }
     if (command === "mathrm" || command === "mathit" || command === "text") {
       const content = this.parseBracedRawGroup().trim();
@@ -429,8 +557,9 @@ class TexToExpressionConverter {
     // 丸括弧グループの引数はそこで関数適用が閉じる。後続の `^` は引数ではなく
     // 関数適用全体へ掛かる (parseFactor 側の applyPostfix が担当するのでここでは呼ばない)。
     const argument = this.tryParseParenGroupArgument() ?? this.parseFunctionArgument();
-    const call = `${functionName}(${argument})`;
-    return exponent === null ? call : `(${call})^(${exponent})`;
+    // 関数呼び出しの丸括弧が引数を囲むので、引数側の括弧は重ねない (`cos((2*x))` になっていた)。
+    const call = `${functionName}(${unwrapExpression(argument)})`;
+    return exponent === null ? call : `${call}^${wrapExpression(exponent, "atom")}`;
   }
 
   /**
@@ -465,7 +594,7 @@ class TexToExpressionConverter {
     this.index += 1;
     const inner = this.parseSequence(new Set([")"]), new Set());
     this.expectChar(")");
-    return `(${inner})`;
+    return wrapExpression(inner, "atom");
   }
 
   private parseFunctionArgument(): string {
@@ -511,7 +640,7 @@ class TexToExpressionConverter {
     if (isAbs !== closesAbs) {
       throw new Error(`mismatched \\left${open} ... \\right${close}`);
     }
-    return isAbs ? `abs(${inner})` : `(${inner})`;
+    return isAbs ? `abs(${unwrapExpression(inner)})` : wrapExpression(inner, "atom");
   }
 
   private readDelimiterToken(): string {
@@ -542,7 +671,7 @@ class TexToExpressionConverter {
       if (char === "^") {
         this.index += 1;
         const exponent = this.parseExponentArgument();
-        result = `(${result})^(${exponent})`;
+        result = `${wrapExpression(result, "atom")}^${wrapExpression(exponent, "atom")}`;
         continue;
       }
       if (char === "_") {
@@ -942,11 +1071,17 @@ function texFromBinaryNode(
   }
 
   if (node.operator === "*") {
-    const left = texFromExprNode(node.left, PRECEDENCE_MULTIPLICATIVE);
+    // 先頭の符号は積の前に出しても読み方が変わらない (`-2x`)。積そのものが二項演算子の右に
+    // 裸で置かれるときだけ `3 - -2x` になってしまうので、そこは従来どおり括弧で守る。
+    const wrapsWhole = PRECEDENCE_MULTIPLICATIVE < minPrecedence;
+    const left = texFromExprNode(
+      node.left,
+      wrapsWhole || minPrecedence <= PRECEDENCE_ADDITIVE ? PRECEDENCE_UNARY : PRECEDENCE_MULTIPLICATIVE,
+    );
     const right = texFromExprNode(node.right, PRECEDENCE_MULTIPLICATIVE + 0.1);
     const needsCdot = /^[0-9.]/.test(right) || right.startsWith("-");
     const tex = needsCdot ? `${left} \\cdot ${right}` : `${left} ${right}`;
-    return PRECEDENCE_MULTIPLICATIVE < minPrecedence ? wrapTexParens(tex) : tex;
+    return wrapsWhole ? wrapTexParens(tex) : tex;
   }
 
   const left = texFromExprNode(node.left, PRECEDENCE_ADDITIVE);

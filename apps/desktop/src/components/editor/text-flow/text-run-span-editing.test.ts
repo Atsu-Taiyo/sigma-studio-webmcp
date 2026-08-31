@@ -107,6 +107,7 @@ function createUnit(
     focusCaretAtEdge: () => false,
     focusCaretAfterBlock: () => false,
     adjacentTextblockAddress: () => null,
+    docEdgeAddress: () => null,
     ensureCaretVisible: () => {},
     applyCaret: () => false,
     textRun: handle,

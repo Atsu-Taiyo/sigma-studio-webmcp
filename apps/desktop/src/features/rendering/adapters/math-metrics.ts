@@ -98,8 +98,8 @@ const WIDTH_SAFETY_FACTOR = 1.05;
 const HEURISTIC_STRUCTURAL_HEIGHT_EM = 1.6;
 const HEURISTIC_PLAIN_HEIGHT_EM = 1.0;
 
-// Same reasoning as `overlay-text-measure.ts`'s cache: measuring a formula (running MathLive's
-// renderer, parsing KaTeX's tree, walking it for widths) is comparatively expensive, and the same
+// Measuring a formula (running MathLive's renderer, parsing KaTeX's tree, walking it for widths)
+// is comparatively expensive, and the same
 // TeX strings recur across every shape/print/AI-preview pass. Keyed on the raw TeX string; a
 // bounded LRU-ish eviction mirrors `lib/math-tex.ts`'s `MARKUP_CACHE_LIMIT` pattern.
 const metricsCache = new Map<string, MathBoxMetricsEm>();

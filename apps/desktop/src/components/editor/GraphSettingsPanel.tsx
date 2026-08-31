@@ -9,6 +9,7 @@ import {
   useState,
   useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -88,12 +89,15 @@ function getGraphAnchorRect(shapeId: string): GraphSettingsPanelRect | null {
 function clampManualOffset(
   shapeId: string,
   offset: GraphSettingsPanelOffset,
+  panelWidth: number,
+  panelMinWidth: number,
   panelHeight: number | undefined,
 ): GraphSettingsPanelOffset {
   const graphRect = getGraphAnchorRect(shapeId)
     ?? { left: GRAPH_SETTINGS_PANEL_MARGIN_PX, top: GRAPH_SETTINGS_PANEL_MARGIN_PX, width: 0, height: 0 };
   const panelSize = {
-    width: GRAPH_SETTINGS_PANEL_WIDTH_PX,
+    width: panelWidth,
+    minWidth: panelMinWidth,
     height: panelHeight || FALLBACK_PANEL_HEIGHT_PX,
   };
   const viewport = { width: window.innerWidth, height: window.innerHeight };
@@ -118,7 +122,42 @@ export function GraphSettingsPanel({
   onClose: () => void;
 }) {
   const t = useT("shape");
-  const shapeId = selectedOverlayGraph.shapeId;
+  return (
+    <GraphSettingsPanelFrame
+      shapeId={selectedOverlayGraph.shapeId}
+      title={t("graphPanel.title")}
+      ariaLabel={t("graphPanel.title")}
+      closeLabel={t("common.close")}
+      onClose={onClose}
+    >
+      <OverlayGraphSettings selectedOverlayGraph={selectedOverlayGraph} />
+    </GraphSettingsPanelFrame>
+  );
+}
+
+export function GraphSettingsPanelFrame({
+  shapeId,
+  title,
+  ariaLabel,
+  closeLabel,
+  children,
+  /** 既定はグラフ設定と同じ幅。要素が多いパネルだけ広げる。 */
+  width = GRAPH_SETTINGS_PANEL_WIDTH_PX,
+  /** 横に置けないときに縮んでよい下限。広いパネルはこれを下げてグラフを覆わずに済ませる。 */
+  minWidth = width,
+  onClose,
+}: {
+  shapeId: string;
+  title: string;
+  ariaLabel: string;
+  closeLabel?: string;
+  children: ReactNode;
+  width?: number;
+  minWidth?: number;
+  onClose: () => void;
+}) {
+  const t = useT("shape");
+  const resolvedCloseLabel = closeLabel ?? t("common.close");
   const panelRef = useRef<HTMLDivElement | null>(null);
   const manualOffsetRef = useRef<GraphSettingsPanelOffset | null>(null);
   const dragStateRef = useRef<{
@@ -145,7 +184,8 @@ export function GraphSettingsPanel({
     const next = getGraphSettingsPanelPlacement(
       graphRect,
       {
-        width: GRAPH_SETTINGS_PANEL_WIDTH_PX,
+        width,
+        minWidth,
         height: panelBox?.height || FALLBACK_PANEL_HEIGHT_PX,
       },
       { width: window.innerWidth, height: window.innerHeight },
@@ -162,7 +202,7 @@ export function GraphSettingsPanel({
         ? current
         : next
     ));
-  }, [shapeId]);
+  }, [minWidth, shapeId, width]);
 
   // ズームは CSS transform なのでレイアウトサイズが変わらず ResizeObserver も
   // resize も発火しない。変化を起こしうる入力のあとに1フレームだけ遅らせて測り直す。
@@ -286,10 +326,12 @@ export function GraphSettingsPanel({
         dx: drag.originOffset.dx + event.clientX - drag.startX,
         dy: drag.originOffset.dy + event.clientY - drag.startY,
       },
+      width,
+      minWidth,
       panelRef.current?.getBoundingClientRect().height,
     );
     updatePlacement();
-  }, [shapeId, updatePlacement]);
+  }, [minWidth, shapeId, updatePlacement, width]);
 
   const handleDragEnd = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     const drag = dragStateRef.current;
@@ -312,7 +354,7 @@ export function GraphSettingsPanel({
       ref={panelRef}
       className={styles.panel}
       role="dialog"
-      aria-label={t("graphPanel.title")}
+      aria-label={ariaLabel}
       data-graph-settings-panel=""
       data-non-modal-surface=""
       data-side={placement?.side ?? "right"}
@@ -320,7 +362,7 @@ export function GraphSettingsPanel({
       style={{
         left: placement?.left ?? GRAPH_SETTINGS_PANEL_MARGIN_PX,
         top: placement?.top ?? GRAPH_SETTINGS_PANEL_MARGIN_PX,
-        width: placement?.width ?? GRAPH_SETTINGS_PANEL_WIDTH_PX,
+        width: placement?.width ?? width,
         maxHeight: placement?.maxHeight,
         visibility: placement ? undefined : "hidden",
       }}
@@ -332,13 +374,13 @@ export function GraphSettingsPanel({
         onPointerUp={handleDragEnd}
         onPointerCancel={handleDragEnd}
       >
-        <h2 className={styles.title}>{t("graphPanel.title")}</h2>
-        <IconButton label={t("common.close")} tone="ghost" size="sm" onClick={onClose}>
+        <h2 className={styles.title}>{title}</h2>
+        <IconButton label={resolvedCloseLabel} tone="ghost" size="sm" onClick={onClose}>
           <X size={15} aria-hidden="true" />
         </IconButton>
       </header>
       <div className={styles.body}>
-        <OverlayGraphSettings selectedOverlayGraph={selectedOverlayGraph} />
+        {children}
       </div>
     </div>
   );

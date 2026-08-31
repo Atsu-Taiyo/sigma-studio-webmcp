@@ -31,8 +31,8 @@ describe("SigmaDoc schema", () => {
     expect(parsed.metadata.texPreamble).toBe(texPreamble);
   });
 
-  it("migrates legacy overlay root inline nodes before snapshot validation", () => {
-    const parsed = parseSigmaDocument({
+  it("refuses a document whose overlay text shape is not in canonical block form", () => {
+    const legacyDocument = {
       ...sampleDocument,
       pageLayout: {
         ...sampleDocument.pageLayout,
@@ -56,21 +56,12 @@ describe("SigmaDoc schema", () => {
           },
         },
       },
-    });
+    };
 
-    const shape = parsed.pageLayout?.overlay?.overlaySnapshot?.shapes[0];
-    expect(shape?.type === "text" ? shape.props.richText.blocks : []).toEqual([
-      {
-        type: "paragraph",
-        children: [{
-          type: "mathInline",
-          id: "m_inline_0",
-          tex: "a+b",
-          display: "inline",
-          semanticRole: "expression",
-        }],
-      },
-    ]);
+    // The schema boundary no longer translates an older content representation on the way in, so
+    // the document fails to parse (and the app shows it through the broken-document surface)
+    // instead of loading with a shape nothing can draw.
+    expect(() => parseSigmaDocument(legacyDocument)).toThrow();
   });
 
   it("canonicalizes overlay metadata into namespaced extensions at the schema boundary", () => {

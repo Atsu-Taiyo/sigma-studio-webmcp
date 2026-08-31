@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { boxFrameAppliesFontFamily, createBoxBlock, resolveBoxFrame } from "@/lib/box-blocks";
+import { boxFrameAppliesFontFamily, boxFrameStyleVars, createBoxBlock, resolveBoxFrame } from "@/lib/box-blocks";
 import { KYOUTSUU_CHOICE_CLASS, SIGMA_MATHLIVE_MACRO_STYLES } from "@/lib/math-macros";
 
 /**
@@ -446,6 +446,43 @@ describe("cornerbox の font-family 打ち消しと boxFrameAppliesFontFamily �
  * という前提が崩れるので、ここで両方の存在を固定する** (learnings: コードが CSS に対して
  * 持つ主張は、対でテストを置く)。
  */
+/**
+ * タイトルに地色を敷く 2 つの装飾が、コード側の主張と対で成り立っていることの固定。
+ *
+ * - 帯の下の罫は `boxFrameStyleVars` が出す `--sigma-doc-box-title-band-rule-width` で引く。
+ *   既定は 0 なので、罫を持たない既存の帯箱 (tcolorbox) は線を得ない。
+ * - タブは**枠の内側**に収める。ブロックを絶対配置で積む印刷経路 (`PrintPreview`) は
+ *   border box しか勘定しないので、上へはみ出した分は前のブロックに重なる。タブの高さを
+ *   負の `margin-top` に入れた瞬間にそれが起きるため、`margin-top` は
+ *   「パディング + 枠線」だけを打ち消すことをここで固定する。
+ */
+describe("タイトルの地色", () => {
+  it("draws the band rule from the band-rule custom properties", () => {
+    const band = ruleDeclarations(
+      documentSurfaceCss,
+      ".box-frame--title-band .sigma-doc-box-title",
+    );
+    expect(band["border-bottom"]).toContain("--sigma-doc-box-title-band-rule-width");
+    expect(band["border-bottom"]).toContain("--sigma-doc-box-title-band-rule-color");
+    expect(boxFrameStyleVars(resolveBoxFrame(createBoxBlock("tcolorbox")))["--sigma-doc-box-title-band-rule-width"]).toBe("0px");
+    expect(boxFrameStyleVars(resolveBoxFrame(createBoxBlock("titlebox")))["--sigma-doc-box-title-band-rule-width"]).toBe("1.2px");
+  });
+
+  it("keeps the title tab inside the frame", () => {
+    const tab = ruleDeclarations(
+      documentSurfaceCss,
+      ".box-frame--title-tab .sigma-doc-box-title",
+    );
+    expect(tab.margin).toContain("--sigma-doc-box-padding-top");
+    expect(tab.margin).toContain("--sigma-doc-box-border-width");
+    // タブの高さは占める場所 (min-height) にだけ効き、負のマージンには入らない。
+    expect(tab["min-height"]).toContain("--sigma-doc-box-title-tab-height");
+    expect(tab.margin).not.toContain("--sigma-doc-box-title-tab-height");
+    // 箱そのものへ余白を足すルールも持たない (足すと「はみ出しを外で確保する」形に戻る)。
+    expect(documentSurfaceCode).not.toMatch(/(^|[};])\s*\.box-frame--title-tab\s*\{/);
+  });
+});
+
 describe("枠レイヤを落とすとセグメントの border に戻る", () => {
   it("draws the run frame from the boxed-text border custom properties", () => {
     const frame = ruleDeclarations(documentSurfaceCss, ".boxed-run-frame");

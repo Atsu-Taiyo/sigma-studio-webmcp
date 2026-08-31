@@ -8,6 +8,50 @@ const EQUILATERAL_TRIANGLE_HEIGHT_RATIO = Math.sqrt(3) / 2;
 export const CORNER_RESIZE_HANDLES = ["nw", "ne", "sw", "se"] as const satisfies readonly ResizeHandle[];
 export const EDGE_RESIZE_HANDLES = ["n", "e", "s", "w"] as const satisfies readonly ResizeHandle[];
 
+/**
+ * The resize handles a selection offers.
+ *
+ * `visible` are drawn and draggable; `hitOnly` are draggable but not drawn — an arc's edges sit
+ * under its angle handles, so the bar would collide with them while the grab area is still wanted.
+ *
+ * A type that cannot be resized on an axis must not offer a handle for it: a text shape's height
+ * is derived from its content, so a north/south or corner drag would set a height the next
+ * measurement immediately overwrites — the box would spring back under the cursor.
+ */
+export interface OverlayResizeHandleSet {
+  hitOnly: readonly ResizeHandle[];
+  visible: readonly ResizeHandle[];
+}
+
+const TEXT_RESIZE_HANDLES = ["e", "w"] as const satisfies readonly ResizeHandle[];
+
+export function getResizeHandleSet(
+  shapes: readonly Pick<OverlayShape, "type">[],
+): OverlayResizeHandleSet {
+  const only = shapes.length === 1 ? shapes[0] : null;
+
+  if (only?.type === "text") {
+    // Width is the only thing the author sets. No corners either: a corner drag is a width *and* a
+    // height, and half of that has nowhere to go.
+    return { hitOnly: [], visible: TEXT_RESIZE_HANDLES };
+  }
+
+  if (only?.type === "tableShape") {
+    // The table sizes its own rows and columns; the box follows them, so only the corners scale it.
+    return { hitOnly: [], visible: CORNER_RESIZE_HANDLES };
+  }
+
+  if (only?.type === "arc") {
+    return { hitOnly: EDGE_RESIZE_HANDLES, visible: CORNER_RESIZE_HANDLES };
+  }
+
+  return { hitOnly: [], visible: [...EDGE_RESIZE_HANDLES, ...CORNER_RESIZE_HANDLES] };
+}
+
+export function isCornerResizeHandle(handle: ResizeHandle): boolean {
+  return handle === "nw" || handle === "ne" || handle === "sw" || handle === "se";
+}
+
 export interface OverlayResizePointerResolution {
   bounds: OverlayBounds;
   isRotated: boolean;
@@ -130,10 +174,6 @@ export function rawResizeBounds(bounds: OverlayBounds, handle: ResizeHandle, dx:
   }
 
   return { x: bounds.x + dx, y: bounds.y, w: bounds.w - dx, h: bounds.h };
-}
-
-function isCornerResizeHandle(handle: ResizeHandle): boolean {
-  return handle === "nw" || handle === "ne" || handle === "sw" || handle === "se";
 }
 
 function constrainResizeBoundsToAspect(

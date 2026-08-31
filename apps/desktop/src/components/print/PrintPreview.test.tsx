@@ -99,6 +99,23 @@ describe("PrintPreview layout modes", () => {
     expect(html).toContain("layout-vertical");
   });
 
+  it("renders a section number with the shared heading prefix in print, PDF, and viewer output", () => {
+    const numberedDocument = documentWithColumns(1, [{
+      type: "section",
+      id: "numbered-section",
+      title: "序章",
+    }]);
+    numberedDocument.metadata.headingNumbering = {
+      enabled: true,
+      style: "chapterJa",
+      depth: 1,
+    };
+
+    const html = renderToStaticMarkup(<PrintPreview document={numberedDocument} profile="teacher" />);
+
+    expect(html).toContain('<span class="heading-number-prefix">第1章 </span>序章');
+  });
+
   it("applies the requested spread layout", () => {
     const html = renderToStaticMarkup(
       <PrintPreview document={document} profile="teacher" displayMode="spread" />,

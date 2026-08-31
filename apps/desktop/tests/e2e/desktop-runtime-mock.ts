@@ -23,6 +23,8 @@ export interface DesktopRuntimeMockAiOptions {
    *   (exercises the in-body proposal preview card).
    * - "PROPOSAL FORMAT" → replaces the selected paragraph with the same inline
    *   content plus a bold mark, exercising a formatting-only pending diff.
+   * - "PROPOSAL PROBLEM" → inserts a framed problem with prompt and solution
+   *   after the selected block, exercising the shared paper/print preview path.
    * - Add "MATH_BREAK" to "PROPOSAL" to replace the selected paragraph with
    *   the same inline-math id but a two-line `aligned` expression. This covers
    *   authoritative AI updates to an already-mounted math node view.
@@ -496,6 +498,7 @@ export async function installDesktopRuntimeMock(
             const proposalId = `proposal_e2e_${runIndex}`;
             const createdAt = new Date().toISOString();
             const wantsShapeProposal = instruction.includes("SHAPE");
+            const wantsProblemProposal = !wantsShapeProposal && instruction.includes("PROBLEM");
             const wantsFormattingProposal = !wantsShapeProposal && instruction.includes("FORMAT");
             const wantsShapeInsertion = wantsShapeProposal && instruction.includes("INSERT");
             const wantsShapeDeletion = wantsShapeProposal && instruction.includes("DELETE");
@@ -595,9 +598,34 @@ export async function installDesktopRuntimeMock(
                   }
                 : {
                     summary: `E2E疑似編集案 (${runIndex})`,
-                    plan: ["段落を書き換える"],
-                    operations: instruction.includes("CHAIN")
-                      ? [
+                    plan: [wantsProblemProposal ? "問題を挿入する" : "段落を書き換える"],
+                    operations: wantsProblemProposal
+                      ? [{
+                          operation: "insertAfter",
+                          summary: "枠付きの問題を挿入",
+                          targetId,
+                          insertedBlock: {
+                            id: `e2e_problem_${runIndex}`,
+                            type: "problem",
+                            tags: [],
+                            lead: [],
+                            prompt: [{
+                              id: `e2e_problem_prompt_${runIndex}`,
+                              type: "paragraph",
+                              children: [{ type: "text", text: "E2Eで追加した問題文" }],
+                            }],
+                            hints: [],
+                            solution: [{
+                              id: `e2e_problem_solution_${runIndex}`,
+                              type: "paragraph",
+                              children: [{ type: "text", text: "E2Eで追加した解答" }],
+                            }],
+                            answer: { type: "math", expected: "" },
+                            frame: { enabled: true },
+                          },
+                        }]
+                      : instruction.includes("CHAIN")
+                        ? [
                           {
                             operation: "replace",
                             summary: "段落を置き換え",
@@ -631,8 +659,8 @@ export async function installDesktopRuntimeMock(
                               children: [{ type: "text", text: "連鎖挿入2: 公式本体" }],
                             },
                           },
-                        ]
-                      : [{
+                          ]
+                        : [{
                           operation: "replace",
                           summary: "段落を置き換え",
                           targetId,
@@ -890,6 +918,14 @@ export async function installDesktopRuntimeMock(
             filePath: `/Users/e2e/Downloads/${payload.suggestedName ?? "document.pdf"}`,
             pageCount: payload.pageCount,
           };
+        },
+        /** 実物は書かない。呼ばれたことと中身の大きさだけ残す。 */
+        saveToDownloads: async (payload: { fileName: string; dataBase64: string }) => {
+          window.localStorage.setItem("sigma-studio:e2e-saved-download", JSON.stringify({
+            fileName: payload.fileName,
+            byteLength: Math.floor(payload.dataBase64.length * 0.75),
+          }));
+          return { filePath: `/Users/e2e/Downloads/${payload.fileName}` };
         },
       },
       materials: {

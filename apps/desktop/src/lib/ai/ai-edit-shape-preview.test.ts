@@ -125,12 +125,12 @@ describe("buildShapesSvgPreview", () => {
   });
 });
 
-describe("buildShapesSvgPreview with legacy proposal drafts", () => {
-  // 実データ再現: 保存済み提案の72件が旧Tiptap形式のrichTextを持っており、
-  // チャットのサムネイル生成 (EditorShellのrender中のuseMemo) がここで例外を投げると
-  // アプリ全体が白画面になっていた。
-  const legacyTextShape = {
-    id: "shape_legacy_text",
+describe("buildShapesSvgPreview with drafts that are not in canonical form", () => {
+  // 実データ再現: 保存済み提案は教材本文と違って正規化境界を通っていないので、内容が
+  // 現行スキーマでない図形が混ざりうる。チャットのサムネイル生成 (EditorShell の
+  // render 中の useMemo) がここで例外を投げると、アプリ全体が白画面になる。
+  const brokenTextShape = {
+    id: "shape_broken_text",
     type: "text",
     x: 10,
     y: 20,
@@ -138,18 +138,20 @@ describe("buildShapesSvgPreview with legacy proposal drafts", () => {
     anchor: { type: "block", blockId: "p_1", dy: 20, dx: 10 },
     props: {
       w: 120,
-      autoSize: true,
       color: "black",
       size: "m",
-      richText: { type: "doc", content: [{ type: "text", text: "頂点" }] },
+      blocks: { type: "doc", content: [{ type: "text", text: "頂点" }] },
     },
   } as unknown as OverlayGeoShape;
 
-  it("renders a legacy rich-text shape instead of throwing", () => {
-    const preview = buildShapesSvgPreview([legacyTextShape], {});
+  it("does not throw on a shape whose content is not canonical", () => {
+    expect(() => buildShapesSvgPreview([brokenTextShape], {})).not.toThrow();
+  });
+
+  it("still renders the shapes around it", () => {
+    const preview = buildShapesSvgPreview([brokenTextShape, rectangle("shape_1")], {});
 
     expect(preview).not.toBeNull();
-    expect(preview?.svg).toContain("頂点");
   });
 });
 

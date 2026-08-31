@@ -36,7 +36,7 @@
   min-width: 0;
   max-width: none;
   min-height: 68px;
-  max-height: 180px;
+  max-height: calc(100vh - 48px);
   padding: var(--space-sm) var(--space-md);
   border: 0;
   border-radius: var(--radius-control);
@@ -64,12 +64,13 @@
 .popover .texField {
   position: relative;
   display: block;
-  height: 68px;
-  overflow: auto;
+  height: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: transparent;
   color: transparent;
   caret-color: var(--text-primary);
-  resize: vertical;
+  resize: none;
   -webkit-text-fill-color: transparent;
 }
 

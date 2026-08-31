@@ -1,19 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_SERIF_BODY_FONT_FAMILY,
-  LEGACY_STANDARD_SERIF_FONT_FAMILY,
   overlayRichTextInlinesToInlineNodes as canonicalOverlayRichTextInlinesToInlineNodes,
-  type OverlayRichTextDocument,
 } from "@/features/document";
 import {
   fromTiptap,
   inlineNodesToPlainText,
   overlayRichTextInlinesToInlineNodes,
-  overlayRichTextToTiptapDoc,
-  tiptapDocToOverlayRichText,
   toTiptap,
-  type TiptapDoc,
 } from "@/lib/tiptap-adapter";
 import type { ParagraphNode } from "@/types/sigma-doc";
 
@@ -21,86 +15,6 @@ describe("Tiptap adapter", () => {
   it("keeps overlay inline projection as a document-feature compatibility export", () => {
     expect(overlayRichTextInlinesToInlineNodes)
       .toBe(canonicalOverlayRichTextInlinesToInlineNodes);
-  });
-
-  it("projects legacy standard Mincho marks to the bundled editor font", () => {
-    const document: OverlayRichTextDocument = {
-      blocks: [{
-        type: "paragraph",
-        children: [{ type: "text", text: "明朝", fontFamily: LEGACY_STANDARD_SERIF_FONT_FAMILY }],
-      }],
-    };
-
-    expect(overlayRichTextToTiptapDoc(document).content[0].content?.[0].marks).toContainEqual({
-      type: "styledText",
-      attrs: {
-        color: undefined,
-        backgroundColor: undefined,
-        fontFamily: DEFAULT_SERIF_BODY_FONT_FAMILY,
-        fontSize: undefined,
-      },
-    });
-  });
-
-  it("round-trips semantic overlay rich text through an editor-only Tiptap document", () => {
-    const overlayDocument: OverlayRichTextDocument = {
-      blocks: [
-        {
-          type: "paragraph",
-          children: [
-            {
-              type: "text",
-              text: "本文\n",
-              marks: ["bold", "boxed"],
-            },
-            {
-              type: "mathInline",
-              id: "math_overlay",
-              tex: "x^2+1",
-              display: "inline",
-              marks: ["underline"],
-              backgroundColor: "#fff3c2",
-              fontSize: 13.5,
-              semanticRole: "expression",
-            },
-          ],
-        },
-        {
-          type: "heading",
-          level: 2,
-          align: "right",
-          lineHeight: "1.5",
-          children: [{ type: "text", text: "見出し", marks: ["italic"] }],
-        },
-      ],
-    };
-
-    const tiptapDocument = overlayRichTextToTiptapDoc(overlayDocument);
-    const restored = tiptapDocToOverlayRichText(tiptapDocument);
-
-    expect(tiptapDocument).not.toBe(overlayDocument);
-    expect(tiptapDocument).toMatchObject({
-      type: "doc",
-      content: [
-        { type: "paragraph" },
-        { type: "heading", attrs: { level: 2, textAlign: "right", lineHeight: "1.5" } },
-      ],
-    });
-    expect(restored).toEqual(overlayDocument);
-  });
-
-  it("rejects Tiptap nodes and marks outside the canonical overlay subset", () => {
-    const unsupportedNode = {
-      type: "doc",
-      content: [{ type: "bulletList", content: [] }],
-    } as TiptapDoc;
-    const unsupportedMark = {
-      type: "doc",
-      content: [{ type: "paragraph", content: [{ type: "text", text: "x", marks: [{ type: "strike" }] }] }],
-    } as TiptapDoc;
-
-    expect(() => tiptapDocToOverlayRichText(unsupportedNode)).toThrow(TypeError);
-    expect(() => tiptapDocToOverlayRichText(unsupportedMark)).toThrow(TypeError);
   });
 
   it("round-trips text and inline math without leaking Tiptap shape", () => {

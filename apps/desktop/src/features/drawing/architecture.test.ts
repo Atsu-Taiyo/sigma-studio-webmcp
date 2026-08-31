@@ -199,7 +199,7 @@ describe("drawing feature dependency boundary", () => {
     expect(reExportedNames).toContain("getTextShapeFontSizePt");
     expect(reExportedNames).toContain("getTextShapeRenderedFontSizePx");
     expect(reExportedNames).toContain("getTextShapeRenderedLineHeightPx");
-    expect(reExportedNames).toContain("normalizeTextShapeScale");
+    expect(reExportedNames).toContain("getTextShapeLineHeightPx");
     // Deep specifier only: the barrel would pull the whole document feature into this feature's
     // runtime graph.
     expect(facadeSource).not.toMatch(/from\s+["']@\/features\/document["']/);

@@ -6,7 +6,8 @@
 
 実装済み:
 
-- Slash command から `/fancybox`、`/itembox`、`/tcolorbox`、`/tcolorbox-note`、`/doublebox`、`/shadebox`、`/leftbar`、`/dashedbox`、`/ruledbox`、`/screenbox`、`/ovalbox`、`/cornerbox` を `boxBlock` として挿入できる。
+- Slash command から `/fancybox`、`/titlebox`、`/bandbox`、`/itembox`、`/theorembox`、`/tabbox`、`/tcolorbox`、`/tcolorbox-note`、`/doublebox`、`/shadebox`、`/leftbar`、`/dashedbox`、`/ruledbox`、`/screenbox`、`/ovalbox`、`/cornerbox` を `boxBlock` として挿入できる。
+- 同じ `/` から本文ブロック (`/引用`、`/コード`、`/区切り線`) も作れる。作るのはツールバーのブロックボタンと同じProseMirrorのコマンドで、押した後の焦点の戻し方も同じ規則に従う。
 - Slash command の `boxBlock` はトップレベル本文だけでなく、問題の導入文・問題文・コメント・解答でも同じ構造として挿入できる。問題全体の `frame` 設定とは独立している。
 - `BoxBlockNode`、`BoxFrameSpec`、`BoxDecorationSpec` は `src/types/sigma-doc.ts` と `src/lib/sigma-doc-schema.ts` の現行schemaに入っている。
 - 編集画面と印刷プレビューは、同じ `BoxFrameSpec` からCSS変数と `data-box-*` 属性を作って描画する。

@@ -8,8 +8,10 @@ import {
   getShapesForStackLayer,
   getTableHorizontalLineKey,
   getTableVerticalLineKey,
+  createGraph3DDisplayAnnotations,
   overlayLabelFontSize,
   overlayStrokeWidth,
+  projectGraph3DLabel,
   resolveTableLineBorder,
   type ArrowheadEndpointPlan,
 } from "@/features/rendering/core";
@@ -21,6 +23,7 @@ import {
   getBlockArrowPolygonPoints,
   getCalloutPath,
   getCalloutTextRect,
+  buildGraph3DSceneGeometry,
   getCroppedImageLayout,
   getGraphRenderLayout,
   getImageCoverCrop,
@@ -43,7 +46,9 @@ import {
   trimPolylinePoints,
 } from "@/features/drawing";
 import {
+  getGraph3DAxisColors,
   normalizeOverlaySnapshot,
+  resolveChartData,
   type OverlayArrowhead,
   type OverlayAsset,
   type OverlayDash,
@@ -52,8 +57,11 @@ import {
   type OverlayShape,
   type OverlayShapeId,
   type OverlaySnapshot,
+  type OverlayTextBlock,
   type OverlayStackLayer,
   type Graph2DSpec,
+  type SigmaChartData,
+  type SigmaChartSpec,
   type SigmaTableSpec,
 } from "@/features/document";
 import { normalizeOverlayAssetSource } from "@/features/document/asset-source";
@@ -62,7 +70,6 @@ import { isSafeCssColor, SAFE_FALLBACK_COLOR } from "@/features/document/css-saf
 import {
   escapeHtml,
   escapeHtmlAttribute as escapeAttr,
-  renderOverlayRichTextHtml,
 } from "../rich-text-html";
 
 const EXPORT_VIEWPORT_PADDING_PX = 64;
@@ -107,11 +114,23 @@ export interface OverlaySvgRenderers {
   renderGraphHtml: (spec: Graph2DSpec, idSeed: string) => string;
   renderMathHtml: (tex: string) => string;
   /**
+   * Static markup for a shape's text, for a `<foreignObject>`. Same port reasoning as the table
+   * below: the React work stays outside this serializer, and the implementation renders the very
+   * component the canvas draws, which is what keeps the exported page and the screen in step.
+   */
+  renderOverlayTextHtml: (blocks: readonly OverlayTextBlock[]) => string;
+  /**
    * Static table markup for a `<foreignObject>`. React work stays behind this port so the
    * serializer itself remains headless (`architecture.test.ts`); the implementation renders the
    * very component the editor surface mounts, which is what keeps the two in step.
    */
   renderTableHtml: (table: SigmaTableSpec, width: number, height: number, overflow: number) => string;
+  /**
+   * Native SVG for a chart — no `<foreignObject>`. A chart is drawn with SVG primitives to begin
+   * with, so wrapping it in HTML would introduce a CSS dependency the standalone export cannot
+   * satisfy.
+   */
+  renderChartSvg: (data: SigmaChartData, spec: SigmaChartSpec, width: number, height: number) => string;
 }
 
 export interface OverlaySvgExportOptions {
@@ -147,11 +166,23 @@ export function serializeOverlaySvg(
 
   const offsetX = size.offsetX ?? 0;
   const offsetY = size.offsetY ?? 0;
+  // Built from `normalizedShapes` — before the stack-layer, visibility and viewport narrowing
+  // below — because a chart must resolve its table wherever that table happens to be: on another
+  // page, behind the body layer, or hidden. Building it from `exportShapes` would silently fall the
+  // chart back to its snapshot whenever the two were separated.
+  const tablesById = new Map<string, SigmaTableSpec>();
+  for (const shape of normalizedShapes) {
+    if (shape.type === "tableShape") {
+      tablesById.set(shape.id, shape.props.table);
+    }
+  }
+
   const body = exportShapes
     .map((shape) => shapeToSvg(
       withEffectiveOpacity(shape, getEffectiveShapeOpacity(stackShapes, shape)),
       normalizedAssets,
       renderers,
+      tablesById,
     ))
     .join("");
   return [
@@ -212,6 +243,7 @@ function shapeToSvg(
   shape: OverlayShape,
   assets: Record<string, OverlayAsset>,
   renderers: OverlaySvgRenderers,
+  tablesById: ReadonlyMap<string, SigmaTableSpec>,
 ): string {
   let svg = "";
 
@@ -325,12 +357,7 @@ function shapeToSvg(
     const rect = getCalloutTextRect(shape);
     const fontSize = getTextShapeFontSizePt(shape);
     const bleed = getOverlayTextBleedPx(getTextShapeRenderedFontSizePx(shape));
-    const html = renderOverlayRichTextHtml(shape.props.richText, {
-      renderMathHtml: renderers.renderMathHtml,
-      // The exported SVG is viewed without the app stylesheet, so the document-surface styling
-      // has to travel with the markup.
-      selfContained: true,
-    });
+    const html = renderers.renderOverlayTextHtml(shape.props.blocks);
     const outline = `<path transform="translate(${shape.x} ${shape.y})" d="${escapeAttr(getCalloutPath(shape))}" fill="transparent" stroke="#111111" stroke-width="${overlayStrokeWidth(shape.props.strokeWidth)}" ${SHARP_STROKE_ATTRS}${dashAttr(shape.props.dash)} />`;
     // Same bleed technique as the `text` branch below: the outer foreignObject is padded by
     // `bleed` on every side so Chromium's PDF backend doesn't clip overflowing glyphs, but the
@@ -364,28 +391,34 @@ function shapeToSvg(
     return withShapeOpacity(shape, withShapeRotation(shape, svg));
   }
 
+  if (shape.type === "graph3dShape") {
+    const previewAsset = shape.props.previewAssetId
+      ? assets[shape.props.previewAssetId]
+      : undefined;
+    const href = previewAsset ? getRenderableImageHref(previewAsset) : null;
+    const preview = href
+      ? `<image x="${shape.x}" y="${shape.y}" width="${shape.props.w}" height="${shape.props.h}" href="${escapeAttr(href)}" preserveAspectRatio="xMidYMid meet" />`
+      : [
+          `<rect x="${shape.x}" y="${shape.y}" width="${shape.props.w}" height="${shape.props.h}" fill="#fafbfc" stroke="#d8dde2" />`,
+          `<text x="${shape.x + shape.props.w / 2}" y="${shape.y + shape.props.h / 2}" fill="#52606d" text-anchor="middle" dominant-baseline="middle" font-size="24">3D</text>`,
+        ].join("");
+    const labels = graph3DLabelsToSvg(shape, renderers);
+    svg = `${preview}${labels}`;
+    return withShapeOpacity(shape, withShapeRotation(shape, svg));
+  }
+
   if (shape.type === "text") {
     const bounds = getShapeBounds(shape);
     const fontSize = getTextShapeFontSizePt(shape);
     const bleed = getOverlayTextBleedPx(getTextShapeRenderedFontSizePx(shape));
-    const html = renderOverlayRichTextHtml(shape.props.richText, {
-      renderMathHtml: renderers.renderMathHtml,
-      // The exported SVG is viewed without the app stylesheet, so the document-surface styling
-      // has to travel with the markup.
-      selfContained: true,
-    });
-    const wrappingStyle = !shape.props.autoSize
-      ? "white-space:pre-wrap;"
-      : shape.props.maxWidth !== undefined
-        ? "white-space:pre-wrap;overflow-wrap:anywhere;"
-        : "white-space:pre;";
+    const html = renderers.renderOverlayTextHtml(shape.props.blocks);
     svg = foreignObject(
       shape.x - bleed,
       shape.y - bleed,
       bounds.w + bleed * 2,
       bounds.h + bleed * 2,
       [
-        `<div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:${bounds.w}px;min-height:${bounds.h}px;margin:${bleed}px;color:${escapeAttr(safeTextColor(shape.props.color))};font-size:${fontSize}pt;line-height:${TEXT_SHAPE_LINE_HEIGHT};overflow:visible;${wrappingStyle}">`,
+        `<div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:${bounds.w}px;min-height:${bounds.h}px;margin:${bleed}px;color:${escapeAttr(safeTextColor(shape.props.color))};font-size:${fontSize}pt;line-height:${TEXT_SHAPE_LINE_HEIGHT};overflow:visible;">`,
         html,
         "</div>",
       ].join(""),
@@ -411,7 +444,61 @@ function shapeToSvg(
     return withShapeOpacity(shape, svg);
   }
 
+  if (shape.type === "chartShape") {
+    const sourceTable = shape.props.sourceTableShapeId
+      ? tablesById.get(shape.props.sourceTableShapeId) ?? null
+      : null;
+    const data = resolveChartData(shape.props, sourceTable);
+    svg = `<g transform="translate(${shape.x} ${shape.y})">${renderers.renderChartSvg(
+      data,
+      shape.props.spec,
+      shape.props.w,
+      shape.props.h,
+    )}</g>`;
+    return withShapeOpacity(shape, withShapeRotation(shape, svg));
+  }
+
   return "";
+}
+
+function graph3DLabelsToSvg(
+  shape: Extract<OverlayShape, { type: "graph3dShape" }>,
+  renderers: OverlaySvgRenderers,
+): string {
+  const geometry = buildGraph3DSceneGeometry(shape.props.spec);
+  const annotations = createGraph3DDisplayAnnotations(
+    shape.props.spec,
+    geometry.annotations,
+    getGraph3DAxisColors(shape.props.spec.view),
+  );
+  const labelWidth = 112;
+  const labelHeight = 40;
+  return annotations.map((annotation) => {
+    const point = projectGraph3DLabel(
+      annotation.position,
+      shape.props.spec.camera,
+      shape.props.w,
+      shape.props.h,
+    );
+    if (
+      !point ||
+      point.x < 0 || point.x > shape.props.w ||
+      point.y < 0 || point.y > shape.props.h
+    ) return "";
+    const color = safeTextColor(annotation.color ?? "#1f2937");
+    return foreignObject(
+      shape.x + point.x - labelWidth / 2,
+      shape.y + point.y - labelHeight / 2,
+      labelWidth,
+      labelHeight,
+      [
+        `<div xmlns="http://www.w3.org/1999/xhtml" data-graph3d-label="${escapeAttr(annotation.id)}" style="box-sizing:border-box;display:flex;align-items:center;justify-content:center;width:${labelWidth}px;height:${labelHeight}px;color:${escapeAttr(color)};font-size:13px;line-height:1.2;white-space:nowrap;">`,
+        `<span style="padding:1px 4px;border-radius:3px;background:#ffffff;">${renderers.renderMathHtml(annotation.labelTex)}</span>`,
+        "</div>",
+      ].join(""),
+      { overflowVisible: true },
+    );
+  }).join("");
 }
 
 function getRenderableImageHref(asset: OverlayAsset): string | null {
@@ -623,7 +710,7 @@ function absolutePolygonPoints(points: OverlayPoint[], x: number, y: number): st
 }
 
 function radiansToDegrees(rotation: number): number {
-  return rotation * 180 / Math.PI;
+  return Math.round((rotation * 180 / Math.PI) * 1_000_000) / 1_000_000;
 }
 
 function foreignObject(

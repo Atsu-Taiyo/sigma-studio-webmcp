@@ -28,6 +28,16 @@ export function idPrefixForTextNode(
   if (sigmaDocType === "listItem") {
     return "li";
   }
+  if (nodeType === "quote") {
+    return "quote";
+  }
+  if (nodeType === "codeBlock") {
+    // tiptap-document-adapter と同じ接頭辞。
+    return "code";
+  }
+  if (nodeType === "divider") {
+    return "divider";
+  }
   return nodeType === "heading" ? "heading" : "p";
 }
 

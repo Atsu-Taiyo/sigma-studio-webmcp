@@ -462,6 +462,45 @@ test("shows a live preview with TeX code and closes from completion or an outsid
   await expect(flowInlineMath(page, inlineMathId)).toHaveAttribute("data-tex", "x^3");
 });
 
+test("grows the TeX editor with long input before falling back to internal scrolling", async ({ page }) => {
+  await openEditor(page, "tex");
+
+  await focusFirstFlowEditor(page);
+  const fittingTex = Array.from({ length: 12 }, (_, index) => `x_{${index}}`).join("\n");
+  const inlineMathId = await insertInlineMathByEvent(page, fittingTex);
+  await editInlineMath(page, inlineMathId, "end");
+
+  const texField = inlineMathTexField(page);
+  // 既存の長い数式を開いただけで高さが合い、1文字入力する必要がない。
+  await expect.poll(() => texField.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    return {
+      grewOnOpen: textarea.getBoundingClientRect().height > 68,
+      hasNoInternalOverflow: textarea.clientHeight >= textarea.scrollHeight,
+      value: textarea.value,
+    };
+  })).toEqual({
+    grewOnOpen: true,
+    hasNoInternalOverflow: true,
+    value: fittingTex,
+  });
+
+  const overflowingTex = Array.from({ length: 80 }, (_, index) => `x_{${index}}`).join("\n");
+  await texField.fill(overflowingTex);
+  await expect.poll(() => texField.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    return {
+      cappedToViewport: textarea.getBoundingClientRect().height <= window.innerHeight - 47,
+      internallyScrollable: textarea.scrollHeight > textarea.clientHeight,
+      selectionAtEnd: textarea.selectionStart === textarea.value.length && textarea.selectionEnd === textarea.value.length,
+    };
+  })).toEqual({
+    cappedToViewport: true,
+    internallyScrollable: true,
+    selectionAtEnd: true,
+  });
+});
+
 test("renders KaTeX-only commands in the TeX editor and committed formula", async ({ page }) => {
   await openEditor(page, "tex");
 

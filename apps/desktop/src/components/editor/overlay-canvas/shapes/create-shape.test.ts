@@ -74,6 +74,33 @@ describe("buildInsertShape", () => {
     });
   });
 
+  it("creates a canonical 3D teaching-material shape from the selected preset", () => {
+    const shape = buildInsertShape(
+      { kind: "insert", command: "graph3d", graph3dPreset: "sphereTetrahedron" },
+      { x: 40, y: 60 },
+      { x: 440, y: 340 },
+      "shape:graph3d",
+    );
+
+    expect(shape).toMatchObject({
+      id: "shape:graph3d",
+      type: "graph3dShape",
+      x: 40,
+      y: 60,
+      props: {
+        w: 400,
+        h: 280,
+        spec: {
+          version: 1,
+          objects: [
+            expect.objectContaining({ kind: "boundedSolid" }),
+            expect.objectContaining({ kind: "primitive" }),
+          ],
+        },
+      },
+    });
+  });
+
   describe("starting from the author's last style", () => {
     const REMEMBERED = {
       color: "#dc2626",

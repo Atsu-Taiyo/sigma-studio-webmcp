@@ -4,6 +4,7 @@ import type { OverlayShape } from "@/features/document";
 
 import {
   createInitialOverlayInteractionMode,
+  getEditingShapeId,
   getMoveOffset,
   overlayInteractionModeReducer,
   resolveMovePointerUp,
@@ -18,10 +19,8 @@ const textShape: Extract<OverlayShape, { type: "text" }> = {
   y: 20,
   props: {
     w: 120,
-    richText: {
-      blocks: [{ type: "paragraph", children: [{ type: "text", text: "Text" }] }],
-    },
-    autoSize: false,
+    h: 16,
+    blocks: [{ type: "paragraph", id: "interaction_mode_test_6", children: [{ type: "text", text: "Text" }] }],
     color: "black",
     size: "m",
   },
@@ -142,6 +141,24 @@ describe("overlay move interaction mode", () => {
       throw new Error("Expected move mode");
     }
     expect(resolveMovePointerUp(zeroOffset, { x: 30, y: 20 })).toEqual({ kind: "noop" });
+  });
+});
+
+describe("overlay 3D viewport editing mode", () => {
+  it("owns direct manipulation separately from moving the placed shape", () => {
+    const selected = createInitialOverlayInteractionMode();
+    const editing = overlayInteractionModeReducer(selected, {
+      type: "editGraph3D",
+      shapeId: "shape_graph3d",
+    });
+
+    expect(editing).toEqual({
+      id: "overlay.graph3dEditing",
+      tool: { kind: "select" },
+      shapeId: "shape_graph3d",
+    });
+    expect(getEditingShapeId(editing)).toBe("shape_graph3d");
+    expect(getEditingShapeId(overlayInteractionModeReducer(editing, { type: "select" }))).toBeNull();
   });
 });
 

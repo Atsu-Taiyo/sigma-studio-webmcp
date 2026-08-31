@@ -1,8 +1,9 @@
 import { createTranslator, DEFAULT_LOCALE, type Translate } from "@/lib/i18n";
 import { createId } from "@/lib/id";
 import { createBoxBlock } from "@/lib/box-blocks";
-import { inlineNodesToPlainText, overlayRichTextDocumentToInlineNodes } from "@/lib/tiptap-adapter";
+import { inlineNodesToPlainText, overlayTextBlocksToInlineNodes } from "@/lib/tiptap-adapter";
 import {
+  getTableCellDisplayNodes,
   listItemContinuationInlineNodes,
   normalizeOverlaySnapshot,
   PROBLEM_AREA_ORDER,
@@ -1532,12 +1533,15 @@ export interface CollectOutlineOptions {
    * (it only expects section/heading/layoutSection/problem entries).
    */
   includeBodyBlocks?: boolean;
+  /** Human outline only: include section headings that live directly in a layout section. */
+  includeLayoutHeadings?: boolean;
 }
 
 const OUTLINE_EXCERPT_MAX_LENGTH = 60;
 
 export function collectOutline(document: SigmaDocument, options?: CollectOutlineOptions): SigmaDocOutlineEntry[] {
   const includeBodyBlocks = options?.includeBodyBlocks ?? false;
+  const includeLayoutHeadings = options?.includeLayoutHeadings ?? false;
   const t = options?.t ?? createTranslator(DEFAULT_LOCALE, "editor");
   let problemCount = 0;
   const outline: SigmaDocOutlineEntry[] = [];
@@ -1565,6 +1569,16 @@ export function collectOutline(document: SigmaDocument, options?: CollectOutline
       });
       if (includeBodyBlocks) {
         collectBodyOutlineEntries(block.children, block.id, outline, t);
+      } else if (includeLayoutHeadings) {
+        for (const child of block.children) {
+          if (child.type === "heading") {
+            outline.push({
+              id: child.id,
+              title: child.children.map((node) => ("text" in node ? node.text : "")).join("") || t("block.heading"),
+              type: child.type,
+            });
+          }
+        }
       }
       continue;
     }
@@ -1746,8 +1760,16 @@ function describeOverlayShape(shape: OverlayShape, t: Translate<"shape">): strin
         ? t("shapeKind.graphTitled", { title: truncateOutlineExcerpt(title), kind: shape.props.spec.kind })
         : t("shapeKind.graph", { kind: shape.props.spec.kind });
     }
+    case "graph3dShape":
+      return `3D教材 (${shape.props.spec.objects.length}オブジェクト)`;
+    case "chartShape": {
+      const title = shape.props.spec.title?.trim();
+      return title
+        ? t("shapeKind.chartTitled", { title: truncateOutlineExcerpt(title) })
+        : t("shapeKind.chart");
+    }
     case "text": {
-      const text = inlineNodesToPlainText(overlayRichTextDocumentToInlineNodes(shape.props.richText));
+      const text = inlineNodesToPlainText(overlayTextBlocksToInlineNodes(shape.props.blocks));
       return truncateOutlineExcerpt(text) || t("shapeKind.emptyText");
     }
     case "group":
@@ -1815,9 +1837,12 @@ function firstNonEmptyTableCellText(table: SigmaTableSpec): string {
 
   for (const cell of orderedCells) {
     for (const content of cell.content) {
+      // The projection, not `content.children`: this snippet names the table in the outline, and a
+      // label reading `=SUM(B2:B3)` where every drawing surface shows `30` describes a table the
+      // user cannot see. (Search, AI and import deliberately keep reading the source instead.)
       const text = content.type === "trend"
         ? inlineNodesToPlainText(content.label ?? [])
-        : inlineNodesToPlainText(content.children);
+        : inlineNodesToPlainText(getTableCellDisplayNodes(table, cell, content));
       const trimmed = text.trim();
       if (trimmed) {
         return trimmed;

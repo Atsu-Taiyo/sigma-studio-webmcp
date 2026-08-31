@@ -3,9 +3,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   type OverlayAsset,
   type OverlayShape,
+  type OverlayTextBlock,
+  type SigmaChartData,
+  type SigmaChartSpec,
   type SigmaTableSpec,
   A4_PAGE_PX,
 } from "@/features/document";
+
+/**
+ * The one components-layer import in `features/rendering`, and a deliberate one: a shape's text is
+ * drawn by the body's static block renderer, and this file exists precisely to mount the very
+ * components the editor surface mounts so the export cannot drift from the screen. The component
+ * is Tiptap-free (`package-boundary.test.ts` keeps it that way, since the embedded viewer bundles
+ * it through the print surface). `architecture.test.ts` pins this as the only such import.
+ */
+import { OverlayTextBlocksView } from "@/components/editor/text-flow/OverlayTextBlocksView";
 
 import {
   DEFAULT_MATH_RENDER_ENVIRONMENT,
@@ -14,7 +26,7 @@ import {
 } from "@/lib/math-environment";
 
 import { renderMathHtml } from "../math-html";
-import { Graph2DPreview, MathEnvironmentValueProvider, OverlayTableStaticView } from "../react";
+import { Graph2DPreview, MathEnvironmentValueProvider, OverlayChartStaticView, OverlayTableStaticView } from "../react";
 import {
   serializeOverlayPreviewSvg,
   serializeOverlaySvg,
@@ -78,6 +90,42 @@ function renderTableHtmlMemoized(
 }
 
 /**
+ * Per-(data, geometry) memo for the chart markup, for the same reason the table has one: a page
+ * preview re-serializes every off-screen page while the author types, and a chart is a full React
+ * render per call. `SigmaChartData` is either the immutable snapshot on the shape or the value
+ * `deriveChartData` returned for a given table, so object identity is a sound key.
+ */
+const chartSvgCache = new WeakMap<SigmaChartData, Map<string, string>>();
+const CHART_SVG_CACHE_GEOMETRIES = 8;
+
+function renderChartSvgMemoized(
+  data: SigmaChartData,
+  spec: SigmaChartSpec,
+  width: number,
+  height: number,
+): string {
+  let cached = chartSvgCache.get(data);
+  if (!cached) {
+    cached = new Map();
+    chartSvgCache.set(data, cached);
+  }
+  // The spec is part of the key: the same data drawn as bars and as a pie is two different pictures.
+  const key = `${width}x${height}|${JSON.stringify(spec)}`;
+  const hit = cached.get(key);
+  if (hit !== undefined) {
+    return hit;
+  }
+  const svg = renderToStaticMarkup(
+    <OverlayChartStaticView data={data} height={height} spec={spec} width={width} />,
+  );
+  if (cached.size >= CHART_SVG_CACHE_GEOMETRIES) {
+    cached.delete(cached.keys().next().value as string);
+  }
+  cached.set(key, svg);
+  return svg;
+}
+
+/**
  * React writes `rowSpan`/`colSpan` with their DOM-property casing, which an HTML parser folds to
  * lowercase — but this markup also travels as XML: `AiEditPanel` turns the exported SVG into an
  * `image/svg+xml` data URI and rasterises it. XML attribute matching is case-sensitive, so the
@@ -92,6 +140,38 @@ function toXmlAttributeCasing(html: string): string {
   return html.replace(/<td\b[^>]*>/g, (tag) => (
     tag.replace(/ (rowSpan|colSpan)=/g, (_, name: string) => ` ${name.toLowerCase()}=`)
   ));
+}
+
+/**
+ * Per-blocks memo for a shape's text markup, for the same reason as the table above: page previews
+ * re-serialize every off-screen page's overlay while the author types, and this is a React render
+ * per shape. Block arrays are immutable snapshots in the overlay model, so object identity is a
+ * usable key with no invalidation logic.
+ */
+const overlayTextHtmlCache = new WeakMap<readonly OverlayTextBlock[], Map<string, string>>();
+
+function renderOverlayTextHtmlMemoized(
+  blocks: readonly OverlayTextBlock[],
+  environment: MathRenderEnvironment,
+): string {
+  let cached = overlayTextHtmlCache.get(blocks);
+  if (!cached) {
+    cached = new Map();
+    overlayTextHtmlCache.set(blocks, cached);
+  }
+  const key = mathRenderEnvironmentCacheKey(environment, "overlay-text");
+  const hit = cached.get(key);
+  if (hit !== undefined) {
+    return hit;
+  }
+
+  const html = renderToStaticMarkup(
+    <MathEnvironmentValueProvider environment={environment}>
+      <OverlayTextBlocksView blocks={blocks} selfContained xmlns="http://www.w3.org/1999/xhtml" />
+    </MathEnvironmentValueProvider>,
+  );
+  cached.set(key, html);
+  return html;
 }
 
 /**
@@ -119,9 +199,12 @@ function createStaticReactRenderers(environment: MathRenderEnvironment): Overlay
       </MathEnvironmentValueProvider>,
     ),
     renderMathHtml: (tex) => renderMathHtml(tex, environment),
+    renderOverlayTextHtml: (blocks) => renderOverlayTextHtmlMemoized(blocks, environment),
     renderTableHtml: (table, width, height, overflow) => (
       renderTableHtmlMemoized(table, width, height, overflow, environment)
     ),
+    // No math environment: a chart draws labels as plain text, so nothing here depends on it.
+    renderChartSvg: (data, spec, width, height) => renderChartSvgMemoized(data, spec, width, height),
   };
 }
 

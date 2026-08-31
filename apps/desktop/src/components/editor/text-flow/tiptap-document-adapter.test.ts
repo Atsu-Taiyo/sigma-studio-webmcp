@@ -358,3 +358,74 @@ describe("layoutSection round trip", () => {
     editor.destroy();
   });
 });
+
+/**
+ * 入れ物 (箱・n 段組) の中で本文ブロックの種別を変えたときの往復。
+ *
+ * PM が持てる形を SigmaDoc へ戻せないと、**書いた文字ごと**空段落へ潰れる。実際に
+ * 「箱の中で引用ボタンを押すと本文が消える」という形で出ていたので、受け取れる集合と
+ * 落とし方の両方をここで固定する。
+ */
+describe("入れ物の中の本文ブロック", () => {
+  it("keeps a quote, a code block and a divider that live inside a box", () => {
+    const box: TextFlowBlock = {
+      type: "boxBlock",
+      id: "box_1",
+      styleId: "fancybox",
+      blocks: [
+        {
+          type: "quote",
+          id: "box_quote",
+          blocks: [{ type: "paragraph", id: "box_quote_p", children: [{ type: "text", text: "引用の中身" }] }],
+        },
+        { type: "codeBlock", id: "box_code", children: [{ type: "text", text: "const a = 1;" }], language: "javascript" },
+        { type: "divider", id: "box_divider" },
+      ],
+    };
+    const editor = createEditor([box]);
+
+    expect(tiptapToTextFlow(editor.getJSON())).toEqual([box]);
+    editor.destroy();
+  });
+
+  it("keeps a divider inside a column section", () => {
+    const section: TextFlowBlock = {
+      type: "layoutSection",
+      id: "layout_1",
+      layout: { columnCount: 2, columnGapMm: 8 },
+      children: [
+        { type: "paragraph", id: "layout_p1", children: [{ type: "text", text: "左" }] },
+        { type: "divider", id: "layout_divider" },
+      ],
+    };
+    const editor = createEditor([section]);
+
+    expect(tiptapToTextFlow(editor.getJSON())).toEqual([section]);
+    editor.destroy();
+  });
+
+  it("keeps the text when a child has to degrade to a paragraph", () => {
+    const section: TextFlowBlock = {
+      type: "layoutSection",
+      id: "layout_2",
+      layout: { columnCount: 2, columnGapMm: 8 },
+      // 引用は段組の content 式に無いので段落へ落ちる。落ちても中の文章は残る。
+      children: [{
+        type: "quote",
+        id: "layout_quote",
+        blocks: [{ type: "paragraph", id: "layout_quote_p", children: [{ type: "text", text: "消えてはいけない" }] }],
+      } as never],
+    };
+    const editor = createEditor([section]);
+    const [restored] = tiptapToTextFlow(editor.getJSON());
+
+    expect(restored?.type).toBe("layoutSection");
+    expect(restored?.type === "layoutSection" && restored.children).toEqual([{
+      type: "paragraph",
+      // id は落ちたブロックのもの (引用の子ではない) — 引用の子を落とすときと同じ規約。
+      id: "layout_quote",
+      children: [{ type: "text", text: "消えてはいけない" }],
+    }]);
+    editor.destroy();
+  });
+});

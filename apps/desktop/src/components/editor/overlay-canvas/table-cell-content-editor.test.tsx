@@ -1,9 +1,21 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { SigmaTableCellContent } from "@/features/document";
+import type { SigmaTableCellContent, SigmaTableSpec } from "@/features/document";
 
 import { OverlayTableCellContentEditor } from "./table-cell-content-editor";
+
+/** A table with no cells: these tests render one cell in isolation, never a whole grid. */
+const emptyTable: SigmaTableSpec = {
+  version: 1,
+  kind: "plain",
+  columns: [],
+  rows: [],
+  cells: [],
+  grid: { borderColor: "#000000", borderWidth: 1 },
+  defaultCellStyle: {},
+};
+
 
 const callbacks = {
   onFocus: () => undefined,
@@ -37,6 +49,9 @@ describe("OverlayTableCellContentEditor", () => {
         cellId="cell"
         content={content}
         editing={false}
+        showFormulaSource={false}
+        cell={undefined}
+        table={emptyTable}
         rowIndex={0}
         columnIndex={0}
         colSpan={1}
@@ -67,6 +82,9 @@ describe("OverlayTableCellContentEditor", () => {
         cellId="cell"
         content={content}
         editing={false}
+        showFormulaSource={false}
+        cell={undefined}
+        table={emptyTable}
         rowIndex={0}
         columnIndex={0}
         colSpan={1}
@@ -103,6 +121,9 @@ describe("OverlayTableCellContentEditor", () => {
         cellId="cell"
         content={content}
         editing={false}
+        showFormulaSource={false}
+        cell={undefined}
+        table={emptyTable}
         rowIndex={0}
         columnIndex={0}
         colSpan={1}
@@ -131,6 +152,9 @@ describe("OverlayTableCellContentEditor", () => {
         cellId="cell"
         content={content}
         editing={false}
+        showFormulaSource={false}
+        cell={undefined}
+        table={emptyTable}
         rowIndex={0}
         columnIndex={0}
         colSpan={2}
@@ -140,5 +164,95 @@ describe("OverlayTableCellContentEditor", () => {
     expect(markup).toContain('width="76"');
     // No label, no `<span>` for one.
     expect(markup).not.toContain("<span");
+  });
+});
+
+describe("a formula cell swaps between its value and its source", () => {
+  /** Two cells in one column: a number, and a formula reading it. */
+  const formulaTable: SigmaTableSpec = {
+    version: 1,
+    kind: "plain",
+    columns: [{ id: "c1", width: { mode: "auto" } }],
+    rows: [{ id: "r1", height: { mode: "auto" } }, { id: "r2", height: { mode: "auto" } }],
+    cells: [
+      {
+        id: "r1-c1",
+        rowId: "r1",
+        columnId: "c1",
+        content: [{ type: "paragraph", id: "p1", children: [{ type: "text", text: "7" }] }],
+      },
+      {
+        id: "r2-c1",
+        rowId: "r2",
+        columnId: "c1",
+        content: [{ type: "paragraph", id: "p2", children: [{ type: "text", text: "=A1*3" }] }],
+      },
+    ],
+    grid: { borderColor: "#000000", borderWidth: 1 },
+    defaultCellStyle: {},
+  };
+
+  const formulaCell = formulaTable.cells[1];
+  const formulaContent = formulaCell.content[0] as SigmaTableCellContent;
+
+  function render(editing: boolean, showFormulaSource: boolean): string {
+    return renderToStaticMarkup(
+      <OverlayTableCellContentEditor
+        {...callbacks}
+        shapeId="shape"
+        cell={formulaCell}
+        cellId={formulaCell.id}
+        content={formulaContent}
+        editing={editing}
+        showFormulaSource={showFormulaSource}
+        table={formulaTable}
+        rowIndex={1}
+        columnIndex={0}
+        colSpan={1}
+      />,
+    );
+  }
+
+  it("shows the value when the table is not being edited", () => {
+    expect(render(false, false)).toContain("21");
+  });
+
+  it("shows the value while another cell is being edited", () => {
+    expect(render(true, false)).toContain("21");
+  });
+
+  it("does not leak the source text while showing the value", () => {
+    expect(render(true, false)).not.toContain("=A1*3");
+  });
+
+  it("hands the cell to the editor once the caret is in it", () => {
+    // The Tiptap editor renders empty in `renderToStaticMarkup`, so what is asserted is that the
+    // static value paragraph is gone — the switch happened.
+    expect(render(true, true)).not.toContain("21");
+  });
+
+  it("still mounts the editor for a cell holding no formula", () => {
+    const plainCell = formulaTable.cells[0];
+    const markup = renderToStaticMarkup(
+      <OverlayTableCellContentEditor
+        {...callbacks}
+        shapeId="shape"
+        cell={plainCell}
+        cellId={plainCell.id}
+        content={plainCell.content[0] as SigmaTableCellContent}
+        editing={true}
+        showFormulaSource={false}
+        table={formulaTable}
+        rowIndex={0}
+        columnIndex={0}
+        colSpan={1}
+      />,
+    );
+
+    // A cell holding no formula must still mount its editor when the table is being edited —
+    // otherwise turning on formulas would have made every ordinary cell read-only. The static path
+    // renders the text inside `.rich-inline-content`; the editor path renders an empty Tiptap
+    // container under `renderToStaticMarkup`, so the text's absence is the proof.
+    expect(markup).not.toContain("rich-inline-content");
   });
 });

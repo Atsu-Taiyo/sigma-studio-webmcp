@@ -2,6 +2,7 @@
 
 import type { CSSProperties, ReactNode } from "react";
 
+import { getTableCellDisplayNodes } from "@/features/document";
 import type {
   MathFractionSizing,
   SigmaTableCell,
@@ -136,6 +137,7 @@ export function OverlayTableStaticView({
                           content={content}
                           mathFractionSizing={mathFractionSizing}
                           selfContained={selfContained}
+                          table={table}
                         />
                       ))}
                     </div>
@@ -208,11 +210,13 @@ function OverlayTableCellContentStaticView({
   content,
   mathFractionSizing,
   selfContained,
+  table,
 }: {
   cell: SigmaTableCell | undefined;
   content: SigmaTableCellContent;
   mathFractionSizing?: MathFractionSizing | null;
   selfContained?: boolean;
+  table: SigmaTableSpec;
 }): ReactNode {
   if (content.type === "trend") {
     return (
@@ -229,7 +233,7 @@ function OverlayTableCellContentStaticView({
     // `margin` is a literal and stays outside the funnel (React renders the number as `0px`, which
     // the parity tests pin); `align` is the one document-supplied value here, so it goes through.
     <p style={{ margin: 0, ...toReactStyle(content.align ? { textAlign: content.align } : {}) }}>
-      {renderInlineContent(content.children, {
+      {renderInlineContent(getTableCellDisplayNodes(table, cell, content), {
         keyPrefix: content.id,
         mathFractionSizing,
         selfContained,

@@ -56,9 +56,7 @@ function overflowingOverlayDocument(): SigmaDocument {
                   baseEnd: { x: 84, y: CALLOUT_STORED_HEIGHT },
                   tip: { x: 28, y: CALLOUT_STORED_HEIGHT + 28 },
                 },
-                richText: {
-                  blocks: [{ type: "paragraph", children: [{ type: "text", text: CALLOUT_TEXT }] }],
-                },
+                blocks: [{ type: "paragraph", id: "overlay_text_overflow_spec_46", children: [{ type: "text", text: CALLOUT_TEXT }] }],
                 color: "#111111",
                 size: "m",
                 dash: "solid",
@@ -74,13 +72,10 @@ function overflowingOverlayDocument(): SigmaDocument {
               props: {
                 w: 160,
                 h: TEXT_SHAPE_STORED_HEIGHT,
-                scale: 1,
-                autoSize: false,
                 color: "#111111",
                 size: "m",
-                richText: {
-                  blocks: [{
-                    type: "paragraph",
+                blocks: [{
+                    type: "paragraph", id: "overlay_text_overflow_spec_47",
                     children: [{
                       type: "mathInline",
                       id: "math_overflow_sum",
@@ -88,7 +83,6 @@ function overflowingOverlayDocument(): SigmaDocument {
                       display: "inline",
                     }],
                   }],
-                },
               },
             },
           ],
@@ -110,18 +104,16 @@ test("grows the on-screen box of overlay text that outgrows its stored size", as
 
   const callout = page.locator('[data-overlay-shape-id="shape_overflow_callout"]');
   await expect(callout).toBeVisible();
-  const calloutBox = await callout.boundingBox();
-  expect(calloutBox).not.toBeNull();
   // The stored body is 48px plus a 28px tail. Wrapped to a 200px-wide box the text needs several
   // lines, so the drawn shape has to be substantially taller than the stored geometry.
-  expect(calloutBox!.height).toBeGreaterThan(CALLOUT_STORED_HEIGHT + 28);
+  await expect.poll(async () => (await callout.boundingBox())?.height ?? 0)
+    .toBeGreaterThan(CALLOUT_STORED_HEIGHT + 28);
 
   const mathText = page.locator('[data-overlay-shape-id="shape_overflow_math_text"]');
   await expect(mathText).toBeVisible();
-  const mathBox = await mathText.boundingBox();
-  expect(mathBox).not.toBeNull();
   // A big operator with both limits is ~2.9em; a 16px stored height is one line.
-  expect(mathBox!.height).toBeGreaterThan(TEXT_SHAPE_STORED_HEIGHT * 1.8);
+  await expect.poll(async () => (await mathText.boundingBox())?.height ?? 0)
+    .toBeGreaterThan(TEXT_SHAPE_STORED_HEIGHT * 1.8);
 });
 
 /**
@@ -143,7 +135,15 @@ test("grows the on-screen box of overlay text that outgrows its stored size", as
  */
 test("draws overflowing overlay text at its content height in the PDF preview", async ({ page }) => {
   await page.goto("/");
-  await expect(page.locator('[data-overlay-shape-id="shape_overflow_callout"]')).toBeVisible();
+  const sourceCallout = page.locator('[data-overlay-shape-id="shape_overflow_callout"]');
+  const sourceMathText = page.locator('[data-overlay-shape-id="shape_overflow_math_text"]');
+  await expect(sourceCallout).toBeVisible();
+  // DOM measurement writes the derived heights back on the next animation frame. Wait for the
+  // canvas to own those final boxes before asking the PDF surface to snapshot the SigmaDoc.
+  await expect.poll(async () => (await sourceCallout.boundingBox())?.height ?? 0)
+    .toBeGreaterThan(CALLOUT_STORED_HEIGHT + 28);
+  await expect.poll(async () => (await sourceMathText.boundingBox())?.height ?? 0)
+    .toBeGreaterThan(TEXT_SHAPE_STORED_HEIGHT * 1.8);
 
   await page.getByRole("button", { name: "ファイル", exact: true }).click();
   await page.getByRole("menuitem", { name: "エクスポート" }).hover();

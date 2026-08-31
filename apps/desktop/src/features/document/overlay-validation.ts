@@ -1,4 +1,5 @@
 import { isGraphFillPattern } from "./graph-fill-style";
+import { isGraph3DSpec } from "./graph3d-validation";
 import { OVERLAY_ARROWHEADS } from "./overlay-model";
 import type { InlineNode } from "./model";
 import type {
@@ -7,14 +8,15 @@ import type {
   OverlayAsset,
   OverlayDash,
   OverlayExtensions,
-  OverlayRichTextBlock,
-  OverlayRichTextDocument,
   SigmaTableCellStyle,
   OverlayShape,
   OverlaySnapshot,
   OverlayStackLayer,
+  OverlayTextBlock,
   OverlayTextSize,
 } from "./overlay-model";
+
+export { isGraph3DSpec };
 
 export function isValidOverlaySnapshot(snapshot: unknown): snapshot is OverlaySnapshot {
   if (!isBaseOverlaySnapshot(snapshot)) {
@@ -44,10 +46,8 @@ export function isOverlayExtensions(value: unknown): value is OverlayExtensions 
     Object.values(value).every(isOverlayExtensionValue);
 }
 
-export function isOverlayRichTextDocument(value: unknown): value is OverlayRichTextDocument {
-  return isRecord(value) &&
-    Array.isArray(value.blocks) &&
-    value.blocks.every(isOverlayRichTextBlock);
+export function isOverlayTextBlocks(value: unknown): value is OverlayTextBlock[] {
+  return Array.isArray(value) && value.every(isOverlayTextBlock);
 }
 
 export function isOverlayShape(value: unknown): value is OverlayShape {
@@ -154,11 +154,9 @@ export function isOverlayShape(value: unknown): value is OverlayShape {
         (value.props.label === undefined || typeof value.props.label === "string");
     case "text":
       return isFiniteNumber(value.props.w) &&
-        (value.props.h === undefined || (isFiniteNumber(value.props.h) && value.props.h > 0)) &&
-        (value.props.maxWidth === undefined || (isFiniteNumber(value.props.maxWidth) && value.props.maxWidth > 0)) &&
-        (value.props.scale === undefined || (isFiniteNumber(value.props.scale) && value.props.scale > 0)) &&
-        isOverlayRichTextDocument(value.props.richText) &&
-        typeof value.props.autoSize === "boolean" &&
+        isFiniteNumber(value.props.h) &&
+        value.props.h > 0 &&
+        isOverlayTextBlocks(value.props.blocks) &&
         typeof value.props.color === "string" &&
         (value.props.fontSize === undefined || (isFiniteNumber(value.props.fontSize) && value.props.fontSize > 0)) &&
         isOverlayTextSize(value.props.size);
@@ -174,7 +172,7 @@ export function isOverlayShape(value: unknown): value is OverlayShape {
         isOverlayPoint(value.props.tail.baseStart) &&
         isOverlayPoint(value.props.tail.baseEnd) &&
         isOverlayPoint(value.props.tail.tip) &&
-        isOverlayRichTextDocument(value.props.richText) &&
+        isOverlayTextBlocks(value.props.blocks) &&
         typeof value.props.color === "string" &&
         (value.props.fontSize === undefined || (isFiniteNumber(value.props.fontSize) && value.props.fontSize > 0)) &&
         isOverlayTextSize(value.props.size) &&
@@ -205,8 +203,20 @@ export function isOverlayShape(value: unknown): value is OverlayShape {
           isRecord(value.props.labelTextShapeIdsByCurveId) &&
           Object.values(value.props.labelTextShapeIdsByCurveId).every((id) => typeof id === "string")
         ));
+    case "graph3dShape":
+      return hasBox(value.props) &&
+        value.props.w > 0 &&
+        value.props.h > 0 &&
+        isGraph3DSpec(value.props.spec) &&
+        (value.props.previewAssetId === undefined || typeof value.props.previewAssetId === "string") &&
+        (value.props.previewSourceHash === undefined || typeof value.props.previewSourceHash === "string");
     case "tableShape":
       return hasBox(value.props) && isTableSpec(value.props.table);
+    case "chartShape":
+      return hasBox(value.props) &&
+        isChartSpec(value.props.spec) &&
+        isChartData(value.props.dataSnapshot) &&
+        (value.props.sourceTableShapeId === undefined || typeof value.props.sourceTableShapeId === "string");
     default:
       return false;
   }
@@ -220,7 +230,7 @@ export function isOverlayAsset(value: unknown): value is OverlayAsset {
     isFiniteNumber(value.props.w) &&
     isFiniteNumber(value.props.h) &&
     typeof value.props.name === "string" &&
-    value.props.isAnimated === false &&
+    typeof value.props.isAnimated === "boolean" &&
     (typeof value.props.mimeType === "string" || value.props.mimeType === null) &&
     typeof value.props.src === "string" &&
     isFiniteNumber(value.props.fileSize) &&
@@ -259,9 +269,86 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-export function isOverlayRichTextBlock(value: unknown): value is OverlayRichTextBlock {
+/**
+ * One block of an overlay text shape. Structurally identical to the body's `RichBlock`, so a
+ * paragraph copied out of the body is a valid shape block and vice versa — including the `id`
+ * every body block carries (the Tiptap round trip keys block identity on it, and a list item
+ * without one cannot be tracked across an edit).
+ */
+export function isOverlayTextBlock(value: unknown): value is OverlayTextBlock {
   if (
     !isRecord(value) ||
+    !isBlockId(value.id) ||
+    !isOptionalBlockSpaceAfterPx(value.spaceAfterPx)
+  ) {
+    return false;
+  }
+
+  if (value.type === "list") {
+    return isOverlayTextListBody(value);
+  }
+
+  // A rule has nothing else to check; a quote is checked through what it holds, and a code block
+  // holds one run of source with an optional language and theme.
+  if (value.type === "divider") {
+    return true;
+  }
+
+  if (value.type === "quote") {
+    return Array.isArray(value.blocks) && value.blocks.every((child) => (
+      isRecord(child) && child.type !== "quote" && isOverlayTextBlock(child)
+    ));
+  }
+
+  if (value.type === "codeBlock") {
+    // `language` and `theme` are colour hints, and every renderer re-reads them at draw time, so a
+    // value nothing recognises is harmless there. It is not harmless *here*: this predicate is
+    // what the persisted schema delegates to, and letting an arbitrary object through would put a
+    // key in the file that the canonical form does not name.
+    return Array.isArray(value.children) &&
+      value.children.every(isInlineNode) &&
+      (value.language === undefined || typeof value.language === "string") &&
+      (value.theme === undefined || typeof value.theme === "string");
+  }
+
+  return isOverlayTextProseBody(value);
+}
+
+function isOverlayTextListBody(value: Record<string, unknown>): boolean {
+  return (value.listType === "bullet" || value.listType === "ordered") &&
+    (value.start === undefined || isPositiveInteger(value.start)) &&
+    (value.markerStyle === undefined || value.markerStyle === "decimal" || value.markerStyle === "paren") &&
+    Array.isArray(value.items) &&
+    value.items.every(isOverlayTextListItem);
+}
+
+function isOverlayTextListItem(value: unknown): boolean {
+  return isRecord(value) &&
+    value.type === "listItem" &&
+    isBlockId(value.id) &&
+    Array.isArray(value.children) &&
+    value.children.every(isInlineNode) &&
+    (value.align === undefined || isTextAlign(value.align)) &&
+    (value.continuations === undefined || (
+      Array.isArray(value.continuations) &&
+      value.continuations.every(isOverlayTextContinuation)
+    )) &&
+    (value.nested === undefined || (
+      Array.isArray(value.nested) &&
+      value.nested.every((nested) => isRecord(nested) && nested.type === "list" && isOverlayTextBlock(nested))
+    ));
+}
+
+/** A block that stays under the same list marker: prose, or the one block with no prose at all. */
+function isOverlayTextContinuation(value: unknown): boolean {
+  if (!isRecord(value) || !isBlockId(value.id) || !isOptionalBlockSpaceAfterPx(value.spaceAfterPx)) {
+    return false;
+  }
+  return value.type === "divider" || isOverlayTextProseBody(value);
+}
+
+function isOverlayTextProseBody(value: Record<string, unknown>): boolean {
+  if (
     (value.type !== "paragraph" && value.type !== "heading") ||
     !Array.isArray(value.children) ||
     !value.children.every(isInlineNode) ||
@@ -275,6 +362,20 @@ export function isOverlayRichTextBlock(value: unknown): value is OverlayRichText
     value.level === 1 ||
     value.level === 2 ||
     value.level === 3;
+}
+
+function isBlockId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/**
+ * As lenient as the body's own schema, which takes any number and normalizes it
+ * (`normalizeBlockSpaceAfterPx`) rather than refusing the block. This is a gate, not a
+ * transformer — a block copied out of the body carrying `12.5` here must not make the whole
+ * document unopenable; `canonicalizeOverlayTextBlock` rounds and clamps it on the way in.
+ */
+function isOptionalBlockSpaceAfterPx(value: unknown): boolean {
+  return value === undefined || isFiniteNumber(value);
 }
 
 function isLineHeight(value: unknown): boolean {
@@ -437,6 +538,55 @@ function isGraphFillRegion(value: unknown): boolean {
     (value.color === undefined || typeof value.color === "string") &&
     (value.pattern === undefined || isGraphFillPattern(value.pattern)) &&
     (value.opacity === undefined || (isFiniteNumber(value.opacity) && value.opacity >= 0 && value.opacity <= 1));
+}
+
+function isChartSpec(value: unknown): boolean {
+  return isRecord(value) &&
+    value.version === 1 &&
+    (value.kind === "bar" || value.kind === "line" || value.kind === "pie" || value.kind === "scatter") &&
+    (value.orientation === "columns" || value.orientation === "rows") &&
+    typeof value.headerRow === "boolean" &&
+    typeof value.labelColumn === "boolean" &&
+    typeof value.legend === "boolean" &&
+    (value.title === undefined || typeof value.title === "string") &&
+    isRecord(value.seriesColors) &&
+    !Array.isArray(value.seriesColors) &&
+    Object.values(value.seriesColors).every((color) => typeof color === "string");
+}
+
+/**
+ * The three arrays are indexed together by every renderer, so their lengths are part of the shape's
+ * contract rather than a renderer concern. `deriveChartData` always emits them in step; a snapshot
+ * that is not costs the reader `labels[i]` for a value it is drawing, which surfaces as an undefined
+ * category or a silently truncated series instead of a rejected document.
+ */
+function isChartData(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.labels) ||
+    !value.labels.every((label) => typeof label === "string") ||
+    !Array.isArray(value.series) ||
+    !value.series.every(isChartSeries) ||
+    (value.xValues !== undefined && !isChartValueList(value.xValues))
+  ) {
+    return false;
+  }
+
+  const length = value.labels.length;
+  return value.series.every((series) => (series as { values: unknown[] }).values.length === length) &&
+    (value.xValues === undefined || (value.xValues as unknown[]).length === length);
+}
+
+function isChartSeries(value: unknown): boolean {
+  return isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    isChartValueList(value.values);
+}
+
+/** A gap is `null`, never `NaN`: a chart draws a hole where a cell held no number. */
+function isChartValueList(value: unknown): boolean {
+  return Array.isArray(value) && value.every((entry) => entry === null || isFiniteNumber(entry));
 }
 
 function isTableSpec(value: unknown): boolean {

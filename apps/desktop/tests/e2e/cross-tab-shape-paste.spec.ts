@@ -68,8 +68,8 @@ function shapes(): OverlayShape[] {
       y: 200,
       props: {
         w: 180,
-        richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "コピーされる文字" }] }] },
-        autoSize: true,
+        h: 16,
+        blocks: [{ type: "paragraph", id: "cross_tab_shape_paste_spec_51", children: [{ type: "text", text: "コピーされる文字" }] }],
         color: "#111111",
         size: "m",
       },

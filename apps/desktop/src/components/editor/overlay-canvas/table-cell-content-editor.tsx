@@ -14,10 +14,13 @@ import {
 } from "@/features/rendering/adapters/react";
 import { pasteAsSingleBlockInlineContent } from "@/components/editor/text-flow/inline-block-paste";
 import { createRichTextEngineExtensions } from "@/components/tiptap/rich-text-engine";
+import { getTableCellDisplayNodes, getTableCellFormulaResult } from "@/features/document";
 import type {
   InlineNode,
   OverlayShapeId,
+  SigmaTableCell,
   SigmaTableCellContent,
+  SigmaTableSpec,
 } from "@/features/document";
 import {
   inlineNodesToTiptapDoc,
@@ -34,9 +37,12 @@ import {
 
 export function OverlayTableCellContentEditor({
   shapeId,
+  cell,
   cellId,
   content,
   editing,
+  showFormulaSource,
+  table,
   rowIndex,
   columnIndex,
   colSpan,
@@ -46,14 +52,21 @@ export function OverlayTableCellContentEditor({
   onRegisterEditor,
 }: {
   shapeId: OverlayShapeId;
+  cell: SigmaTableCell | undefined;
   cellId: string;
   content: SigmaTableCellContent;
   editing: boolean;
+  /**
+   * Show the formula as written rather than its value. True only for the cell the caret is in, so
+   * the author edits `=SUM(A1:A2)` while every other cell keeps showing what it evaluates to.
+   */
+  showFormulaSource: boolean;
+  table: SigmaTableSpec;
   rowIndex: number;
   columnIndex: number;
   /** Only a trend cell reads it: its arrow stretches across the columns the cell spans. */
   colSpan: number;
-  onFocus: (editor: TiptapEditor, shapeId: OverlayShapeId) => void;
+  onFocus: (editor: TiptapEditor, shapeId: OverlayShapeId, cellId: string) => void;
   onChange: (cellId: string, contentId: string, nextContent: SigmaTableCellContent) => void;
   onNavigate: (rowIndex: number, columnIndex: number, direction: TableCellNavigationDirection) => boolean;
   onRegisterEditor: (cellId: string, contentId: string, editor: TiptapEditor) => () => void;
@@ -65,8 +78,13 @@ export function OverlayTableCellContentEditor({
     return <OverlayTableTrendCell colSpan={colSpan} content={content} />;
   }
 
-  if (!editing) {
-    return <OverlayTableParagraphStaticView content={content} />;
+  // A formula cell shows its value until the caret is actually in it. Swapping the *component*
+  // rather than the editor's content is what keeps the value out of the document: a Tiptap editor
+  // holding the evaluated text would fire `onUpdate` and write `6` over `=SUM(A1:A2)`.
+  const showsValue = !editing ||
+    (!showFormulaSource && getTableCellFormulaResult(table, cell, content) !== null);
+  if (showsValue) {
+    return <OverlayTableParagraphStaticView cell={cell} content={content} table={table} />;
   }
 
   return (
@@ -86,9 +104,13 @@ export function OverlayTableCellContentEditor({
 }
 
 function OverlayTableParagraphStaticView({
+  cell,
   content,
+  table,
 }: {
+  cell: SigmaTableCell | undefined;
   content: Extract<SigmaTableCellContent, { type: "paragraph" }>;
+  table: SigmaTableSpec;
 }) {
   return (
     <div className="overlay-table-paragraph" style={{ pointerEvents: "none" }}>
@@ -100,7 +122,7 @@ function OverlayTableParagraphStaticView({
           sized flex item, so the text moved the moment the cell took focus.
         */}
         <p style={{ textAlign: content.align ?? undefined }}>
-          {renderSigmaInlineNodesPreview(content.children)}
+          {renderSigmaInlineNodesPreview(getTableCellDisplayNodes(table, cell, content))}
         </p>
       </div>
     </div>
@@ -125,7 +147,7 @@ function OverlayTableParagraphEditor({
   editing: boolean;
   rowIndex: number;
   columnIndex: number;
-  onFocus: (editor: TiptapEditor, shapeId: OverlayShapeId) => void;
+  onFocus: (editor: TiptapEditor, shapeId: OverlayShapeId, cellId: string) => void;
   onChange: (cellId: string, contentId: string, nextContent: SigmaTableCellContent) => void;
   onNavigate: (rowIndex: number, columnIndex: number, direction: TableCellNavigationDirection) => boolean;
   onRegisterEditor: (cellId: string, contentId: string, editor: TiptapEditor) => () => void;
@@ -153,7 +175,7 @@ function OverlayTableParagraphEditor({
       // 保存で 2 行目以降が消えるので、貼るものを畳んでこのブロックの中へ入れる。
       handlePaste: (view, event, slice) => pasteAsSingleBlockInlineContent(view, event, slice),
     },
-    onFocus: ({ editor: activeEditor }) => onFocus(activeEditor, shapeId),
+    onFocus: ({ editor: activeEditor }) => onFocus(activeEditor, shapeId, cellId),
     onUpdate: ({ editor: activeEditor }) => {
       const json = activeEditor.getJSON() as TiptapDoc;
       contentRef.current = json;
@@ -230,6 +252,6 @@ function OverlayTableParagraphEditor({
   );
 }
 
-function renderSigmaInlineNodesPreview(children: InlineNode[]): ReactNode {
+function renderSigmaInlineNodesPreview(children: readonly InlineNode[]): ReactNode {
   return <InlineContent nodes={children} keyPrefix="sigma-inline-preview" />;
 }

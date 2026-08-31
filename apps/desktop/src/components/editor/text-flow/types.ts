@@ -42,6 +42,18 @@ export interface TextFlowChangeContext {
   crossEditor?: boolean;
 }
 
+/** 本文置換をホストへ渡すときの、編集内容ではなく**描き方**の指定。 */
+export interface TextFlowReplaceOptions {
+  /**
+   * この置換を transition に載せず、同じタスクの中で描き切る。
+   *
+   * 既定 (遅延) は「打鍵はすぐ描き、ページ割りは 1 フレーム後に追いつく」ためのもので、
+   * 普通の段落ではそれで正しい。ページを跨いで分割されたブロック (箱など) は見た目そのものが
+   * ページ割りの答えなので、内容だけ先に描くとどちらでもない状態が 1〜2 フレーム見える。
+   */
+  immediateRender?: boolean;
+}
+
 export interface TextFlowBoxCommandRequest {
   styleId: string;
   commandName: string;
@@ -51,6 +63,24 @@ export interface TextFlowBoxCommandRequest {
 
 export interface TextFlowProblemCommandRequest {
   triggerBlockId: string;
+}
+
+/**
+ * `/` から本文ブロック (引用・コード・区切り線) を作る要求。
+ *
+ * 中身の書き換えは ProseMirror のコマンドがやるので、ホストの仕事は**その後始末**だけ:
+ * 引用のような入れ物はランの先頭ブロック id を変え、エディタごと remount されるため、
+ * ツールバーのブロックボタンと同じ規則で焦点を戻し直す必要がある。ホストが受け持たない
+ * (埋め込みなど) ときは `false` を返せば、エディタが自分でコマンドだけ実行する。
+ */
+export interface TextFlowBodyBlockCommandRequest {
+  kind: "quote" | "codeBlock" | "divider";
+  triggerBlockId: string;
+}
+
+export interface TextFlowHeadingCommandRequest {
+  triggerBlockId: string;
+  level: 1 | 2 | 3;
 }
 
 export interface TextFlowMaterialInsertRequest {
@@ -79,6 +109,8 @@ export interface TextFlowEditorProps {
   paginationMarkerLayouts?: Record<string, import("@/components/tiptap/page-break-gap-extension").PageBreakMarkerLayout>;
   columnFlowBlockLayouts?: Record<string, TextFlowColumnBlockLayout>;
   boxFragmentSourceLayouts?: Record<string, TextFlowBoxFragmentSourceLayout>;
+  /** Display-only heading labels keyed by SigmaDoc heading id. */
+  headingNumbers?: Readonly<Record<string, string>>;
   /** Continuation preview's logical source box; all replicas share one selection range. */
   boxFragmentReplicaId?: string;
   /** Which continuation fragment this replica shows (the source is 0). */
@@ -110,6 +142,9 @@ export interface TextFlowEditorProps {
   onBoxCommand?: (request: TextFlowBoxCommandRequest) => boolean;
   enableProblemCommands?: boolean;
   onProblemCommand?: (request: TextFlowProblemCommandRequest) => boolean;
+  onBodyBlockCommand?: (request: TextFlowBodyBlockCommandRequest) => boolean;
+  enableHeadingCommands?: boolean;
+  onHeadingCommand?: (request: TextFlowHeadingCommandRequest) => boolean;
   formatTarget?: string;
   /** Optional host-owned change markers; absent means no diff decoration. */
   changeDecorationState?: import("@/components/tiptap/change-decoration").TextFlowChangeDecorationState;

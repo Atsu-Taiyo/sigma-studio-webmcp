@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterTextFlowCommandDefinitions,
   parseTextFlowCommandTrigger,
+  textFlowCommandNameMatchRank,
   type TextFlowCommandDefinition,
 } from "./command-query";
 
@@ -102,6 +103,19 @@ describe("filterTextFlowCommandDefinitions", () => {
       query: "wide",
       limit: 6,
     }).map(({ id }) => id)).toEqual(["fullwidth"]);
+  });
+
+  it("ranks a name that starts with the query above one matched by an alias", () => {
+    // `/引用` は引用ブロック (名前そのもの) が先、「引用」を別名に持つ箱 (leftbar) が後。
+    expect(textFlowCommandNameMatchRank("引用", "引用")).toBe(0);
+    expect(textFlowCommandNameMatchRank("leftbar", "引用")).toBe(1);
+    // 前方一致であって完全一致ではない (打ちかけでも先頭に来る)。
+    expect(textFlowCommandNameMatchRank("fancybox", "fan")).toBe(0);
+    expect(textFlowCommandNameMatchRank("tcolorbox", "box")).toBe(1);
+    // 絞り込みと同じ正規化 (全角・大小文字・前後の空白) で比べる。
+    expect(textFlowCommandNameMatchRank("ＦＵＬＬ", "  full  ")).toBe(0);
+    // 空のクエリでは順番を動かさない (全部同じ順位)。
+    expect(textFlowCommandNameMatchRank("leftbar", "")).toBe(0);
   });
 
   it("trims the normalized query before matching", () => {

@@ -12,7 +12,6 @@ export {
   getTextShapeLineHeightPx,
   getTextShapeRenderedFontSizePx,
   getTextShapeRenderedLineHeightPx,
-  getTextShapeScale,
 } from "@/features/drawing/shape-bounds";
 export { hitTestShape } from "@/features/drawing/shape-hit-test";
 export {

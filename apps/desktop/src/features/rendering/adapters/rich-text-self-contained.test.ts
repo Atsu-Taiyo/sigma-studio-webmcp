@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -6,9 +8,14 @@ import { describe, expect, it } from "vitest";
 import type { RichTextBoxDecoration } from "@/features/rendering/core";
 
 import {
+  OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES,
+  OVERLAY_TEXT_CONTENT_SELF_CONTAINED_STYLE,
+  overlayTextBlockSelfContainedStyles,
+} from "@/components/editor/text-flow/OverlayTextBlocksView";
+
+import {
   boxedSelfContainedStyle,
   MATH_FRAME_SELF_CONTAINED_STYLE,
-  OVERLAY_BLOCK_SELF_CONTAINED_STYLE,
   underlineRunStyle,
   type RichTextDomStyle,
 } from "./rich-text-dom";
@@ -32,11 +39,7 @@ const documentSurfaceCss = readFileSync(cssPath, "utf8");
  * Differences between a self-contained style and the CSS branch it mirrors. Every entry has to be
  * a real difference (see the staleness test) — an unexplained one is drift.
  */
-const INTENTIONAL_DIVERGENCES: Record<string, string> = {
-  "block.margin":
-    "SVG のブロックリセット。`.overlay-text-shape .ProseMirror p` は margin:0 だが見出しには対応する規則が無く、"
-    + "エクスポート済み図版のレイアウトを黙って変えないため 0 のまま据え置いている",
-};
+const INTENTIONAL_DIVERGENCES: Record<string, string> = {};
 
 /**
  * The boxed frame reads its custom properties with a fallback instead of re-declaring them.
@@ -56,6 +59,38 @@ function applyCustomPropertyFallbacks(declarations: RichTextDomStyle): RichTextD
     });
   }
   return withFallbacks;
+}
+
+/** Every declaration the stylesheet applies to `selector`, in source order. */
+function mergedRuleDeclarations(selector: string): RichTextDomStyle {
+  const withoutComments = documentSurfaceCss.replace(/\/\*[\s\S]*?\*\//g, "");
+  const merged: RichTextDomStyle = {};
+  let index = 0;
+  while (index < withoutComments.length) {
+    const open = withoutComments.indexOf("{", index);
+    if (open < 0) {
+      break;
+    }
+    const close = findBlockEnd(withoutComments, open);
+    const prelude = withoutComments.slice(index, open).trim();
+    const selectors = prelude.split(",").map((entry) => entry.trim().replace(/\s+/g, " "));
+    if (!prelude.startsWith("@") && selectors.includes(selector)) {
+      Object.assign(merged, parseDeclarations(withoutComments.slice(open + 1, close)));
+    }
+    index = close + 1;
+  }
+  if (Object.keys(merged).length === 0) {
+    throw new Error(`no rule for "${selector}"`);
+  }
+  return merged;
+}
+
+/** React inline styles as the CSS property names the stylesheet uses. */
+function toCssDeclarations(style: Record<string, unknown> | CSSProperties | undefined): RichTextDomStyle {
+  return Object.fromEntries(Object.entries((style ?? {}) as Record<string, unknown>).map(([property, value]) => [
+    property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`),
+    String(value),
+  ]));
 }
 
 /** Declarations of the top-level rule whose selector list contains `selector`, in source order. */
@@ -240,15 +275,71 @@ describe("the self-contained margins mirror the app rules", () => {
       .toEqual(ruleDeclarations(documentSurfaceCss, ".overlay-text-shape .inline-math-node"));
   });
 
-  it("keeps the block reset registered as a deliberate difference", () => {
-    // Paragraphs match the app rule; headings have none, so the zero margin is a divergence.
-    expect(ruleDeclarations(documentSurfaceCss, ".overlay-text-shape .ProseMirror p").margin).toBe("0");
-    expect(OVERLAY_BLOCK_SELF_CONTAINED_STYLE).toEqual({ margin: "0" });
-    expect(INTENTIONAL_DIVERGENCES["block.margin"]).toBeDefined();
-    expect(() => ruleDeclarations(documentSurfaceCss, ".overlay-text-shape h1")).toThrow();
+  /**
+   * A shape's block typography is now a real rule rather than an inline-only reset, so the export
+   * and the app can be held to the same values instead of the export being allowed to differ.
+   */
+  it("matches the shape's block rules", () => {
+    // Everything the stylesheet applies to that element, not just the first rule that names it:
+    // the list geometry is deliberately a second rule on top of the shared margin reset.
+    const paragraphRules = mergedRuleDeclarations(".overlay-text-shape .overlay-text-shape-content p");
+    const headingRules = mergedRuleDeclarations(".overlay-text-shape .overlay-text-shape-content h1");
+    const listRules = mergedRuleDeclarations(".overlay-text-shape .overlay-text-shape-content ul");
+
+    expect(toCssDeclarations(OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES.paragraph)).toEqual(paragraphRules);
+    expect(toCssDeclarations(OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES.heading)).toEqual(headingRules);
+    expect(toCssDeclarations(OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES.list)).toEqual(listRules);
+  });
+
+  /**
+   * The three blocks a shape gained. A `blockquote`, a `pre` and an `hr` carry heavier UA defaults
+   * than a paragraph does — a 40px indent, a monospace size of its own, an inset rule — so a shape
+   * holding one would come out of the SVG export a different shape than the one on screen unless
+   * every declaration travels with it.
+   */
+  it("carries the shape's quote, code and divider typography inline", () => {
+    expect(toCssDeclarations(OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES.quote))
+      .toEqual(mergedRuleDeclarations(".overlay-text-shape .overlay-text-shape-content blockquote"));
+    expect(toCssDeclarations(OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES.code))
+      .toEqual(mergedRuleDeclarations(".overlay-text-shape .overlay-text-shape-content pre"));
+    expect(toCssDeclarations(OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES.divider))
+      .toEqual(mergedRuleDeclarations(".overlay-text-shape .overlay-text-shape-content hr"));
+  });
+
+  /**
+   * The theme is a second rule keyed on an attribute, and an inline style beats it — so unless the
+   * inline styles carry the choice too, a dark code block draws dark on the canvas and light in
+   * print, in the material thumbnail and in the exported SVG.
+   */
+  it("carries the dark code theme inline as well as the light one", () => {
+    const dark = overlayTextBlockSelfContainedStyles({
+      type: "codeBlock",
+      id: "code_dark",
+      theme: "dark",
+      children: [],
+    });
+
+    expect(toCssDeclarations(dark.code)).toEqual({
+      ...toCssDeclarations(OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES.code),
+      ...mergedRuleDeclarations('.overlay-text-shape .overlay-text-shape-content pre[data-code-theme="dark"]'),
+    });
+    // A light block keeps the shared map, so the two surfaces agree there too.
+    expect(overlayTextBlockSelfContainedStyles({ type: "codeBlock", id: "code_light", children: [] }))
+      .toBe(OVERLAY_TEXT_BLOCK_SELF_CONTAINED_STYLES);
+  });
+
+  it("matches the shape's content-box wrapping rules", () => {
+    const contentRule = mergedRuleDeclarations(".overlay-text-shape .overlay-text-shape-content");
+
+    expect(contentRule["overflow-wrap"]).toBe("anywhere");
+    expect(contentRule["white-space"]).toBe("pre-wrap");
+    expect(toCssDeclarations(OVERLAY_TEXT_CONTENT_SELF_CONTAINED_STYLE)).toEqual({
+      "overflow-wrap": contentRule["overflow-wrap"],
+      "white-space": contentRule["white-space"],
+    });
   });
 
   it("keeps the divergence list free of stale entries", () => {
-    expect(Object.keys(INTENTIONAL_DIVERGENCES)).toEqual(["block.margin"]);
+    expect(Object.keys(INTENTIONAL_DIVERGENCES)).toEqual([]);
   });
 });

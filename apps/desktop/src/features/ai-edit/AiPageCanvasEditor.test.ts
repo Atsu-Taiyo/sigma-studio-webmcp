@@ -90,9 +90,7 @@ describe("resolveAiEditGhostShapes", () => {
       props: {
         w: 40,
         h: 16,
-        scale: 1,
-        richText: { blocks: [] },
-        autoSize: true,
+        blocks: [],
         color: "#111111",
         size: "m",
       },

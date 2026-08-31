@@ -86,6 +86,7 @@ describe("getOverlayActionTargetShapeIds", () => {
     expect(getOverlayActionTargetShapeIds({ type: "editText", shapeId: "s1" })).toEqual(["s1"]);
     expect(getOverlayActionTargetShapeIds({ type: "editImageCrop", shapeId: "s1" })).toEqual(["s1"]);
     expect(getOverlayActionTargetShapeIds({ type: "editGraph", shapeId: "s1" })).toEqual(["s1"]);
+    expect(getOverlayActionTargetShapeIds({ type: "editGraph3D", shapeId: "s1" })).toEqual(["s1"]);
     expect(getOverlayActionTargetShapeIds({ type: "editTable", shapeId: "s1" })).toEqual(["s1"]);
     expect(getOverlayActionTargetShapeIds({ type: "pickOrigin", shapeId: "s1" })).toEqual(["s1"]);
     expect(getOverlayActionTargetShapeIds({ type: "pickGraphFill", shapeId: "s1" })).toEqual(["s1"]);

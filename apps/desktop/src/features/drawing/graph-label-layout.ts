@@ -9,7 +9,7 @@ import type {
   OverlayGraphAxisLabelKey,
   OverlayGraphShape,
   OverlayPoint,
-  OverlayRichTextDocument,
+  OverlayTextBlock,
   OverlayShape,
   OverlayShapeId,
   OverlayTextShape,
@@ -41,6 +41,7 @@ export interface GraphLabelLayoutPort {
     variableName: GraphExpressionVariableName,
   ): number;
   createInlineMathId(): string;
+  createBlockId(): string;
 }
 
 interface GraphNumericRange {
@@ -322,9 +323,7 @@ export function createGraphFormulaLabelShapeEntries(
       props: {
         w: entry.width,
         h: entry.height,
-        scale: 1,
-        richText: graphMathLabelRichText(entry.tex, port),
-        autoSize: true,
+        blocks: graphMathLabelBlocks(entry.tex, port),
         color: entry.color,
         fontSize: GRAPH_FORMULA_LABEL_FONT_SIZE_PT,
         size: "m",
@@ -976,12 +975,11 @@ function createGraphOwnedTextLabelShape(
       ry,
     },
     props: {
+      // ラベルは生成時に幅が確定する (`entry.width` は数式の実測幅)。高さは本文と同じ
+      // DOM 計測が書き戻すまでの下限として、同じ実測値を初期キャッシュに置く。
       w: entry.width,
       h: entry.height,
-      scale: 1,
-      richText: graphMathLabelRichText(entry.text, port, entry.align),
-      // 本文オーバーレイテキストと同じ計測系 (CSS max-content + 編集時 DOM 計測) に任せる。
-      autoSize: true,
+      blocks: graphMathLabelBlocks(entry.text, port, entry.align),
       color: entry.color ?? GRAPH_AXIS_LABEL_COLOR,
       fontSize: entry.fontSize ?? GRAPH_COORDINATE_LABEL_FONT_SIZE_PT,
       size: "s",
@@ -989,28 +987,27 @@ function createGraphOwnedTextLabelShape(
   };
 }
 
-function graphMathLabelRichText(
+function graphMathLabelBlocks(
   tex: string,
   port: GraphLabelLayoutPort,
   align?: "left" | "center" | "right",
-): OverlayRichTextDocument {
-  return {
-    blocks: [
-      {
-        type: "paragraph",
-        ...(align ? { align } : {}),
-        children: [
-          {
-            type: "mathInline",
-            id: port.createInlineMathId(),
-            tex,
-            display: "inline",
-            semanticRole: "expression",
-          },
-        ],
-      },
-    ],
-  };
+): OverlayTextBlock[] {
+  return [
+    {
+      type: "paragraph",
+      id: port.createBlockId(),
+      ...(align ? { align } : {}),
+      children: [
+        {
+          type: "mathInline",
+          id: port.createInlineMathId(),
+          tex,
+          display: "inline",
+          semanticRole: "expression",
+        },
+      ],
+    },
+  ];
 }
 
 function intersectGraphRanges(

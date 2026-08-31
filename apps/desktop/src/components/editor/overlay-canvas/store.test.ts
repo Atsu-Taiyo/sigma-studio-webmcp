@@ -9,7 +9,7 @@ import { isValidOverlaySnapshot, normalizeOverlaySnapshot, removeShapes } from "
 import type { OverlaySnapshot } from "./types";
 
 describe("overlay canvas store", () => {
-  it("keeps legacy text shapes by migrating root inline math before validation", () => {
+  it("drops a text shape whose content is not in the canonical block form", () => {
     const snapshot = {
       version: 1,
       shapes: [{
@@ -26,7 +26,6 @@ describe("overlay canvas store", () => {
               { type: "mathInline", attrs: { id: "legacy_math", tex: "x+1" } },
             ],
           },
-          autoSize: true,
           color: "black",
           size: "m",
         },
@@ -34,25 +33,46 @@ describe("overlay canvas store", () => {
       assets: {},
     };
 
+    // Shapes carry the body's blocks now; nothing translates an older representation on the way
+    // in, so a shape that still holds one simply does not survive validation.
     expect(isValidOverlaySnapshot(snapshot)).toBe(false);
     const normalized = normalizeOverlaySnapshot(snapshot);
     expect(normalizeOverlaySnapshot(snapshot)).toBe(normalized);
-    expect(normalized.shapes).toHaveLength(1);
-    expect(normalized.shapes[0].type === "text" ? normalized.shapes[0].props.richText.blocks : []).toEqual([
-      {
-        type: "paragraph",
-        children: [
-          { type: "text", text: "式" },
-          {
-            type: "mathInline",
-            id: "legacy_math",
-            tex: "x+1",
-            display: "inline",
-            semanticRole: "expression",
-          },
-        ],
-      },
-    ]);
+    expect(normalized.shapes).toEqual([]);
+  });
+
+  it("keeps a text shape whose content is a canonical block list", () => {
+    const snapshot = {
+      version: 1,
+      shapes: [{
+        id: "list_text",
+        type: "text",
+        x: 10,
+        y: 20,
+        props: {
+          w: 120,
+          h: 32,
+          blocks: [{
+            type: "list",
+            id: "list_1",
+            listType: "bullet",
+            items: [
+              { type: "listItem", id: "li_1", children: [{ type: "text", text: "一" }] },
+              { type: "listItem", id: "li_2", children: [{ type: "text", text: "二" }] },
+            ],
+          }],
+          color: "black",
+          size: "m",
+        },
+      }],
+      assets: {},
+    };
+
+    expect(isValidOverlaySnapshot(snapshot)).toBe(true);
+    const normalized = normalizeOverlaySnapshot(snapshot);
+    expect(normalized.shapes[0].type === "text" ? normalized.shapes[0].props.blocks : []).toEqual(
+      snapshot.shapes[0].props.blocks,
+    );
   });
 
   it("migrates legacy graph outer bounds to plot bounds without moving anchored labels", () => {
@@ -80,8 +100,7 @@ describe("overlay canvas store", () => {
       props: {
         w: 20,
         h: 16,
-        richText: { blocks: [{ type: "paragraph" as const, children: [{ type: "text" as const, text: "x" }] }] },
-        autoSize: false,
+        blocks: [{ type: "paragraph" as const, id: "p_1", children: [{ type: "text" as const, text: "x" }] }],
         color: "black",
         size: "s" as const,
       },
@@ -257,8 +276,7 @@ describe("overlay canvas store", () => {
           props: {
             w: 24,
             h: 22,
-            richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "x" }] }] },
-            autoSize: false,
+            blocks: [{ type: "paragraph", id: "p_axis", children: [{ type: "text", text: "x" }] }],
             color: "black",
             size: "s",
           },
@@ -272,8 +290,7 @@ describe("overlay canvas store", () => {
           props: {
             w: 24,
             h: 22,
-            richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "A" }] }] },
-            autoSize: false,
+            blocks: [{ type: "paragraph", id: "p_2", children: [{ type: "text", text: "A" }] }],
             color: "black",
             size: "s",
           },
@@ -287,8 +304,7 @@ describe("overlay canvas store", () => {
           props: {
             w: 24,
             h: 22,
-            richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "F" }] }] },
-            autoSize: false,
+            blocks: [{ type: "paragraph", id: "p_3", children: [{ type: "text", text: "F" }] }],
             color: "black",
             size: "s",
           },
@@ -322,8 +338,7 @@ describe("overlay canvas store", () => {
           props: {
             w: 24,
             h: 22,
-            richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "x" }] }] },
-            autoSize: false,
+            blocks: [{ type: "paragraph", id: "p_axis", children: [{ type: "text", text: "x" }] }],
             color: "black",
             size: "s",
           },
@@ -546,9 +561,7 @@ describe("overlay canvas store", () => {
               baseEnd: { x: 82, y: 58 },
               tip: { x: 72, y: 80 },
             },
-            richText: {
-              blocks: [{ type: "paragraph", children: [{ type: "text", text: "説明" }] }],
-            },
+            blocks: [{ type: "paragraph", id: "p_callout", children: [{ type: "text", text: "説明" }] }],
             color: "#111111",
             size: "m",
             dash: "solid",
@@ -627,7 +640,7 @@ describe("overlay canvas store", () => {
             baseEnd: { x: 82, y: 58 },
             tip: { x: 72, y: 80 },
           },
-          richText: { blocks: [{ type: "paragraph", children: [] }] },
+          blocks: [{ type: "paragraph", id: "p_4", children: [] }],
           color: "#111111",
           size: "m",
         },

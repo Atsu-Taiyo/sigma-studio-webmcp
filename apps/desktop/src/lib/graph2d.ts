@@ -11,6 +11,8 @@ import type {
 } from "@/features/document";
 import {
   DEFAULT_GRAPH_PLOT_BOX,
+  evaluateMathEquation,
+  evaluateMathExpression,
   getGraphPlotBox,
 } from "@/features/drawing";
 import type { GraphPlotBox } from "@/features/drawing";
@@ -802,24 +804,11 @@ export function evaluateExpression(expr: string, value: number, variableName: Gr
 }
 
 export function evaluateImplicitExpression(expr: string, x: number, y: number): number {
-  const equation = splitImplicitEquationExpression(expr);
-  if (equation) {
-    return evaluateExpressionWithVariables(equation.left, { x, y }) -
-      evaluateExpressionWithVariables(equation.right, { x, y });
-  }
-
-  return evaluateExpressionWithVariables(expr, { x, y });
+  return evaluateMathEquation(expr, { x, y });
 }
 
 function evaluateExpressionWithVariables(expr: string, variables: GraphExpressionVariables): number {
-  const parser = new ExpressionParser(expr, variables);
-  const parsed = parser.parse();
-
-  if (!Number.isFinite(parsed)) {
-    throw new Error("Expression produced a non-finite value");
-  }
-
-  return parsed;
+  return evaluateMathExpression(expr, variables);
 }
 
 /**
@@ -1948,17 +1937,6 @@ function roundDashValue(value: number): number {
   return Number(value.toFixed(2));
 }
 
-function splitImplicitEquationExpression(expr: string): { left: string; right: string } | null {
-  const parts = expr.split("=");
-  if (parts.length !== 2) {
-    return null;
-  }
-
-  const left = parts[0].trim();
-  const right = parts[1].trim();
-  return left && right ? { left, right } : null;
-}
-
 function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -1969,212 +1947,4 @@ function clampInteger(value: number, min: number, max: number): number {
   }
 
   return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-class ExpressionParser {
-  private index = 0;
-
-  constructor(
-    private readonly input: string,
-    private readonly variables: GraphExpressionVariables,
-  ) {}
-
-  parse(): number {
-    const value = this.parseAdditive();
-    this.skipWhitespace();
-    if (this.index !== this.input.length) {
-      throw new Error(`Unexpected token at ${this.index}`);
-    }
-    return value;
-  }
-
-  private parseAdditive(): number {
-    let value = this.parseMultiplicative();
-
-    while (true) {
-      this.skipWhitespace();
-      if (this.consume("+")) {
-        value += this.parseMultiplicative();
-      } else if (this.consume("-")) {
-        value -= this.parseMultiplicative();
-      } else {
-        return value;
-      }
-    }
-  }
-
-  private parseMultiplicative(): number {
-    let value = this.parseUnary();
-
-    while (true) {
-      this.skipWhitespace();
-      if (this.consume("*")) {
-        value *= this.parseUnary();
-      } else if (this.consume("/")) {
-        value /= this.parseUnary();
-      } else if (this.startsImplicitFactor()) {
-        value *= this.parseUnaryWithoutSign();
-      } else {
-        return value;
-      }
-    }
-  }
-
-  /**
-   * 単項の符号はべき乗より **緩く** 結合する: `-x^2` は `-(x^2)`。
-   * 指数側は `parseUnary` を呼ぶので `2^-3` は従来どおり書けるし、
-   * そこから `parsePower` に戻ることで右結合 (`2^3^2` = 512) も保たれる。
-   * TeX 側のパーサ (`graph-tex.ts`) は元からこの結合順で、こちらが食い違っていた。
-   */
-  private parseUnary(): number {
-    this.skipWhitespace();
-    if (this.consume("+")) {
-      return this.parseUnary();
-    }
-    if (this.consume("-")) {
-      return -this.parseUnary();
-    }
-    return this.parsePower();
-  }
-
-  /**
-   * 暗黙の乗算の被乗数には符号を書けない (`2 -3` は減算であって `2 * (-3)` ではない)。
-   * `startsImplicitFactor` が `+`/`-` を弾いているので今は結果的に等価だが、
-   * TeX 側 (`graph-tex.ts`) と同じく入口を分けて不変条件を構造で示す。
-   */
-  private parseUnaryWithoutSign(): number {
-    return this.parsePower();
-  }
-
-  private parsePower(): number {
-    const value = this.parsePrimary();
-
-    this.skipWhitespace();
-    if (this.consume("^")) {
-      return value ** this.parseUnary();
-    }
-
-    return value;
-  }
-
-  private parsePrimary(): number {
-    this.skipWhitespace();
-
-    if (this.consume("(")) {
-      const value = this.parseAdditive();
-      this.skipWhitespace();
-      if (!this.consume(")")) {
-        throw new Error("Expected closing parenthesis");
-      }
-      return value;
-    }
-
-    const numberValue = this.parseNumber();
-    if (numberValue !== null) {
-      return numberValue;
-    }
-
-    const identifier = this.parseIdentifier();
-    if (identifier) {
-      return this.resolveIdentifier(identifier);
-    }
-
-    throw new Error(`Expected value at ${this.index}`);
-  }
-
-  private resolveIdentifier(identifier: string): number {
-    const normalized = identifier.toLowerCase();
-
-    this.skipWhitespace();
-    if (this.consume("(")) {
-      const value = this.parseAdditive();
-      this.skipWhitespace();
-      if (!this.consume(")")) {
-        throw new Error("Expected closing parenthesis");
-      }
-      return applyFunction(normalized, value);
-    }
-
-    const variableValue = this.variables[normalized as GraphExpressionVariableName];
-    if (variableValue !== undefined) {
-      return variableValue;
-    }
-    if (normalized === "pi") {
-      return Math.PI;
-    }
-    if (normalized === "e") {
-      return Math.E;
-    }
-
-    throw new Error(`Unknown identifier ${identifier}`);
-  }
-
-  private parseNumber(): number | null {
-    const match = /^(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/i.exec(this.input.slice(this.index));
-    if (!match) {
-      return null;
-    }
-
-    this.index += match[0].length;
-    return Number(match[0]);
-  }
-
-  private parseIdentifier(): string | null {
-    const match = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(this.input.slice(this.index));
-    if (!match) {
-      return null;
-    }
-
-    this.index += match[0].length;
-    return match[0];
-  }
-
-  private consume(token: string): boolean {
-    if (this.input.startsWith(token, this.index)) {
-      this.index += token.length;
-      return true;
-    }
-
-    return false;
-  }
-
-  private skipWhitespace(): void {
-    while (/\s/.test(this.input[this.index] ?? "")) {
-      this.index += 1;
-    }
-  }
-
-  private startsImplicitFactor(): boolean {
-    this.skipWhitespace();
-    const next = this.input[this.index] ?? "";
-    return next === "(" || next === "." || /\d|[a-zA-Z_]/.test(next);
-  }
-}
-
-function applyFunction(name: string, value: number): number {
-  switch (name) {
-    case "abs":
-      return Math.abs(value);
-    case "acos":
-      return Math.acos(value);
-    case "asin":
-      return Math.asin(value);
-    case "atan":
-      return Math.atan(value);
-    case "cos":
-      return Math.cos(value);
-    case "exp":
-      return Math.exp(value);
-    case "ln":
-    case "log":
-      return Math.log(value);
-    case "sin":
-      return Math.sin(value);
-    case "sqrt":
-      return Math.sqrt(value);
-    case "tan":
-      return Math.tan(value);
-    default:
-      throw new Error(`Unknown function ${name}`);
-  }
 }

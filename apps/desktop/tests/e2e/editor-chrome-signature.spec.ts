@@ -79,7 +79,7 @@ const DOCS_TOOLBAR_SIGNATURE: readonly string[] = [
   "toolbar-group flat search-anchor>Tooltip-module__trigger|BUTTON|icon-button|検索置換|||false|||",
   "|DIV|toolbar-group flat push|表示と出力|||false|||",
   "toolbar-group flat push>Tooltip-module__trigger|BUTTON|icon-button|縮小|||false|||",
-  "toolbar-group flat push|SELECT|toolbar-select compact|ズーム|||false|100||10,15,25,33,50,67,75,90,100,125,150,200,300,400,600,800",
+  "toolbar-group flat push|BUTTON|ui-select Select-module__trigger toolbar-select compact|ズーム|||false|100||16",
   "toolbar-group flat push>Tooltip-module__trigger|BUTTON|icon-button|拡大|||false|||",
 ];
 
@@ -140,7 +140,7 @@ const OVERLAY_TOOLBAR_SIGNATURE: readonly string[] = [
   "toolbar-group flat>shape-menu-anchor>Tooltip-module__trigger|BUTTON|shape-menu-button icon-only line-endpoint-menu-button|線の右端（現在: 混在）|||true|||",
   "|DIV|toolbar-group flat push|表示と出力|||false|||",
   "toolbar-group flat push>Tooltip-module__trigger|BUTTON|icon-button|縮小|||false|||",
-  "toolbar-group flat push|SELECT|toolbar-select compact|ズーム|||false|100||10,15,25,33,50,67,75,90,100,125,150,200,300,400,600,800",
+  "toolbar-group flat push|BUTTON|ui-select Select-module__trigger toolbar-select compact|ズーム|||false|100||16",
   "toolbar-group flat push>Tooltip-module__trigger|BUTTON|icon-button|拡大|||false|||",
 ];
 
@@ -189,11 +189,12 @@ const DOCS_APP_MENU_ITEMS: Readonly<Record<string, readonly string[]>> = {
  *   `.align-tip`) is visible, not just a change in nesting distance.
  * - `aria-disabled` is captured next to native `:disabled` because wrapping a control in a shared
  *   component is a common way to switch from one to the other, and that must not read as "same".
- * - `value` pins a control's current value (zoom level, document title); `options` pins a
- *   `<select>`'s option values. Pinning the option list without the selection would miss a
- *   default-value regression, and vice versa.
- * - `text` is suppressed for labelled elements precisely so that a select's textContent does not
- *   drag every option into every field.
+ * - `value` pins a control's current value (zoom level, document title); `options` pins the size of
+ *   a dropdown's option list. Pinning the list without the selection would miss a default-value
+ *   regression, and vice versa. The app's `Select` keeps its options in a portal that only exists
+ *   while it is open, so both are read from the closed trigger's `data-*` attributes.
+ * - `text` is suppressed for labelled elements precisely so that a dropdown's textContent does not
+ *   drag its current value into every field.
  */
 async function readSignature(page: Page, scope: string): Promise<string[]> {
   return page.$eval(
@@ -207,21 +208,19 @@ async function readSignature(page: Page, scope: string): Promise<string[]> {
           // stylesheet edit does not fail this spec, while still pinning that the wrapper exists.
           return nodeClass.replace(/-module__[^\s]*?__/g, "-module__") || node.tagName;
         };
-        const className = typeof element.className === "string" ? element.className : "";
+        // Same CSS Module hash normalisation as `describe`, but without its trim/tagName
+        // fallback: this field pins the raw class attribute, trailing space and all.
+        const className = (typeof element.className === "string" ? element.className : "")
+          .replace(/-module__[^\s]*?__/g, "-module__");
         const label = element.getAttribute("aria-label") ?? "";
         // The app menu buttons (ファイル / 挿入 / AI / 設定) carry no aria-label and no
         // distinguishing class, so without their text they would all serialize to the same
         // string and a reordering would slip through. Only fall back to text where the label
         // is missing: for a <select>, textContent would drag in every option.
         const text = label ? "" : (element.textContent ?? "").trim();
-        const options =
-          element instanceof HTMLSelectElement
-            ? Array.from(element.options).map((option) => option.value).join(",")
-            : "";
-        const value =
-          element instanceof HTMLSelectElement || element instanceof HTMLInputElement
-            ? element.value
-            : "";
+        const options = element.getAttribute("data-option-count") ?? "";
+        const value = element.getAttribute("data-value")
+          ?? (element instanceof HTMLInputElement ? element.value : "");
         const path: string[] = [];
         for (let node = element.parentElement; node && node !== root; node = node.parentElement) {
           path.unshift(describe(node));

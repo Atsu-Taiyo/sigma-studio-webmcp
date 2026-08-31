@@ -1,5 +1,4 @@
 import {
-  migrateLegacyOverlaySnapshotRichText,
   type OverlayAsset,
   type OverlayBounds,
   type OverlayShape,
@@ -91,10 +90,7 @@ export function buildShapesSvgPreview(
     return null;
   }
 
-  // 保存済みの提案ドラフトは教材本文と違ってスキーマの移行を通っていないため、
-  // 旧Tiptap形式のrichTextがそのまま残っていることがある。採寸・描画へ渡す前に
-  // 本文と同じ移行を通す (通さないと採寸が空扱いになり、文字がプレビューから消える)。
-  const shapes = normalizeShapesForPreview(inputShapes);
+  const shapes = inputShapes;
   const resolvedShapes = resolveShapeAnchorPositions(shapes);
   const crop = expandBounds(unionShapeBounds(resolvedShapes), options);
   const svg = exportOverlaySvg(shapes, assets, {
@@ -108,12 +104,6 @@ export function buildShapesSvgPreview(
   }
 
   return { svg, width: crop.w, height: crop.h };
-}
-
-function normalizeShapesForPreview(shapes: OverlayShape[]): OverlayShape[] {
-  const migrated = migrateLegacyOverlaySnapshotRichText({ shapes });
-  const migratedShapes = (migrated as { shapes?: unknown }).shapes;
-  return Array.isArray(migratedShapes) ? migratedShapes as OverlayShape[] : shapes;
 }
 
 export function unionShapeBounds(shapes: OverlayShape[]): OverlayBounds {

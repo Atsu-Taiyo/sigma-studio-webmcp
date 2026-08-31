@@ -8,6 +8,7 @@ import { SigmaDocTextAttrs } from "@/components/editor/TextFlowEditor";
 
 import {
   deliverCaret,
+  moveCaretHorizontally,
   moveCaretVertically,
   flushPendingCaret,
   getCaretSurface,
@@ -25,6 +26,7 @@ import {
 } from "./caret-router";
 import type { CaretSurfaceId } from "./caret-router";
 import type { TextRunEditorHandle } from "./text-run-span";
+import type { TextFlowSelectionBookmark } from "@/features/text-editing";
 
 const cleanups: Array<() => void> = [];
 
@@ -74,6 +76,7 @@ function facets(options: Partial<CaretSurfaceFacets> & { unitId: string }): Care
     focusCaretAtEdge: () => false,
     focusCaretAfterBlock: () => false,
     adjacentTextblockAddress: () => null,
+    docEdgeAddress: () => null,
     ensureCaretVisible: () => {},
     applyCaret: () => true,
     textRun: null,
@@ -233,6 +236,7 @@ function registerFragmentSurface(
     focusCaretAtEdge: () => false,
     focusCaretAfterBlock: () => false,
     adjacentTextblockAddress: () => null,
+    docEdgeAddress: () => null,
     ensureCaretVisible: () => {},
     applyCaret,
     textRun: null,
@@ -691,5 +695,152 @@ describe("moveCaretVertically", () => {
     source.editor.destroy();
 
     expect(moveCaretVertically(dom, "down", 42)).toBe(false);
+  });
+});
+
+describe("moveCaretVertically と複製の逆流", () => {
+  it("複製は隣の面の候補にならない (箱より後ろの本文の末尾から箱の頭へ逆戻りしない)", () => {
+    installFragmentTable();
+    // キャレットは箱の**外**の本文 (ユニットの末尾)。
+    const source = registerMoveSurface({
+      surface: { kind: "unit", unitId: "u1" },
+      localY: null,
+      containerBlockId: null,
+      ownsBlock: (blockId) => blockId !== "next_unit_p",
+    });
+    const replica = registerMoveSurface({
+      surface: { kind: "fragmentReplica", blockId: "box_1", fragmentIndex: 1 },
+      localY: null,
+      order: [0, 1],
+    });
+    vi.spyOn(source.editor.view, "endOfTextblock").mockReturnValue(true);
+
+    // 隣のユニットが無ければ何もしない (複製へ跳ぶくらいならネイティブに任せる)。
+    expect(moveCaretVertically(source.editor.view.dom, "down", 42)).toBe(false);
+    expect(replica.focusCaretAtEdge).not.toHaveBeenCalled();
+  });
+
+  it("隣のユニットの端が分割ブロックの中なら、その帯を見せている複製の端へ移る", () => {
+    installFragmentTable();
+    // ユニット 1 は末尾が箱 box_1 で、その末尾の縦位置は複製 2 の帯 (240..300)。
+    const previous = registerMoveSurface({
+      surface: { kind: "unit", unitId: "u1" },
+      localY: 295,
+      order: [0],
+    });
+    updateCaretSurfaceFacets(previous.editor, {
+      docEdgeAddress: (edge) => (edge === "end" ? caretInBox.head : null),
+    });
+    const replica2 = registerMoveSurface({
+      surface: { kind: "fragmentReplica", blockId: "box_1", fragmentIndex: 2 },
+      localY: 295,
+      order: [0, 2],
+    });
+    const current = registerMoveSurface({
+      surface: { kind: "unit", unitId: "u2" },
+      localY: null,
+      containerBlockId: null,
+      order: [1],
+      ownsBlock: () => false,
+    });
+    vi.spyOn(current.editor.view, "endOfTextblock").mockReturnValue(true);
+
+    expect(moveCaretVertically(current.editor.view.dom, "up", 42)).toBe(true);
+    expect(replica2.focusCaretAtEdge).toHaveBeenCalledWith("bottom", 42);
+    expect(previous.focusCaretAtEdge).not.toHaveBeenCalled();
+  });
+
+  it("複製の最終行から下は、resolveVerticalMove が同じ断片へ寄せてもブロックの外へ出る", () => {
+    installFragmentTable();
+    const source = registerMoveSurface({ surface: { kind: "unit", unitId: "u1" }, localY: 280 });
+    const replica2 = registerMoveSurface({
+      surface: { kind: "fragmentReplica", blockId: "box_1", fragmentIndex: 2 },
+      // 最終行: 1 行 (20px) 進めても totalHeight 300 の中に収まり "same" になる縦位置。
+      localY: 285,
+      order: [0, 2],
+    });
+    // 複製の doc は箱しか持たない: ブロックの端の行で、doc に次のテキストブロックが無い。
+    vi.spyOn(replica2.editor.view, "endOfTextblock").mockReturnValue(true);
+
+    expect(moveCaretVertically(replica2.editor.view.dom, "down", 42)).toBe(true);
+    expect(source.focusCaretAfterBlock).toHaveBeenCalledWith("box_1", "down", 42);
+  });
+});
+
+describe("moveCaretHorizontally", () => {
+  it("行の途中には介入しない", () => {
+    installFragmentTable();
+    const source = registerMoveSurface({ surface: { kind: "unit", unitId: "u1" }, localY: 60 });
+    vi.spyOn(source.editor.view, "endOfTextblock").mockReturnValue(false);
+
+    expect(moveCaretHorizontally(source.editor.view.dom, "forward")).toBe(false);
+  });
+
+  it("隣のテキストブロックが別の面の断片なら、その面へ配る", () => {
+    installFragmentTable();
+    const source = registerMoveSurface({ surface: { kind: "unit", unitId: "u1" }, localY: 150 });
+    const replica1 = registerFragmentSurface(
+      { kind: "fragmentReplica", blockId: "box_1", fragmentIndex: 1 },
+      150,
+    );
+    // 正本のキャレットは箱の直前の本文の末尾。隣 = 箱の中の位置 (縦位置 150 = 複製 1 の帯)。
+    updateCaretSurfaceFacets(source.editor, {
+      adjacentTextblockAddress: () => caretInBox.head,
+    });
+    vi.spyOn(source.editor.view, "endOfTextblock").mockReturnValue(true);
+
+    expect(moveCaretHorizontally(source.editor.view.dom, "forward")).toBe(true);
+    expect(replica1.applyCaret).toHaveBeenCalledTimes(1);
+  });
+
+  it("複製の doc の端からは正本の「箱の次のブロック」へ出る (横位置は選ばない)", () => {
+    installFragmentTable();
+    const source = registerMoveSurface({ surface: { kind: "unit", unitId: "u1" }, localY: 295 });
+    const replica2 = registerMoveSurface({
+      surface: { kind: "fragmentReplica", blockId: "box_1", fragmentIndex: 2 },
+      localY: 295,
+      order: [0, 2],
+    });
+    vi.spyOn(replica2.editor.view, "endOfTextblock").mockReturnValue(true);
+
+    expect(moveCaretHorizontally(replica2.editor.view.dom, "forward")).toBe(true);
+    expect(source.focusCaretAfterBlock).toHaveBeenCalledWith("box_1", "down", null);
+  });
+
+  it("ユニットの doc の端からは文書順で隣のユニットの端の位置へ渡す", () => {
+    setFragmentTables({}, {});
+    const nextUnitCaret = {
+      affinity: "after" as const,
+      blockId: "next_unit_p",
+      kind: "text" as const,
+      offset: 0,
+    };
+    const first = registerMoveSurface({
+      surface: { kind: "unit", unitId: "u1" },
+      localY: null,
+      containerBlockId: null,
+      order: [0],
+      ownsBlock: () => false,
+    });
+    const second = registerMoveSurface({
+      surface: { kind: "unit", unitId: "u2" },
+      localY: null,
+      containerBlockId: null,
+      order: [1],
+      ownsBlock: (blockId) => blockId === "next_unit_p",
+    });
+    const applied: TextFlowSelectionBookmark[] = [];
+    updateCaretSurfaceFacets(second.editor, {
+      docEdgeAddress: (edge) => (edge === "start" ? nextUnitCaret : null),
+      applyCaret: (selection) => {
+        applied.push(selection);
+        return true;
+      },
+    });
+    vi.spyOn(first.editor.view, "endOfTextblock").mockReturnValue(true);
+
+    expect(moveCaretHorizontally(first.editor.view.dom, "forward")).toBe(true);
+    expect(applied).toHaveLength(1);
+    expect(applied[0]).toMatchObject({ head: nextUnitCaret });
   });
 });

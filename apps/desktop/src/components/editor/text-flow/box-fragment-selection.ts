@@ -10,6 +10,7 @@ import {
   subscribeCaretSurfaceUnregister,
   type CaretSurfaceHandle,
 } from "./caret-router";
+import { posAtClientPoint } from "./pos-at-client-point";
 
 /** 断片跨ぎ選択が面に求めるもの。面そのものは `caret-router` が持つ。 */
 type BoxFragmentSelectionHandle = CaretSurfaceHandle;
@@ -243,8 +244,5 @@ function visibleBoxRect(
 }
 
 function positionAtPoint(handle: BoxFragmentSelectionHandle, x: number, y: number): number | null {
-  const rect = handle.editor.view.dom.getBoundingClientRect();
-  const left = Math.min(Math.max(x, rect.left + 1), rect.right - 1);
-  const top = Math.min(Math.max(y, rect.top + 1), rect.bottom - 1);
-  return handle.editor.view.posAtCoords({ left, top })?.pos ?? null;
+  return posAtClientPoint(handle.editor.view, x, y);
 }

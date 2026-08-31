@@ -103,3 +103,48 @@ describe("getGraphSettingsPanelPlacement", () => {
     expect(placement.left).toBe(GRAPH_SETTINGS_PANEL_MARGIN_PX);
   });
 });
+
+describe("縮められる幅を持つパネル", () => {
+  const graph = { left: 520, top: 120, width: 420, height: 300 };
+  const viewport = { width: 1440, height: 960 };
+
+  it("希望幅が横に入らないときは、覆わずに済む幅まで縮める", () => {
+    const placement = getGraphSettingsPanelPlacement(
+      graph,
+      { width: 620, minWidth: 300, height: 520 },
+      viewport,
+      null,
+    );
+
+    expect(placement.side).toBe("right");
+    // 右に残るのは 1440 - 8 - (940 + 12) = 480px。
+    expect(placement.width).toBe(480);
+    expect(placement.left).toBe(952);
+    expect(placement.left + placement.width).toBeLessThanOrEqual(viewport.width - 8);
+  });
+
+  it("下限にも満たないときだけ下・重ねへ落ちる", () => {
+    const wide = { left: 200, top: 120, width: 1100, height: 200 };
+    const placement = getGraphSettingsPanelPlacement(
+      wide,
+      { width: 620, minWidth: 300, height: 300 },
+      viewport,
+      null,
+    );
+
+    expect(placement.side).toBe("below");
+    expect(placement.width).toBe(620);
+  });
+
+  it("minWidth を渡さないパネルは今までどおり縮まない", () => {
+    const placement = getGraphSettingsPanelPlacement(
+      graph,
+      { width: 620, height: 520 },
+      viewport,
+      null,
+    );
+
+    expect(placement.side).not.toBe("right");
+    expect(placement.width).toBe(620);
+  });
+});

@@ -31,6 +31,7 @@ const JAPANESE = /[぀-ヿ一-鿿]/u;
 const SURFACES = {
   "src/components/editor/EditorSettings.tsx": { t: "chrome", tShape: "shape", tChrome: "chrome" },
   "src/components/editor/GraphSettingsPanel.tsx": { t: "shape" },
+  "src/components/editor/Graph3DSettingsPanel.tsx": { tShape: "shape" },
   "src/components/editor/overlay-canvas/shape-gallery.tsx": { t: "shape" },
   "src/components/editor/OverlayCanvasEditorClient.tsx": { t: "shape", tShape: "shape", tChrome: "chrome" },
   "src/components/editor/PageCanvasEditor.tsx": { t: "editor", tEditor: "editor", tEditorText: "editor" },

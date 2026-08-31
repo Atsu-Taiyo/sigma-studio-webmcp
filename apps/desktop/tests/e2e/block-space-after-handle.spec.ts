@@ -5,6 +5,7 @@ import { sampleDocument } from "@/lib/sample-document";
 import type { SigmaDocument } from "@/types/sigma-doc";
 
 import { installDesktopRuntimeMock } from "./desktop-runtime-mock";
+import { selectUiOptionInPage } from "./ui-select";
 
 const DRAG_PX = 30;
 /** 紙面の「余白のダブルタップ」判定窓 (`PageCanvasEditor` の PAGE_DOUBLE_TAP_MS) を越える待ち。 */
@@ -433,12 +434,7 @@ test("the handle survives the pointer's approach in every column and zoom", asyn
   };
 
   const setZoom = async (value: string) => {
-    await page.evaluate((zoom) => {
-      const select = document.querySelector<HTMLSelectElement>('select[aria-label="ズーム"]');
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-      setter?.call(select!, zoom);
-      select!.dispatchEvent(new Event("change", { bubbles: true }));
-    }, value);
+    await selectUiOptionInPage(page, "ズーム", value);
     await page.waitForTimeout(800);
   };
 
@@ -527,15 +523,7 @@ test("the handle lands on the block edge at 150% zoom too", async ({ page }) => 
   await page.goto("/");
   await page.waitForTimeout(1500);
 
-  await page.evaluate(() => {
-    const select = document.querySelector<HTMLSelectElement>('select[aria-label="ズーム"]');
-    if (!select) {
-      throw new Error("ズームのselectが見つかりません");
-    }
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-    setter?.call(select, "150");
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  await selectUiOptionInPage(page, "ズーム", "150");
   await page.waitForTimeout(800);
 
   const scale = await readScale(page, "p_spaced");
@@ -933,15 +921,7 @@ test("the drag stays continuous at 150% zoom", async ({ page }) => {
   test.setTimeout(90_000);
 
   await openDocument(page, createDocument());
-  await page.evaluate(() => {
-    const select = document.querySelector<HTMLSelectElement>('select[aria-label="ズーム"]');
-    if (!select) {
-      throw new Error("ズームのselectが見つかりません");
-    }
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-    setter?.call(select, "150");
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  await selectUiOptionInPage(page, "ズーム", "150");
   await page.waitForTimeout(800);
 
   const scale = await readScale(page, "p_spaced");

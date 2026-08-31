@@ -37,6 +37,22 @@ const eslintConfig = [
     // OSファイルピッカー (dialog.showOpenDialog / showSaveDialog) だけが例外。
     rules: {
       "no-alert": "error",
+      "no-restricted-syntax": [
+        "error",
+        {
+          // OSが描くドロップダウン禁止 (docs/design-rules.md > Controls > Selects And Pickers)。
+          selector: 'JSXOpeningElement[name.name="select"]',
+          message: "ネイティブの <select> は使わない。@/components/ui/Select へ (docs/design-rules.md > Selects And Pickers)",
+        },
+        {
+          selector: 'JSXOpeningElement:has(JSXAttribute[name.name="type"][value.value="color"])',
+          message: "OSのカラーパネルは使わない。ColorPalette / 色作成ダイアログへ (docs/design-rules.md > Selects And Pickers)",
+        },
+        {
+          selector: 'JSXOpeningElement:has(JSXAttribute[name.name="type"][value.value=/^(date|time|datetime-local|month|week)$/])',
+          message: "OSの日付ピッカーは使わない。アプリ内UIで選ばせる (docs/design-rules.md > Selects And Pickers)",
+        },
+      ],
       "no-restricted-properties": [
         "error",
         {
@@ -70,9 +86,12 @@ const eslintConfig = [
       "**/*.spec.ts",
       "**/*.spec.tsx",
       // 教材文法・外部形式の照合トークンと、日本語を含む安定サンプル。
+      "src/lib/heading-numbering.ts",
       "src/lib/tex-command-reference.ts",
       "src/lib/tex-environment-examples.ts",
       "src/lib/tex-import.ts",
+      "src/lib/classic-format-import.ts",
+      "src/lib/classic-format/**",
       "src/lib/inline-math-symbol-buttons.ts",
       // OSフォント名、永続化互換値、教材内容・二言語検索語。
       "src/components/editor/editor-shell/constants.ts",
@@ -92,6 +111,8 @@ const eslintConfig = [
       "src/lib/ai/sigma-doc-edit-schema.ts",
       "electron/ai-skill-draft.ts",
       "electron/ai-edit.ts",
+      // ひな形が教材へ書き込む図形名・共通部分名。作者がその場で書き換える教材の中身。
+      "src/features/drawing/graph3d-presets.ts",
       // 教材へ挿入する記号、未使用の互換ラベル、開発者向け不変条件、モデルへの検証文。
       "src/components/editor/TextFlowEditor.tsx",
       "src/features/document/application/line-height.ts",

@@ -4,6 +4,7 @@
  * 自分の namespace ファイルだけを埋められるようにするため (スタック PR の衝突ゼロ)。
  */
 export const error = {
+  download: { fileReadFailed: "ファイルを読み取れませんでした" },
   schemaRecovery: {
     whiteboardContent: "無限キャンバス(ホワイトボード)モードの教材には本文ブロックを追加できません",
     whiteboardAnchor: "ホワイトボードの図形は本文・ページに固定せず絶対座標で配置してください",
@@ -180,7 +181,14 @@ export const error = {
       openSigmaDoc: "SigmaDocファイルを開く",
       importDocument: "教材ファイルをインポート",
       documentFiles: "教材ファイル",
+      importOtherDocument: "他の形式の教材ファイルをインポート",
+      editorMathPresentation: "EditorMath教材 / Presentation",
       saveSigmaDoc: "SigmaDocファイルを保存",
+      downloadFormatUnsupported: "この形式のファイルは保存できません。",
+      downloadNameUnavailable: "ダウンロードフォルダに空きの名前が見つかりませんでした。",
+      downloadContentMissing: "保存する内容が指定されていません。",
+      downloadContentEmpty: "保存する内容が空でした。",
+      downloadFileTooLarge: "ファイルが大きすぎて保存できません。",
     },
     settings: {
       unsupportedLocale: "対応していない表示言語です。",

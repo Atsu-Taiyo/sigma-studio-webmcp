@@ -254,6 +254,12 @@ export interface DesktopFileAPI {
     pageWidthMm: number;
     pageHeightMm: number;
   }): Promise<{ filePath: string; pageCount: number } | null>;
+  /**
+   * ダウンロードフォルダへそのまま書き出す。拡張子は main 側の許可リストで縛られている。
+   * 名前が衝突したら `-2` を足すので、既存ファイルを上書きすることはない。
+   */
+  saveToDownloads?(payload: { fileName: string; dataBase64: string }): Promise<{ filePath: string }>;
+  showInFolder?(filePath: string): Promise<{ ok: boolean }>;
 }
 
 export interface DesktopAiRenderAPI {

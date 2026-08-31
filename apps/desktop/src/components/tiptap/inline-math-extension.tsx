@@ -43,6 +43,7 @@ import {
 } from "@/lib/math-environment";
 import { configureInlineMathLiveField, MATHLIVE_MATH_MODE_SPACE, type InlineMathLiveFieldElement } from "@/lib/mathlive-config";
 import { normalizeMathLiveLineBreakTex, normalizeMathTextRuns } from "@/lib/math-tex";
+import { applyTexBracketEditToTextarea, resolveTexBracketEdit, type TexBracketEdit } from "@/lib/tex-bracket-pairs";
 import {
   getInlineMathLatexCommandTrigger,
   getInlineMathShiftDigit7Text,
@@ -1174,6 +1175,14 @@ function InlineMathTexField({
     restoreInputCursor(cursor);
   }, [restoreInputCursor, updateDraft]);
 
+  /**
+   * 括弧オートペア。値とキャレットは `applyTexBracketEditToTextarea` が同期で確定させ
+   * (rAF で戻すと続けて打った文字が古い位置に入る)、ここでは下書きの同期だけを行う。
+   */
+  const applyTexBracketEdit = useCallback((input: HTMLTextAreaElement, edit: TexBracketEdit) => {
+    updateDraft(applyTexBracketEditToTextarea(input, edit), edit.selectionEnd);
+  }, [updateDraft]);
+
   const handleChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     const input = event.currentTarget;
     markUserInteraction();
@@ -1302,6 +1311,19 @@ function InlineMathTexField({
             const from = Math.min(selectionStart, selectionEnd);
             const to = Math.max(selectionStart, selectionEnd);
             insertTexAtSelection(input, createInlineMathTexFromEditorMathShortcut(shortcut, input.value.slice(from, to)));
+            return;
+          }
+
+          // 括弧のオートペア。Ctrl 系ショートカットより後に見るので、Ctrl+[ などは奪われない。
+          const bracketEdit = resolveTexBracketEdit(event, {
+            selectionEnd: input.selectionEnd ?? input.value.length,
+            selectionStart: input.selectionStart ?? input.value.length,
+            value: input.value,
+          });
+          if (bracketEdit) {
+            event.preventDefault();
+            event.stopPropagation();
+            applyTexBracketEdit(input, bracketEdit);
             return;
           }
 

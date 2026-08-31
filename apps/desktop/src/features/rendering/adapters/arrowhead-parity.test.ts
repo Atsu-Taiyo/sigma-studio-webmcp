@@ -129,8 +129,10 @@ describe("arrow head parity between the canvas and the SVG exporter", () => {
       .sort();
 
     expect(referenced).toEqual(declared);
-    // The `arrow` head has been persisted under the id `arrowhead` since the first release.
-    expect(referenced.every((id) => id?.startsWith(head === "arrow" ? "arrowhead" : head))).toBe(true);
+    // The `arrow` head has been persisted under the id `arrowhead` since the first release, and
+    // its small variant follows that name rather than its own.
+    const prefix = head.replace(/^arrow(?=$|Small)/u, "arrowhead");
+    expect(referenced.every((id) => id?.startsWith(prefix))).toBe(true);
     expect(exportedMarkers(head)).toContain(`marker-end="url(#${arrowheadMarkerId(head, SHAPE_ID, "end")})"`);
     expect(exportedMarkers(head)).toContain(`marker-start="url(#${arrowheadMarkerId(head, SHAPE_ID, "start")})"`);
   });
@@ -155,7 +157,10 @@ describe("arrow head parity between the canvas and the SVG exporter", () => {
 
     // A bar and a dot sit on their own centre, so a half turn leaves them where they were; every
     // other head is anchored at its tip and has to be flipped to point away from the line.
-    expect(reversed).toEqual(["arrow", "triangle", "openArrow", "thinArrow", "diamond"]);
+    expect(reversed).toEqual([
+      "arrow", "triangle", "openArrow", "thinArrow", "diamond",
+      "arrowSmall", "triangleSmall", "openArrowSmall", "thinArrowSmall", "diamondSmall",
+    ]);
     for (const spec of ARROWHEAD_MARKER_SPECS) {
       const markers = parseMarkers(reactMarkers(spec.kind));
       expect(markers.get(`${spec.idPrefix}-${SHAPE_ID}-start`)?.orient)
@@ -298,10 +303,10 @@ describe("drawn path parity between the canvas and the SVG exporter", () => {
       createElement(OverlayShapeReadOnlyView, { shape: arrowShape, assets: {} }),
     ));
 
-    // `size: "l"` is a 3px stroke and a diamond gives up 7.5 marker units, so the ink ends 22.5px
-    // before the stored end point while the shape's own coordinates are untouched.
+    // `size: "l"` is a 3px stroke, so the ink ends the diamond's own trim × 3px before the stored
+    // end point while the shape's own coordinates are untouched.
     expect(Number(attributeOf(drawn, "x2")))
-      .toBeCloseTo(arrowShape.x + arrowShape.props.end.x - 7.5 * 3, 6);
+      .toBeCloseTo(arrowShape.x + arrowShape.props.end.x - getArrowheadTrimInStrokes("diamond") * 3, 6);
     expect(arrowShape.props.end).toEqual({ x: 120, y: 0 });
   });
 

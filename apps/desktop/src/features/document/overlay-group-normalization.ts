@@ -6,7 +6,7 @@ import type {
   OverlayShapeId,
 } from "./overlay-model";
 import { migrateLegacyGraphShapeToPlotBounds } from "./overlay-graph-migration";
-import { getOverlayRichTextLineCount } from "./overlay-rich-text-format";
+import { getOverlayTextBlocksLineCount } from "./overlay-rich-text-format";
 import { getTextShapeRenderedLineHeightPx } from "./overlay-text-font";
 
 const MIN_ARC_RADIUS = 0.5;
@@ -289,7 +289,8 @@ function getShapeSelectionBounds(shape: OverlayShape): OverlayBounds {
     shape.type === "geo" ||
     shape.type === "image" ||
     shape.type === "callout" ||
-    shape.type === "tableShape"
+    shape.type === "tableShape" ||
+    shape.type === "chartShape"
   ) {
     return { x: shape.x, y: shape.y, w: shape.props.w, h: shape.props.h };
   }
@@ -332,10 +333,9 @@ function getShapeSelectionBounds(shape: OverlayShape): OverlayBounds {
 /**
  * Height a text shape needs from its explicit line breaks alone, mirroring
  * `features/drawing`'s `getTextShapeContentFallbackHeight`. The line height comes from
- * `overlay-text-font.ts` so the *stored* geometry of an auto-sized text shape cannot drift from
- * what the renderers draw (this used to re-implement the pt→px conversion and the scale clamp,
- * and disagreed with the drawing feature by a pixel wherever the two multiplication orders
- * straddled an integer).
+ * `overlay-text-font.ts` so the *stored* geometry of a text shape cannot drift from what the
+ * renderers draw (this used to re-implement the pt→px conversion and disagreed with the drawing
+ * feature by a pixel wherever the two multiplication orders straddled an integer).
  */
 function getTextShapeContentFallbackHeight(
   shape: Extract<OverlayShape, { type: "text" }>,
@@ -343,7 +343,7 @@ function getTextShapeContentFallbackHeight(
   const lineHeight = getTextShapeRenderedLineHeightPx(shape);
   return Math.max(
     lineHeight,
-    getOverlayRichTextLineCount(shape.props.richText) * lineHeight,
+    getOverlayTextBlocksLineCount(shape.props.blocks) * lineHeight,
   );
 }
 

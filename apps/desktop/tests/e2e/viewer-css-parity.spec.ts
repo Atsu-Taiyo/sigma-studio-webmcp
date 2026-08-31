@@ -343,20 +343,17 @@ function viewerCssDocument(): unknown {
               rotation: 0,
               props: {
                 w: 220,
-                autoSize: false,
                 color: "#1f2937",
                 fontSize: 11,
                 size: "m",
-                richText: {
-                  blocks: [{
-                    type: "paragraph",
+                blocks: [{
+                    type: "paragraph", id: "viewer_css_parity_spec_41",
                     align: "left",
                     children: [
                       { type: "text", text: "図中テキスト " },
                       { type: "mathInline", id: "m_shape_text", tex: "S'(a)=a^2e^{-a}", display: "inline" },
                     ],
                   }],
-                },
               },
             },
             {
@@ -374,13 +371,11 @@ function viewerCssDocument(): unknown {
                   baseEnd: { x: 64, y: 70 },
                   tip: { x: 18, y: 100 },
                 },
-                richText: {
-                  blocks: [{
-                    type: "paragraph",
+                blocks: [{
+                    type: "paragraph", id: "viewer_css_parity_spec_42",
                     align: "center",
                     children: [{ type: "text", text: "吹き出しの本文", marks: ["bold"] }],
                   }],
-                },
                 color: "#244a38",
                 fontSize: 11,
                 size: "m",

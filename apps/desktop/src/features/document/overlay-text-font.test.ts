@@ -13,10 +13,6 @@ import {
   getTextShapeLineHeightPx,
   getTextShapeRenderedFontSizePx,
   getTextShapeRenderedLineHeightPx,
-  getTextShapeScale,
-  MAX_TEXT_SHAPE_SCALE,
-  MIN_TEXT_SHAPE_SCALE,
-  normalizeTextShapeScale,
   ptToPx,
   pxToPt,
   roundFontSize,
@@ -44,10 +40,10 @@ function textShape(props: Partial<Extract<OverlayShape, { type: "text" }>["props
     rotation: 0,
     props: {
       w: 100,
+      h: 16,
       size: "m",
-      autoSize: true,
       color: "#111827",
-      richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "行" }] }] },
+      blocks: [{ type: "paragraph", id: "overlay_text_font_test_15", children: [{ type: "text", text: "行" }] }],
       ...props,
     },
   };
@@ -106,9 +102,9 @@ describe("overlay text font units", () => {
 describe("text shape font size resolution", () => {
   it("derives the font size from the size enum when no point size is stored", () => {
     expect(getTextShapeFontSizePx("s")).toBe(13);
-    expect(getTextShapeFontSizePx("xl", 2)).toBe(48);
+    expect(getTextShapeFontSizePx("xl")).toBe(24);
     expect(getTextShapeLineHeightPx("s")).toBe(13);
-    expect(getTextShapeLineHeightPx("l", 1.5)).toBe(30);
+    expect(getTextShapeLineHeightPx("l")).toBe(20);
     expect(getTextShapeFontSizePt(textShape({ size: "m" }))).toBe(12);
   });
 
@@ -126,18 +122,7 @@ describe("text shape font size resolution", () => {
     expect(getTextShapeFontSizePt(textShape({ size: "m", fontSize: Number.NaN }))).toBe(12);
   });
 
-  it("clamps the stored scale to the supported range", () => {
-    expect(normalizeTextShapeScale(MIN_TEXT_SHAPE_SCALE)).toBe(0.25);
-    expect(normalizeTextShapeScale(MAX_TEXT_SHAPE_SCALE)).toBe(8);
-    expect(normalizeTextShapeScale(0)).toBe(MIN_TEXT_SHAPE_SCALE);
-    expect(normalizeTextShapeScale(20)).toBe(MAX_TEXT_SHAPE_SCALE);
-    expect(normalizeTextShapeScale(Number.NaN)).toBe(1);
-    expect(normalizeTextShapeScale(Number.POSITIVE_INFINITY)).toBe(1);
-    expect(normalizeTextShapeScale(undefined)).toBe(1);
-    expect(normalizeTextShapeScale("2")).toBe(1);
-  });
-
-  it("treats a callout as unscaled because it has no scale prop", () => {
+  it("resolves a callout's font size from the same two inputs a text shape uses", () => {
     const callout: Extract<OverlayShape, { type: "callout" }> = {
       id: "callout_1",
       type: "callout",
@@ -149,7 +134,7 @@ describe("text shape font size resolution", () => {
         h: 60,
         radius: 8,
         tail: { baseStart: { x: 0, y: 0 }, baseEnd: { x: 10, y: 0 }, tip: { x: 5, y: 20 } },
-        richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "口" }] }] },
+        blocks: [{ type: "paragraph", id: "overlay_text_font_test_16", children: [{ type: "text", text: "口" }] }],
         color: "#111827",
         size: "l",
         dash: "solid",
@@ -157,32 +142,30 @@ describe("text shape font size resolution", () => {
       },
     };
 
-    expect(getTextShapeScale(callout)).toBe(1);
     expect(getTextShapeFontSizePt(callout)).toBe(15);
     expect(getTextShapeRenderedLineHeightPx(callout)).toBe(20);
     expect(getTextShapeFontSizePt({ ...callout, props: { ...callout.props, fontSize: 9 } })).toBe(9);
   });
 
-  it("clamps the scale when reading it off a shape", () => {
-    expect(getTextShapeScale(textShape())).toBe(1);
-    expect(getTextShapeScale(textShape({ scale: 0.1 }))).toBe(0.25);
-    expect(getTextShapeScale(textShape({ scale: 12 }))).toBe(8);
-    expect(getTextShapeFontSizePt(textShape({ size: "m", fontSize: 10.5, scale: 2 }))).toBe(21);
-    expect(getTextShapeRenderedFontSizePx(textShape({ size: "m", fontSize: 10.5, scale: 2 }))).toBe(28);
+  it("renders the stored point size at the CSS pixel ratio", () => {
+    expect(getTextShapeFontSizePt(textShape({ size: "m", fontSize: 21 }))).toBe(21);
+    expect(getTextShapeRenderedFontSizePx(textShape({ size: "m", fontSize: 21 }))).toBe(28);
   });
 });
 
 describe("group bounds fallback height", () => {
   /**
-   * The group bounds of an auto-sized text shape are derived from the same rendered line height
-   * the drawing feature uses (`getTextShapeRenderedLineHeightPx`), not from a second pt→px
-   * conversion. `size:"m"`, `scale:2` renders a 32px line box, so three explicit lines occupy 96px.
+   * The group bounds of a text shape are derived from the same rendered line height the drawing
+   * feature uses (`getTextShapeRenderedLineHeightPx`), not from a second pt→px conversion. A 24pt
+   * point size renders a 32px line box, so three explicit lines occupy 96px.
    */
   it("sizes a group around a text shape using the rendered line height", () => {
-    const richText = {
-      blocks: [{ type: "paragraph" as const, children: [{ type: "text" as const, text: "a\nb\nc" }] }],
-    };
-    const child = textShape({ size: "m", scale: 2, richText });
+    const blocks = [{
+      type: "paragraph" as const,
+      id: "overlay_text_font_test_group",
+      children: [{ type: "text" as const, text: "a\nb\nc" }],
+    }];
+    const child = textShape({ size: "m", fontSize: 24, h: 1, blocks });
     const shapes: OverlayShape[] = [
       {
         id: "group_1",
@@ -215,7 +198,7 @@ describe("group bounds fallback height", () => {
       },
     ];
 
-    expect(getTextShapeRenderedLineHeightPx({ ...child, props: { ...child.props, richText } })).toBe(32);
+    expect(getTextShapeRenderedLineHeightPx(child)).toBe(32);
 
     const group = normalizeOverlayGroups(shapes).find((shape) => shape.id === "group_1");
 

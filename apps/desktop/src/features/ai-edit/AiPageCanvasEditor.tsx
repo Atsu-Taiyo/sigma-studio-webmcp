@@ -59,6 +59,7 @@ import {
 import { getSelectionActionKey } from "./selection-action-key";
 import { buildShapesSvgPreview, type AiEditShapeOnlyPreview } from "@/lib/ai/ai-edit-shape-preview";
 import { PAGE_GAP_PX } from "@/features/document";
+import { mergeEditorExtensionSets } from "@/components/editor/webmcp/webmcp-editor-extensions";
 
 import { useAiEditorExtensions } from "./editor-extensions";
 import type { AiProposalApplyOutcome } from "./application/proposal-action-model";
@@ -73,7 +74,7 @@ const AI_COLUMN_ANCHOR = {
   getDataAttributes: (targetId: string) => ({ "data-ai-preview-target-id": targetId }),
 };
 
-export interface AiPageCanvasEditorProps extends Omit<PageCanvasEditorProps, "editorExtensions" | "pageExtension"> {
+export interface AiPageCanvasEditorProps extends Omit<PageCanvasEditorProps, "pageExtension"> {
   /**
    * Keeps the canonical page editor available to hosts that do not provide the
    * desktop AI runtime. When disabled, no AI editor extension or selection
@@ -141,12 +142,16 @@ function AiEnabledPageCanvasEditor({
     () => pageEditorProps.document.pageLayout?.overlay?.overlaySnapshot?.shapes ?? [],
     [pageEditorProps.document.pageLayout?.overlay?.overlaySnapshot?.shapes],
   );
-  const editorExtensions = useAiEditorExtensions({
+  const aiEditorExtensions = useAiEditorExtensions({
     documentIdentityKey,
     previewGroups: aiEditPreviewGroups,
     documentWriteInProgress: aiDocumentWriteInProgress,
     shapes: documentShapes,
   });
+  const editorExtensions = useMemo(
+    () => mergeEditorExtensionSets(aiEditorExtensions, pageEditorProps.editorExtensions),
+    [aiEditorExtensions, pageEditorProps.editorExtensions],
+  );
   const extension = useAiPageCanvasExtension({
     document: pageEditorProps.document,
     previewGroups: aiEditPreviewGroups,
@@ -264,6 +269,7 @@ function useAiPageCanvasExtension({
           <AiEditInlinePreviewCard
             entries={card.entries}
             providers={card.preview.providers}
+            mathFractionSizing={document.metadata.mathFractionSizing}
             sessionLabel={card.preview.sessionLabel}
             sourceReferences={card.preview.sourceReferences}
             applying={applying}
@@ -278,7 +284,7 @@ function useAiPageCanvasExtension({
       })));
     }
     return result;
-  }, [applying, onApply, onDismiss, onOpenSourceDocument, openProposalConversation, previewCardsByTargetId]);
+  }, [applying, document.metadata.mathFractionSizing, onApply, onDismiss, onOpenSourceDocument, openProposalConversation, previewCardsByTargetId]);
 
   const previewDiff = useMemo(
     () => deriveAiEditPreviewDiff(previewGroups, document.pageLayout?.overlay?.overlaySnapshot?.shapes ?? []),

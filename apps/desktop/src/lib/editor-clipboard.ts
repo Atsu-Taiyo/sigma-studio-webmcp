@@ -11,11 +11,9 @@ import {
   normalizeOverlaySnapshot,
   type OverlayAsset,
   type OverlayPoint,
-  type OverlayRichTextBlock,
-  type OverlayRichTextDocument,
   type OverlayShape,
+  type OverlayTextBlock,
   type SigmaTableSpec,
-  migrateLegacyOverlaySnapshotRichText,
   PROBLEM_AREA_ORDER,
   type BoxBlockChildBlock,
   type BoxBlockNode,
@@ -209,9 +207,15 @@ function createOverlayShapeFields<K extends "overlayShapes" | "textAndShapes">(
 ): Extract<EditorClipboardPayload, { kind: K }> {
   const copiedShapes = structuredClone(shapes);
   const assetIds = new Set(
-    copiedShapes
-      .filter((shape): shape is Extract<OverlayShape, { type: "image" }> => shape.type === "image")
-      .map((shape) => shape.props.assetId),
+    copiedShapes.flatMap((shape) => {
+      if (shape.type === "image") {
+        return [shape.props.assetId];
+      }
+      if (shape.type === "graph3dShape" && shape.props.previewAssetId) {
+        return [shape.props.previewAssetId];
+      }
+      return [];
+    }),
   );
   const copiedAssets = Object.fromEntries(
     [...assetIds]
@@ -422,7 +426,7 @@ function parseOverlayShapeFields(parsed: Record<string, unknown>): EditorClipboa
   if (!Array.isArray(parsed.shapes) || !isRecord(parsed.assets)) {
     return null;
   }
-  const snapshot = migrateLegacyOverlaySnapshotRichText({ version: 1, shapes: parsed.shapes, assets: parsed.assets });
+  const snapshot = { version: 1, shapes: parsed.shapes, assets: parsed.assets };
   if (!isValidOverlaySnapshot(snapshot)) {
     return null;
   }
@@ -526,24 +530,46 @@ type GraphShapeProps = Extract<OverlayShape, { type: "graph2dShape" }>["props"];
  *
  * The labels are sibling `text` shapes the graph owns by id. Ids that were not part of the copy
  * are removed rather than left dangling — the graph then simply has no label for that slot.
+ *
+ * Both halves of each entry are rewritten. The value is the label's shape id, which the paste
+ * regenerates; the *key* is the thing inside the spec the label belongs to — a point, an
+ * annotation, a curve — and the paste regenerates those too (`cloneGraphSpecForPaste`), so a copy
+ * that only rewrote the values would point at the right shapes under names the pasted spec no
+ * longer has. The lookups drop those entries (`getExistingGraphPointLabelTextShapeIdsByPointId`
+ * requires the point to still exist), and the duplicated graph would quietly disown its point and
+ * annotation labels: still drawn, still following, but no longer part of the graph for editing,
+ * deletion or an AI edit lock.
+ *
+ * Only the three spec-keyed records get that key rewrite. Axis labels are keyed by the fixed
+ * `"x"`/`"y"`/`"origin"` and must be left alone: spec ids are not always app-generated (an AI tool
+ * passes an author's `curve.id` straight through), so a graph with a curve literally named `x`
+ * would otherwise have its *axis* key renamed to a generated id — disowning the axis label, and
+ * failing validation on reopen because the key is no longer one of the three.
  */
-function remapGraphLabelOwnership(props: GraphShapeProps, shapeIdMap: Map<string, string>): void {
-  const remapRecord = <T extends Record<string, string>>(record: T | undefined): T | undefined => {
+function remapGraphLabelOwnership(
+  props: GraphShapeProps,
+  shapeIdMap: Map<string, string>,
+  specIdMap: Map<string, string>,
+): void {
+  const remapRecord = <T extends Record<string, string>>(
+    record: T | undefined,
+    keyMap: Map<string, string> | null,
+  ): T | undefined => {
     if (!record) {
       return undefined;
     }
     const next = Object.fromEntries(
       Object.entries(record)
-        .map(([key, shapeId]) => [key, shapeIdMap.get(shapeId)])
+        .map(([key, shapeId]) => [keyMap?.get(key) ?? key, shapeIdMap.get(shapeId)])
         .filter((entry): entry is [string, string] => Boolean(entry[1])),
     ) as T;
     return Object.keys(next).length > 0 ? next : undefined;
   };
 
-  const axisLabels = remapRecord(props.axisLabelTextShapeIds as Record<string, string> | undefined);
-  const pointLabels = remapRecord(props.pointLabelTextShapeIdsByPointId);
-  const annotationLabels = remapRecord(props.annotationTextShapeIdsByAnnotationId);
-  const curveLabels = remapRecord(props.labelTextShapeIdsByCurveId);
+  const axisLabels = remapRecord(props.axisLabelTextShapeIds as Record<string, string> | undefined, null);
+  const pointLabels = remapRecord(props.pointLabelTextShapeIdsByPointId, specIdMap);
+  const annotationLabels = remapRecord(props.annotationTextShapeIdsByAnnotationId, specIdMap);
+  const curveLabels = remapRecord(props.labelTextShapeIdsByCurveId, specIdMap);
   const labelIds = props.labelTextShapeIds
     ?.map((shapeId) => shapeIdMap.get(shapeId))
     .filter((shapeId): shapeId is string => Boolean(shapeId));
@@ -615,9 +641,19 @@ export function cloneOverlayShapesForPaste(
     shapeIdMap.set(shape.id, createId(shape.type === "group" ? "overlay_group" : "overlay_shape"));
   }
 
+  // A chart may be cloned before the table it references, so the re-pointing is a second pass over
+  // the finished clones rather than something the per-shape clone can do on its own.
+  const tableTrackIdMaps = new Map<string, ReadonlyMap<string, string>>();
   const shapes = normalizedPayload.shapes.map((shape) => (
-    cloneOverlayShapeForPaste(shape, assetIdMap, shapeIdMap, groupIdMap, offset, options)
+    cloneOverlayShapeForPaste(shape, assetIdMap, shapeIdMap, groupIdMap, offset, tableTrackIdMaps, options)
   ));
+  for (const shape of shapes) {
+    if (shape.type === "chartShape") {
+      // `dropBlockAnchors` is the existing "pasting into a different document" signal
+      // (`paste-shapes.ts` sets it as `!isSameDocument`).
+      remapChartForPaste(shape.props, shapeIdMap, tableTrackIdMaps, Boolean(options.dropBlockAnchors));
+    }
+  }
   return { shapes, assets };
 }
 
@@ -627,6 +663,7 @@ function cloneOverlayShapeForPaste(
   shapeIdMap: Map<string, string>,
   groupIdMap: Map<string, string>,
   offset: OverlayPoint,
+  tableTrackIdMaps: Map<string, ReadonlyMap<string, string>>,
   options: CloneOverlayShapesOptions = {},
 ): OverlayShape {
   const next = {
@@ -666,17 +703,22 @@ function cloneOverlayShapeForPaste(
 
   if (next.type === "image") {
     next.props.assetId = assetIdMap.get(next.props.assetId) ?? next.props.assetId;
-  } else if (next.type === "text") {
-    next.props.richText = cloneOverlayRichTextDocumentForPaste(next.props.richText);
+  } else if (next.type === "graph3dShape" && next.props.previewAssetId) {
+    next.props.previewAssetId = assetIdMap.get(next.props.previewAssetId) ?? next.props.previewAssetId;
+  } else if (next.type === "text" || next.type === "callout") {
+    next.props.blocks = next.props.blocks.map(cloneOverlayTextBlockForPaste);
   } else if (next.type === "graph2dShape") {
-    next.props.spec = cloneGraphSpecForPaste(next.props.spec);
+    const cloned = cloneGraphSpecForPaste(next.props.spec);
+    next.props.spec = cloned.spec;
     // A graph's labels are sibling text shapes it owns by id. When the copy carries those
     // siblings (select-all, or a whole-group copy) the ownership has to follow them to the new
     // ids, or the pasted graph disowns its own labels and re-creates duplicates on top of them.
     // Ids that were not part of the copy simply drop out.
-    remapGraphLabelOwnership(next.props, shapeIdMap);
+    remapGraphLabelOwnership(next.props, shapeIdMap, cloned.specIdMap);
   } else if (next.type === "tableShape") {
-    next.props.table = cloneTableSpecForPaste(next.props.table);
+    const cloned = cloneTableSpecForPaste(next.props.table);
+    next.props.table = cloned.table;
+    tableTrackIdMaps.set(shape.id, cloned.trackIdMap);
   }
 
   if (shape.groupId) {
@@ -711,34 +753,111 @@ function cloneInlineNodesForPaste(nodes: InlineNode[]): InlineNode[] {
   });
 }
 
-function cloneOverlayRichTextDocumentForPaste(doc: OverlayRichTextDocument): OverlayRichTextDocument {
-  return {
-    blocks: doc.blocks.map(cloneOverlayRichTextBlockForPaste),
-  };
-}
-
-function cloneOverlayRichTextBlockForPaste(block: OverlayRichTextBlock): OverlayRichTextBlock {
+/**
+ * A pasted block is a new block: every id below it is reissued, exactly like a pasted table's rows
+ * and columns. Sharing an id with the block that was copied would make the two indistinguishable
+ * to the Tiptap round trip and to anything that tracks a block across an edit.
+ */
+function cloneOverlayTextBlockForPaste(block: OverlayTextBlock): OverlayTextBlock {
+  if (block.type === "list") {
+    return {
+      ...structuredClone(block),
+      id: createId("list"),
+      items: block.items.map((item) => ({
+        ...structuredClone(item),
+        id: createId("li"),
+        children: cloneInlineNodesForPaste(item.children),
+        ...(item.continuations === undefined ? {} : {
+          continuations: item.continuations.map((child) => (
+            child.type === "divider"
+              ? { ...structuredClone(child), id: createId("divider") }
+              : { ...structuredClone(child), id: createId("p"), children: cloneInlineNodesForPaste(child.children) }
+          )),
+        }),
+        ...(item.nested === undefined ? {} : {
+          nested: item.nested.map((nested) => cloneOverlayTextBlockForPaste(nested) as typeof nested),
+        }),
+      })),
+    };
+  }
+  if (block.type === "quote") {
+    return {
+      ...structuredClone(block),
+      id: createId("quote"),
+      blocks: block.blocks.map((child) => (
+        cloneOverlayTextBlockForPaste(child as OverlayTextBlock) as typeof child
+      )),
+    };
+  }
+  if (block.type === "codeBlock") {
+    return {
+      ...structuredClone(block),
+      id: createId("code"),
+      children: cloneInlineNodesForPaste(block.children),
+    };
+  }
+  if (block.type === "divider") {
+    return { ...structuredClone(block), id: createId("divider") };
+  }
   return {
     ...structuredClone(block),
+    id: createId(block.type === "heading" ? "h" : "p"),
     children: cloneInlineNodesForPaste(block.children),
   };
 }
 
-function cloneGraphSpecForPaste(spec: Graph2DSpec): Graph2DSpec {
+/**
+ * Clones a graph's spec with fresh ids, and reports what each old id became.
+ *
+ * Every element still mints its own id, so a spec that arrived with two elements sharing an id
+ * (ids are not always app-generated — an AI tool passes an author's id through verbatim) does not
+ * come out of the paste with them merged. The map that goes back to the caller keeps the *first*
+ * element to claim each old id, which is the one the ownership maps beside the spec can name:
+ * they are keyed by that id and can only point at one label anyway.
+ */
+function cloneGraphSpecForPaste(spec: Graph2DSpec): { spec: Graph2DSpec; specIdMap: Map<string, string> } {
+  const specIdMap = new Map<string, string>();
+  const nextId = (id: string, prefix: string): string => {
+    const next = createId(prefix);
+    if (!specIdMap.has(id)) {
+      specIdMap.set(id, next);
+    }
+    return next;
+  };
+
   return {
-    ...structuredClone(spec),
-    curves: spec.curves.map((curve) => ({ ...curve, id: createId("curve") })),
-    points: spec.points?.map((point) => ({ ...point, id: createId("point") })),
-    annotations: spec.annotations?.map((annotation) => ({ ...annotation, id: createId("annotation") })),
-    fills: spec.fills?.map((fill) => ({ ...fill, id: createId("fill") })),
+    spec: {
+      ...structuredClone(spec),
+      curves: spec.curves.map((curve) => ({ ...curve, id: nextId(curve.id, "curve") })),
+      points: spec.points?.map((point) => ({ ...point, id: nextId(point.id, "point") })),
+      annotations: spec.annotations?.map((annotation) => ({
+        ...annotation,
+        id: nextId(annotation.id, "annotation"),
+      })),
+      fills: spec.fills?.map((fill) => ({ ...fill, id: nextId(fill.id, "fill") })),
+    },
+    specIdMap,
   };
 }
 
-function cloneTableSpecForPaste(spec: SigmaTableSpec): SigmaTableSpec {
+/**
+ * Clones a table for pasting, and reports the row/column ids it minted.
+ *
+ * The map is not bookkeeping — a chart keys `spec.seriesColors` and `dataSnapshot.series[].id` on
+ * the table's own track ids, so regenerating them here without telling anyone leaves a pasted chart
+ * pointing at ids that no longer exist and silently losing every author-chosen series colour.
+ */
+function cloneTableSpecForPaste(spec: SigmaTableSpec): {
+  table: SigmaTableSpec;
+  trackIdMap: Map<string, string>;
+} {
   const rowIdMap = new Map(spec.rows.map((row) => [row.id, createId("table_row")]));
   const columnIdMap = new Map(spec.columns.map((column) => [column.id, createId("table_col")]));
+  // Rows and columns share one lookup: which axis carries the series depends on the chart's
+  // `orientation`, and the ids are unique across both.
+  const trackIdMap = new Map([...rowIdMap, ...columnIdMap]);
 
-  return {
+  const table: SigmaTableSpec = {
     ...structuredClone(spec),
     columns: spec.columns.map((column) => ({
       ...structuredClone(column),
@@ -768,6 +887,76 @@ function cloneTableSpecForPaste(spec: SigmaTableSpec): SigmaTableSpec {
           label: content.label ? cloneInlineNodesForPaste(content.label) : undefined,
         };
       }),
+    })),
+  };
+
+  return { table, trackIdMap };
+}
+
+/**
+ * A series colour key is either a track id (bar/line/scatter) or `<trackId>:<label>` (a pie slice,
+ * whose entity is the category). Both forms have to follow the table's regenerated ids.
+ */
+function remapChartSeriesColorKey(key: string, trackIdMap: ReadonlyMap<string, string>): string {
+  const direct = trackIdMap.get(key);
+  if (direct) {
+    return direct;
+  }
+  const separator = key.indexOf(":");
+  if (separator <= 0) {
+    return key;
+  }
+  const mappedPrefix = trackIdMap.get(key.slice(0, separator));
+  return mappedPrefix ? `${mappedPrefix}${key.slice(separator)}` : key;
+}
+
+/**
+ * Re-points a pasted chart at the pasted copy of its table, or freezes it on its snapshot.
+ *
+ * Two things move, not one. The shape reference is the obvious half; the other is that the table's
+ * row and column ids were regenerated by `cloneTableSpecForPaste`, and the chart keys its colours
+ * and its series on those. Remapping only the shape id produces a chart that live-updates correctly
+ * but has lost every colour the author picked.
+ */
+function remapChartForPaste(
+  props: Extract<OverlayShape, { type: "chartShape" }>["props"],
+  shapeIdMap: ReadonlyMap<string, string>,
+  tableTrackIdMaps: ReadonlyMap<string, ReadonlyMap<string, string>>,
+  crossDocument: boolean,
+): void {
+  const sourceTableShapeId = props.sourceTableShapeId;
+  if (!sourceTableShapeId) {
+    return;
+  }
+  const nextTableShapeId = shapeIdMap.get(sourceTableShapeId);
+  const trackIdMap = tableTrackIdMaps.get(sourceTableShapeId);
+  if (!nextTableShapeId || !trackIdMap) {
+    // The table did not travel with the copy.
+    //
+    // Within the same document that is the normal case — duplicating (⌘D) or pasting just the
+    // chart, while its table sits untouched a few pixels above. The id still resolves, so the copy
+    // stays live; dropping it here would silently freeze every duplicate on its snapshot and show
+    // "the source table is gone" next to the table it names.
+    //
+    // Across documents the id means nothing in the destination, so it goes.
+    if (crossDocument) {
+      delete props.sourceTableShapeId;
+    }
+    return;
+  }
+  props.sourceTableShapeId = nextTableShapeId;
+  props.spec = {
+    ...props.spec,
+    seriesColors: Object.fromEntries(
+      Object.entries(props.spec.seriesColors)
+        .map(([key, color]) => [remapChartSeriesColorKey(key, trackIdMap), color]),
+    ),
+  };
+  props.dataSnapshot = {
+    ...props.dataSnapshot,
+    series: props.dataSnapshot.series.map((series) => ({
+      ...series,
+      id: trackIdMap.get(series.id) ?? series.id,
     })),
   };
 }

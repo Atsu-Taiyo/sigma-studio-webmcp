@@ -39,7 +39,7 @@ describe("drawing feature SVG geometry", () => {
           baseEnd: { x: 68, y: 72 },
           tip: { x: 24, y: 100 },
         },
-        richText: { blocks: [{ type: "paragraph", children: [] }] },
+        blocks: [{ type: "paragraph", id: "svg_geometry_test_12", children: [] }],
         color: "black",
         size: "m",
         dash: "solid",

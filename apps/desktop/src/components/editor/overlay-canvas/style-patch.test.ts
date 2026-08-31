@@ -77,7 +77,7 @@ const textShape = {
   type: "text",
   x: 0,
   y: 0,
-  props: { w: 100, autoSize: true, color: "#111827", size: "m" },
+  props: { w: 100, h: 16, blocks: [], color: "#111827", size: "m" },
 } as OverlayShape;
 
 describe("sharedFill", () => {

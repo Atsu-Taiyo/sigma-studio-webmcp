@@ -5,10 +5,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { collectBoxedRunDocTargetsForTextBlock } from "@/components/tiptap/boxed-text-run-height";
+import { OverlayTextBlockAttrs } from "@/components/editor/overlay-canvas/overlay-text-block-attrs";
 import { createRichTextEngineExtensions } from "@/components/tiptap/rich-text-engine";
-import type { OverlayRichTextDocument } from "@/features/document";
-import { OverlayRichTextPreview } from "@/features/rendering/adapters/react";
-import { overlayRichTextToTiptapDoc } from "@/lib/tiptap-adapter";
+import type { OverlayTextBlock } from "@/features/document";
+import { OverlayTextBlocksView } from "@/components/editor/text-flow/OverlayTextBlocksView";
+import { overlayTextBlocksToTiptapDoc } from "@/components/editor/text-flow/overlay-tiptap-adapter";
 
 /**
  * Overlay text is drawn by Tiptap while it has focus and by the static renderer the rest of the
@@ -35,8 +36,14 @@ import { overlayRichTextToTiptapDoc } from "@/lib/tiptap-adapter";
  *   shared `inlineMathNodeClassName` / `inlineMathNodeDataAttributes` that both sides already use.
  */
 
+// The shape editor's own schema, option for option (`text-shape-editor.tsx`). Building a
+// different one here would compare the static renderer against an editor that does not ship.
 const schema = getSchema(createRichTextEngineExtensions({
+  blockExtensions: [OverlayTextBlockAttrs],
+  drawBoxedRunFrames: false,
   enableMathDelimiters: true,
+  listMarkerTypography: true,
+  orderedListMarkerStyles: true,
   textBlockStyle: true,
 }));
 
@@ -70,26 +77,23 @@ interface DomLikeNode {
   textContent: null | string;
 }
 
-const CORPUS: Array<{ document: OverlayRichTextDocument; name: string }> = [
+const CORPUS: Array<{ document: OverlayTextBlock[]; name: string }> = [
   {
     name: "plain paragraph",
-    document: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "ふつうの段落" }] }] },
+    document: [{ type: "paragraph", id: "inline_dom_parity_test_1", children: [{ type: "text", text: "ふつうの段落" }] }],
   },
   {
     name: "headings, alignment and line height",
-    document: {
-      blocks: [
-        { type: "heading", level: 1, children: [{ type: "text", text: "見出し1" }] },
-        { type: "heading", level: 2, align: "center", children: [{ type: "text", text: "見出し2" }] },
-        { type: "paragraph", align: "right", lineHeight: "1.8", children: [{ type: "text", text: "右" }] },
+    document: [
+        { type: "heading", id: "inline_dom_parity_test_2", level: 1, children: [{ type: "text", text: "見出し1" }] },
+        { type: "heading", id: "inline_dom_parity_test_3", level: 2, align: "center", children: [{ type: "text", text: "見出し2" }] },
+        { type: "paragraph", id: "inline_dom_parity_test_4", align: "right", lineHeight: "1.8", children: [{ type: "text", text: "右" }] },
       ],
-    },
   },
   {
     name: "bold, italic and underline",
-    document: {
-      blocks: [{
-        type: "paragraph",
+    document: [{
+        type: "paragraph", id: "inline_dom_parity_test_5",
         children: [
           { type: "text", text: "太字", marks: ["bold"] },
           { type: "text", text: "斜体", marks: ["italic"] },
@@ -97,13 +101,11 @@ const CORPUS: Array<{ document: OverlayRichTextDocument; name: string }> = [
           { type: "text", text: "全部", marks: ["bold", "italic", "underline"] },
         ],
       }],
-    },
   },
   {
     name: "one underline run across several nodes",
-    document: {
-      blocks: [{
-        type: "paragraph",
+    document: [{
+        type: "paragraph", id: "inline_dom_parity_test_6",
         children: [
           { type: "text", text: "ここから", marks: ["underline"] },
           { type: "text", text: "太字も", marks: ["underline", "bold"] },
@@ -111,13 +113,11 @@ const CORPUS: Array<{ document: OverlayRichTextDocument; name: string }> = [
           { type: "text", text: "そと" },
         ],
       }],
-    },
   },
   {
     name: "inline text styling",
-    document: {
-      blocks: [{
-        type: "paragraph",
+    document: [{
+        type: "paragraph", id: "inline_dom_parity_test_7",
         children: [{
           type: "text",
           text: "色つき",
@@ -127,25 +127,21 @@ const CORPUS: Array<{ document: OverlayRichTextDocument; name: string }> = [
           fontSize: 12.5,
         }],
       }],
-    },
   },
   {
     name: "boxed text",
-    document: {
-      blocks: [{
-        type: "paragraph",
+    document: [{
+        type: "paragraph", id: "inline_dom_parity_test_8",
         children: [
           { type: "text", text: "囲み", marks: ["boxed"], boxedPaddingY: 2 },
           { type: "text", text: "そと" },
         ],
       }],
-    },
   },
   {
     name: "boxed variants and tones",
-    document: {
-      blocks: [{
-        type: "paragraph",
+    document: [{
+        type: "paragraph", id: "inline_dom_parity_test_9",
         children: [
           { type: "text", text: "太枠", marks: ["boxed"], boxedVariant: "thick" },
           { type: "text", text: "二重", marks: ["boxed"], boxedVariant: "double", boxedPaddingY: 1.5 },
@@ -154,13 +150,11 @@ const CORPUS: Array<{ document: OverlayRichTextDocument; name: string }> = [
           { type: "text", text: "既定", marks: ["boxed"], boxedVariant: "frame" },
         ],
       }],
-    },
   },
   {
     name: "boxed combined with the other inline marks",
-    document: {
-      blocks: [{
-        type: "paragraph",
+    document: [{
+        type: "paragraph", id: "inline_dom_parity_test_10",
         children: [
           {
             type: "text",
@@ -173,29 +167,75 @@ const CORPUS: Array<{ document: OverlayRichTextDocument; name: string }> = [
           },
         ],
       }],
-    },
+  },
+  {
+    name: "a bullet list",
+    document: [{
+        type: "list", id: "inline_dom_parity_test_14",
+        listType: "bullet",
+        items: [
+          { type: "listItem", id: "inline_dom_parity_test_15", children: [{ type: "text", text: "ひとつ" }] },
+          { type: "listItem", id: "inline_dom_parity_test_16", children: [{ type: "text", text: "ふたつ", marks: ["bold"] }] },
+        ],
+      }],
   },
   {
     name: "hard breaks inside a marked run",
-    document: {
-      blocks: [{
-        type: "paragraph",
+    document: [{
+        type: "paragraph", id: "inline_dom_parity_test_11",
         children: [
           { type: "text", text: "いち\nに", marks: ["underline"] },
           { type: "text", text: "\nさん", marks: ["boxed"], boxedPaddingY: 1 },
           { type: "text", text: "よん\n", marks: ["bold"] },
         ],
       }],
-    },
   },
 ];
 
+/**
+ * The one shape of block the two projections do not agree on, recorded rather than hidden.
+ *
+ * The editing surface draws `li > p`; the static renderer draws `li > span[display:block]` and
+ * puts the marker typography on the `li` from a measurement the editor makes at runtime. This is
+ * not specific to shapes — the body has the same divergence and pins it the same way, with the
+ * cost of closing it written down (`text-flow-static-parity.test.tsx`: aligning the static side on
+ * `p` changes what print emits). `it.fails` means fixing it turns this red instead of leaving a
+ * stale exception behind.
+ */
+const KNOWN_DIVERGENT = new Set(["a bullet list"]);
+
 describe("overlay text projects the same DOM through Tiptap and the static renderer", () => {
   for (const { document: richText, name } of CORPUS) {
+    if (KNOWN_DIVERGENT.has(name)) {
+      it.fails(`still differs on ${name} (known divergence, as in the body)`, () => {
+        expect(staticBlocks(richText)).toEqual(editorBlocks(richText));
+      });
+      continue;
+    }
     it(`agrees on ${name}`, () => {
       expect(staticBlocks(richText)).toEqual(editorBlocks(richText));
     });
   }
+
+  /**
+   * What must agree for a list: the runs inside an item. The item's own wrapper is the known
+   * divergence above; the inline projection is what this file exists to hold together.
+   */
+  it("agrees on the inline content inside a list item", () => {
+    const richText: OverlayTextBlock[] = [{
+      type: "list", id: "inline_dom_parity_test_17",
+      listType: "bullet",
+      items: [{
+        type: "listItem", id: "inline_dom_parity_test_18",
+        children: [
+          { type: "text", text: "太字", marks: ["bold"] },
+          { type: "text", text: "囲み", marks: ["boxed"], boxedPaddingY: 2 },
+        ],
+      }],
+    }];
+
+    expect(listItemInlineDom(staticBlocks(richText))).toEqual(listItemInlineDom(editorBlocks(richText)));
+  });
 
   it("gives every drawn boxed fragment its own measurement identity, as the editor does", () => {
     // The measurement channel is the one thing the two sides build differently (see the file
@@ -204,22 +244,22 @@ describe("overlay text projects the same DOM through Tiptap and the static rende
     // span closes at its `hardBreak`; the static side splits its text node the same way and so has
     // to hand out two segment ids, not the entry's one. Sharing an id collapsed the two frames into
     // one entry of the alignment map and left the first line's frame stretched to the second's.
-    const richText: OverlayRichTextDocument = {
-      blocks: [{
-        type: "paragraph",
+    const richText: OverlayTextBlock[] = [{
+        type: "paragraph", id: "inline_dom_parity_test_12",
         children: [
           { type: "text", text: "あ\nい", marks: ["boxed"], boxedPaddingY: 2 },
           { type: "text", text: "う", marks: ["boxed"], boxedPaddingY: 2 },
         ],
-      }],
-    };
-    const block = schema.nodeFromJSON(overlayRichTextToTiptapDoc(richText)).firstChild;
+      }];
+    const block = schema.nodeFromJSON(overlayTextBlocksToTiptapDoc(richText)).firstChild;
     const editorTargets = block ? collectBoxedRunDocTargetsForTextBlock(block, 0) : [];
 
+    // Run ids are keyed on the block's own id now that shape text goes through the body's static
+    // block renderer, which is what makes them stable across a re-render of the same block.
     expect(boxedRunSegmentIds(renderStaticHtml(richText))).toEqual([
-      "overlay-0-boxed-run-0-segment-0-0-line-0",
-      "overlay-0-boxed-run-0-segment-0-0-line-1",
-      "overlay-0-boxed-run-0-segment-1-1",
+      "inline_dom_parity_test_12-boxed-run-0-segment-0-0-line-0",
+      "inline_dom_parity_test_12-boxed-run-0-segment-0-0-line-1",
+      "inline_dom_parity_test_12-boxed-run-0-segment-1-1",
     ]);
     expect(editorTargets).toHaveLength(3);
     // Only the fragment that really has a neighbour on its line claims the joint.
@@ -233,12 +273,10 @@ describe("overlay text projects the same DOM through Tiptap and the static rende
   it("only ever drops the boxed-run measurement attributes when comparing", () => {
     // Guards the one documented gap: if the static renderer grows another extra attribute, the
     // comparison above must fail rather than silently ignore it.
-    const richText: OverlayRichTextDocument = {
-      blocks: [{
-        type: "paragraph",
+    const richText: OverlayTextBlock[] = [{
+        type: "paragraph", id: "inline_dom_parity_test_13",
         children: [{ type: "text", text: "囲み", marks: ["boxed"], boxedPaddingY: 2 }],
-      }],
-    };
+      }];
     expect(droppedAttributeNames(renderStaticHtml(richText)).sort())
       .toEqual([
         "data-boxed-run-height-target",
@@ -251,15 +289,22 @@ describe("overlay text projects the same DOM through Tiptap and the static rende
   });
 });
 
+/** The runs inside the first list item, with each side's own item wrapper peeled off. */
+function listItemInlineDom(blocks: NormalizedNode[]): NormalizedNode[] {
+  const item = blocks[0]?.children?.[0];
+  const wrapper = item?.children?.[0];
+  return wrapper?.children ?? [];
+}
+
 /** The static renderer's blocks, with the wrappers only it has removed (see the file comment). */
-function staticBlocks(richText: OverlayRichTextDocument): NormalizedNode[] {
+function staticBlocks(richText: OverlayTextBlock[]): NormalizedNode[] {
   return normalizeHtml(renderStaticHtml(richText), { unwrapInlineContent: true });
 }
 
 /** The same document as ProseMirror's schema serializes it. */
-function editorBlocks(richText: OverlayRichTextDocument): NormalizedNode[] {
+function editorBlocks(richText: OverlayTextBlock[]): NormalizedNode[] {
   const window = new Window();
-  const node = schema.nodeFromJSON(overlayRichTextToTiptapDoc(richText));
+  const node = schema.nodeFromJSON(overlayTextBlocksToTiptapDoc(richText));
   const container = window.document.createElement("div");
   DOMSerializer.fromSchema(schema).serializeFragment(
     node.content,
@@ -271,8 +316,11 @@ function editorBlocks(richText: OverlayRichTextDocument): NormalizedNode[] {
   return normalizeHtml(html, { unwrapInlineContent: false });
 }
 
-function renderStaticHtml(richText: OverlayRichTextDocument): string {
-  return renderToStaticMarkup(<OverlayRichTextPreview node={richText} />);
+function renderStaticHtml(richText: OverlayTextBlock[]): string {
+  // The view wraps its blocks in the shape's content box; the comparison is per block, so the
+  // wrapper is unwrapped here rather than given to the editor side to match.
+  const html = renderToStaticMarkup(<OverlayTextBlocksView blocks={richText} />);
+  return html.replace(/^<div class="overlay-text-shape-content">/, "").replace(/<\/div>$/, "");
 }
 
 function normalizeHtml(html: string, options: { unwrapInlineContent: boolean }): NormalizedNode[] {

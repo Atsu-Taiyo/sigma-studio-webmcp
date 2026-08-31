@@ -38,7 +38,7 @@ describe("AppErrorBoundary", () => {
 describe("buildAppCrashPrompt", () => {
   it("directs the AI to repair persisted SigmaDoc data without requiring an app update", () => {
     const prompt = buildAppCrashPrompt(describeAppCrash(
-      Object.assign(new Error("boom"), { stack: "Error: boom\n    at getMeasurementLines (overlay-text-measure.ts:136)" }),
+      Object.assign(new Error("boom"), { stack: "Error: boom\n    at getMeasurementLines (some-module.ts:136)" }),
       "\n    at EditorShell",
       "file:///app/out/index.html?fileId=file_1",
     ));

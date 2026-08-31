@@ -1,5 +1,5 @@
 import { Check } from "lucide-react";
-import { useRef } from "react";
+import { Fragment, useRef, type CSSProperties } from "react";
 
 import { EditorToolbarMenuButton } from "@/components/editor/EditorToolbar";
 import { useT } from "@/lib/i18n/react";
@@ -12,13 +12,20 @@ import {
   getArrowheadTrimInStrokes,
   scaleArrowheadGeometry,
 } from "@/features/rendering/core";
-import { LINE_ENDPOINT_OPTIONS, MAX_EXPORT_FILE_STEM_LENGTH } from "./constants";
+import {
+  LINE_ENDPOINT_NONE,
+  LINE_ENDPOINT_OPTIONS,
+  LINE_ENDPOINT_SHAPES,
+  LINE_ENDPOINT_SIZES,
+  MAX_EXPORT_FILE_STEM_LENGTH,
+} from "./constants";
 
 export function LineEndpointMenuButton({
   endpoint,
   currentValue,
   open,
   disabled = false,
+  popoverZIndex,
   onToggle,
   onSelect,
 }: {
@@ -26,6 +33,7 @@ export function LineEndpointMenuButton({
   currentValue: OverlayArrowhead | null;
   open: boolean;
   disabled?: boolean;
+  popoverZIndex?: CSSProperties["zIndex"];
   onToggle: () => void;
   onSelect: (value: OverlayArrowhead) => void;
 }) {
@@ -62,31 +70,95 @@ export function LineEndpointMenuButton({
         className="shape-menu endpoint-menu"
         role="menu"
         ariaLabel={endpointLabel}
+        zIndex={popoverZIndex}
       >
         <div className="endpoint-menu-header" aria-hidden="true">{endpointLabel}</div>
-        {LINE_ENDPOINT_OPTIONS.map((option) => {
-          const optionLabel = t(`format.lineEndpoint.${option.value}`);
-          const selected = currentValue === option.value;
-          const optionStart = endpoint === "start" ? option.value : "none";
-          const optionEnd = endpoint === "end" ? option.value : "none";
-          return (
-            <button
-              key={option.value}
-              type="button"
-              role="menuitemradio"
-              aria-label={optionLabel}
-              aria-checked={selected}
-              className={selected ? "selected" : ""}
-              onClick={() => onSelect(option.value)}
-            >
-              <span className="endpoint-menu-check" aria-hidden="true">{selected ? <Check size={14} /> : null}</span>
-              <LineEndpointPreview start={optionStart} end={optionEnd} focus={endpoint} size="menu" />
-              <span>{optionLabel}</span>
-            </button>
-          );
-        })}
+        <EndpointOptionButton
+          option={{ ...LINE_ENDPOINT_NONE, label: t("format.lineEndpoint.none") }}
+          endpoint={endpoint}
+          selected={currentValue === LINE_ENDPOINT_NONE.value}
+          withLabel
+          onSelect={onSelect}
+        />
+        {/*
+          * A grid rather than fourteen rows: the same seven shapes come in two sizes, and read as a
+          * list they are names that differ only by a suffix. Down the side the shape, across the
+          * top the size, and every cell draws what it will put on the page.
+          */}
+        <div className="endpoint-size-grid" role="none">
+          <span aria-hidden="true" />
+          {LINE_ENDPOINT_SIZES.map(({ size }) => (
+            <span key={size} className="endpoint-size-heading" aria-hidden="true">
+              {t(`format.lineEndpoint.size.${size}`)}
+            </span>
+          ))}
+          {LINE_ENDPOINT_SHAPES.map((shape) => (
+            <Fragment key={shape.values.normal}>
+              <span className="endpoint-shape-label" aria-hidden="true">
+                {t(`format.lineEndpoint.${shape.values.normal}`)}
+              </span>
+              {LINE_ENDPOINT_SIZES.map(({ size }) => {
+                const value = shape.values[size];
+                return (
+                  <EndpointOptionButton
+                    key={size}
+                    option={{
+                      value,
+                      label: t(`format.lineEndpoint.${value}`),
+                    }}
+                    endpoint={endpoint}
+                    selected={currentValue === value}
+                    onSelect={onSelect}
+                  />
+                );
+              })}
+            </Fragment>
+          ))}
+        </div>
       </ToolbarPopover>
     </div>
+  );
+}
+
+/**
+ * One choice in the endpoint picker, drawn as the head itself.
+ *
+ * `なし` keeps its name beside the preview — an empty line is not a shape anyone recognises — while
+ * a cell inside the grid is named by its row and column and carries the drawing alone.
+ */
+function EndpointOptionButton({
+  option,
+  endpoint,
+  selected,
+  withLabel = false,
+  onSelect,
+}: {
+  option: { value: OverlayArrowhead; label: string };
+  endpoint: "start" | "end";
+  selected: boolean;
+  withLabel?: boolean;
+  onSelect: (value: OverlayArrowhead) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-label={option.label}
+      aria-checked={selected}
+      className={`${withLabel ? "endpoint-menu-row" : "endpoint-menu-cell"}${selected ? " selected" : ""}`}
+      onClick={() => onSelect(option.value)}
+    >
+      {withLabel && (
+        <span className="endpoint-menu-check" aria-hidden="true">{selected ? <Check size={14} /> : null}</span>
+      )}
+      <LineEndpointPreview
+        start={endpoint === "start" ? option.value : "none"}
+        end={endpoint === "end" ? option.value : "none"}
+        focus={endpoint}
+        size="menu"
+      />
+      {withLabel && <span>{option.label}</span>}
+    </button>
   );
 }
 

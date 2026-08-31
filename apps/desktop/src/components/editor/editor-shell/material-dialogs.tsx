@@ -96,6 +96,7 @@ export function suggestVisualConceptsForMaterialContent(content: MaterialContent
     if (shape.type === "line") concepts.add("線");
     if (shape.type === "tableShape") { concepts.add("表"); concepts.add("table"); }
     if (shape.type === "graph2dShape") { concepts.add("グラフ"); concepts.add("graph"); }
+    if (shape.type === "graph3dShape") { concepts.add("3D教材"); concepts.add("3D material"); }
     if (shape.type === "image") concepts.add("画像");
   }
   /* eslint-enable no-restricted-syntax */

@@ -16,11 +16,6 @@ import { AppDocumentLanguage } from "@/components/AppDocumentLanguage";
 
 import { buildContentSecurityPolicyMeta } from "./content-security-policy";
 
-// The math box measurer registers itself from the rendering adapter barrels
-// (`features/rendering/adapters/register-math-metrics.ts`). Doing it here instead does not work:
-// this layout is a server component, so a module-level call runs during render on the server and
-// never reaches the browser bundle the editor actually runs in.
-
 export const metadata: Metadata = {
   title: "Sigma Studio",
   description: "SigmaDoc JSONを正本にする数学教材Webエディタ",

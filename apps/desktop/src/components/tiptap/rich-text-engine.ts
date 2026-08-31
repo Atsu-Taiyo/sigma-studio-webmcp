@@ -128,9 +128,10 @@ interface RichTextEngineOptions {
   /**
    * 引用・コード・区切り線を本文ブロックとして使えるようにする。
    *
-   * 既定は off。3 つとも SigmaDoc のブロックとして保存されるが、オーバーレイのテキスト・
-   * 表のセル・ブロックエディタは inline だけを保存する変換器を通るので、そこで有効にすると
-   * 打った内容が保存時に消える (`orderedListMarkerStyles` と同じ理由)。
+   * 既定は off。判断基準は「この面の変換器がこの 3 つを保存できるか」で、できない面で有効に
+   * すると打った内容が保存時に消える (`orderedListMarkerStyles` と同じ理由)。本文と図中テキスト
+   * (`overlay-tiptap-adapter.ts` が 3 つとも往復させる) は on、表のセルとブロックエディタは
+   * inline だけを保存する変換器なので off のまま。
    */
   bodyBlocks?: boolean;
   /**

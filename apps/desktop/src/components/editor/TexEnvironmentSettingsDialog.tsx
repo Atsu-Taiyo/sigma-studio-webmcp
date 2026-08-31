@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/Button";
 import { ModalBody, ModalFrame, ModalHeader } from "@/components/ui/Modal";
 import { createMathMacroSet } from "@/lib/math-macros";
 import { parseTexPreamble } from "@/lib/tex-preamble";
+import { applyTexBracketEditToTextarea, resolveTexBracketEdit } from "@/lib/tex-bracket-pairs";
 import {
   resolveExampleTexPreamble,
   resolveTexEnvironmentPreviewExamples,
@@ -96,6 +97,21 @@ export function TexEnvironmentSettingsDialog({ preamble, onChange, onClose }: Te
             className={styles.codeEditor}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
+            // 本文の TeX 入力欄と同じ括弧オートペア。`\newcommand{` の閉じ括弧を手で
+            // 打たずに済む。
+            onKeyDown={(event) => {
+              const textarea = event.currentTarget;
+              const bracketEdit = resolveTexBracketEdit(event, {
+                selectionEnd: textarea.selectionEnd,
+                selectionStart: textarea.selectionStart,
+                value: textarea.value,
+              });
+              if (!bracketEdit) {
+                return;
+              }
+              event.preventDefault();
+              setDraft(applyTexBracketEditToTextarea(textarea, bracketEdit));
+            }}
             placeholder={examplePreamble}
             spellCheck={false}
             aria-invalid={!canSave}

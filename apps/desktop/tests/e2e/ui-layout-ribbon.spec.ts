@@ -4,6 +4,7 @@ import type { SigmaDocument } from "@/features/document";
 import { sampleDocument } from "@/lib/sample-document";
 
 import { installDesktopRuntimeMock } from "./desktop-runtime-mock";
+import { selectUiOption } from "./ui-select";
 import {
   BACKSTAGE_SECTIONS,
   CONTEXTUAL_TAB,
@@ -974,7 +975,7 @@ test("the Word status bar reports the page count and drives the zoom", async ({ 
   await statusBar.getByRole("button", { name: "縮小", exact: true }).click();
   await expect.poll(canvasZoom).not.toBe(before);
   const zoomSelect = statusBar.getByRole("combobox", { name: "ズーム", exact: true });
-  await zoomSelect.selectOption("150");
+  await selectUiOption(zoomSelect, "150");
   await expect.poll(canvasZoom).toBe("1.5");
   await statusBar.getByRole("button", { name: "拡大", exact: true }).click();
   await expect.poll(canvasZoom).not.toBe("1.5");
@@ -1061,6 +1062,6 @@ test("the status bar follows the current page across a multi-page document", asy
     scroller?.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
   });
   await expect(pages).toHaveText(`ページ 1 / ${totalPages}`, { timeout: 15_000 });
-  await page.locator(".ribbon-statusbar").getByRole("combobox", { name: "ズーム", exact: true }).selectOption("10");
+  await selectUiOption(page.locator(".ribbon-statusbar").getByRole("combobox", { name: "ズーム", exact: true }), "10");
   await expect(pages).not.toHaveText(`ページ ${totalPages} / ${totalPages}`, { timeout: 15_000 });
 });

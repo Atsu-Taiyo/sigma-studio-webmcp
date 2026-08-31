@@ -83,7 +83,7 @@ export function createPerfProblemDocument(): SigmaDocument {
       orientation: "portrait",
       pageSize: { widthMm: 210, heightMm: 297 },
       marginsMm: { top: 14, right: 16, bottom: 14, left: 16 },
-      // 1 段組。実データ (legacy document 取込教材) と同じで、ページ割りの walk はこちらの経路にしか無い
+      // 1 段組。実データ (legacy 取込教材) と同じで、ページ割りの walk はこちらの経路にしか無い
       // — 2 段組だと `computeColumnUnitLayouts` に分岐して、枠付き問題の keep-together 判定を
       // 一度も通らない。
       flow: { type: "columns", columnCount: 1, columnGapMm: 10 },

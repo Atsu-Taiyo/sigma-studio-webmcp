@@ -127,17 +127,13 @@ function parityDocument(): SigmaDocument {
               props: {
                 w: 200,
                 h: 70,
-                scale: 1,
-                autoSize: false,
                 color: "#111111",
                 size: "m",
-                richText: {
-                  blocks: [
-                    { type: "paragraph", children: [{ type: "text", text: "うえ" }] },
-                    { type: "paragraph", children: [] },
-                    { type: "paragraph", children: [{ type: "text", text: "した" }] },
-                  ],
-                },
+                blocks: [
+                  { type: "paragraph", id: "parity_text_p1", children: [{ type: "text", text: "うえ" }] },
+                  { type: "paragraph", id: "parity_text_p2", children: [] },
+                  { type: "paragraph", id: "parity_text_p3", children: [{ type: "text", text: "した" }] },
+                ],
               },
             },
             {
@@ -149,49 +145,47 @@ function parityDocument(): SigmaDocument {
               props: {
                 w: 300,
                 h: 90,
-                scale: 1,
-                autoSize: false,
                 color: "#111111",
                 size: "m",
-                richText: {
-                  blocks: [
-                    {
-                      // A boxed run of text + a tall formula + text: the case where per-segment
-                      // borders and one drawn rectangle disagree, and where the run's height is
-                      // decided by the formula rather than by the glyphs beside it.
-                      type: "paragraph",
-                      children: [
-                        { type: "text", text: "枠", marks: ["boxed"], boxedPaddingY: 2 },
-                        {
-                          type: "mathInline",
-                          id: "math_parity_boxed",
-                          tex: "\\frac{1}{2}",
-                          display: "inline",
-                          marks: ["boxed"],
-                          boxedPaddingY: 2,
-                        },
-                        { type: "text", text: "です", marks: ["boxed"], boxedPaddingY: 2 },
-                      ],
-                    },
-                    {
-                      // Every other inline wrapper, combined with a box: the mark nesting order has
-                      // to be the same on both sides or the box scales with a different font size.
-                      type: "paragraph",
-                      children: [
-                        {
-                          type: "text",
-                          text: "太字斜体下線",
-                          marks: ["bold", "italic", "underline", "boxed"],
-                          boxedVariant: "thick",
-                          boxedPaddingY: 1,
-                          fontSize: 13,
-                          color: "#1d4ed8",
-                        },
-                        { type: "text", text: "そと" },
-                      ],
-                    },
-                  ],
-                },
+                blocks: [
+                  {
+                    // A boxed run of text + a tall formula + text: the case where per-segment
+                    // borders and one drawn rectangle disagree, and where the run's height is
+                    // decided by the formula rather than by the glyphs beside it.
+                    type: "paragraph",
+                    id: "parity_boxed_p1",
+                    children: [
+                      { type: "text", text: "枠", marks: ["boxed"], boxedPaddingY: 2 },
+                      {
+                        type: "mathInline",
+                        id: "math_parity_boxed",
+                        tex: "\\frac{1}{2}",
+                        display: "inline",
+                        marks: ["boxed"],
+                        boxedPaddingY: 2,
+                      },
+                      { type: "text", text: "です", marks: ["boxed"], boxedPaddingY: 2 },
+                    ],
+                  },
+                  {
+                    // Every other inline wrapper, combined with a box: the mark nesting order has
+                    // to be the same on both sides or the box scales with a different font size.
+                    type: "paragraph",
+                    id: "parity_boxed_p2",
+                    children: [
+                      {
+                        type: "text",
+                        text: "太字斜体下線",
+                        marks: ["bold", "italic", "underline", "boxed"],
+                        boxedVariant: "thick",
+                        boxedPaddingY: 1,
+                        fontSize: 13,
+                        color: "#1d4ed8",
+                      },
+                      { type: "text", text: "そと" },
+                    ],
+                  },
+                ],
               },
             },
             {
@@ -203,24 +197,21 @@ function parityDocument(): SigmaDocument {
               props: {
                 w: 110,
                 h: 32,
-                scale: 1,
-                autoSize: false,
                 color: "#111111",
                 size: "m",
-                richText: {
-                  blocks: [{
-                    type: "paragraph",
-                    children: [
-                      { type: "text", text: "macro " },
-                      {
-                        type: "mathInline",
-                        id: OVERLAY_PREAMBLE_MACRO_MATH_ID,
-                        tex: String.raw`\RR`,
-                        display: "inline",
-                      },
-                    ],
-                  }],
-                },
+                blocks: [{
+                  type: "paragraph",
+                  id: "parity_macro_p1",
+                  children: [
+                    { type: "text", text: "macro " },
+                    {
+                      type: "mathInline",
+                      id: OVERLAY_PREAMBLE_MACRO_MATH_ID,
+                      tex: String.raw`\RR`,
+                      display: "inline",
+                    },
+                  ],
+                }],
               },
             },
             {
@@ -301,7 +292,7 @@ function parityDocument(): SigmaDocument {
                     { id: "trend_col_1", width: { mode: "fr", value: 1, min: 60 } },
                     { id: "trend_col_2", width: { mode: "fr", value: 1, min: 60 } },
                     // Narrower than the arrow's own 44px, like the interval columns of an imported
-                    // compact variation table (`lib/external-document/table.ts`).
+                    // compact variation table (`lib/classic-format/table.ts`).
                     { id: "trend_col_3", width: { mode: "fixed", value: 30 } },
                   ],
                   rows: [

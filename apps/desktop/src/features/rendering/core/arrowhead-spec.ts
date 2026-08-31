@@ -2,6 +2,16 @@
 // (`features/document/architecture.test.ts` pins that edge).
 import type { OverlayArrowhead } from "@/features/document";
 
+import {
+  findArrowheadLineStopX,
+  getArrowheadInkBounds,
+  ARROWHEAD_LINE_WIDTH,
+  translateArrowheadGeometry,
+  type ArrowheadGeometry,
+  type ArrowheadPoint,
+  type ArrowheadPolylineGeometry,
+} from "./arrowhead-ink";
+
 /**
  * The one description of what an arrow head looks like.
  *
@@ -11,32 +21,9 @@ import type { OverlayArrowhead } from "@/features/document";
  * but a different shape on paper". They all read this table now.
  *
  * Coordinates are in marker units. Every marker is declared `markerUnits="strokeWidth"`, so one
- * unit equals one pixel of the line's stroke width and a head grows with the line for free.
+ * unit equals one pixel of the line's stroke width and a head grows with the line for free — and
+ * the line the head terminates is exactly one unit wide, whatever size it is drawn at.
  */
-
-/** Geometry drawn from straight segments. `closed` heads are filled outlines. */
-export interface ArrowheadPolylineGeometry {
-  readonly kind: "polyline";
-  readonly points: readonly ArrowheadPoint[];
-  readonly closed: boolean;
-  readonly filled: boolean;
-  readonly strokeWidth: number;
-}
-
-export interface ArrowheadCircleGeometry {
-  readonly kind: "circle";
-  readonly cx: number;
-  readonly cy: number;
-  readonly r: number;
-  readonly filled: boolean;
-}
-
-export interface ArrowheadPoint {
-  readonly x: number;
-  readonly y: number;
-}
-
-export type ArrowheadGeometry = ArrowheadPolylineGeometry | ArrowheadCircleGeometry;
 
 export type ArrowheadKind = Exclude<OverlayArrowhead, "none">;
 
@@ -67,8 +54,9 @@ export interface ArrowheadMarkerSpec {
    *
    * Near a point the head is thinner than the line, and `stroke-linecap: butt` ends the line in a
    * square edge, so a line drawn all the way to the tip replaces the point with a rectangular stub
-   * — the reported bug. Stopping the line here puts its end where the head is already wider than
-   * the stroke (filled heads get half a unit of overlap so no seam shows).
+   * — the reported bug. Derived, never written down: it is the rear-most place the head's ink is
+   * already at least as wide as the line, which is the one description that survives a head being
+   * drawn small (see `arrowhead-ink.ts`).
    */
   readonly lineStopX: number;
   readonly refY: number;
@@ -80,28 +68,81 @@ export interface ArrowheadMarkerSpec {
    * anchored at its centre looks identical either way.
    */
   readonly reversibleOrient: boolean;
+  /**
+   * How big this head is meant to look next to a normal head of the same shape.
+   *
+   * A small head is the same outline with every number scaled, so a renderer working in marker
+   * units gets the difference for free. A renderer that normalises a head to a fixed on-screen
+   * size instead — the 3D coordinate axis, which sizes its end off the axis length — would draw
+   * every size identically, and multiplies by this to get the size back.
+   */
+  readonly sizeRatio: number;
   readonly geometry: ArrowheadGeometry;
 }
 
 const OPEN_HEAD_STROKE = 1.2;
 
 /**
- * Keyed by head so the compiler demands an entry for every value in `OVERLAY_ARROWHEADS`.
+ * How much smaller the small half of the picker draws.
  *
- * A new head added to the document model breaks this table before it can reach a renderer that
- * silently draws nothing.
+ * One shape, two sizes: a textbook axis or a leader line wants a head that marks the direction
+ * without becoming the loudest thing in the figure, and the only way to get that with
+ * `markerUnits="strokeWidth"` was to thin the line itself.
  */
-const ARROWHEAD_MARKER_SPEC_TABLE: Record<ArrowheadKind, Omit<ArrowheadMarkerSpec, "kind">> = {
+const SMALL_HEAD_SCALE = 0.55;
+
+/**
+ * No head is drawn with a pen thinner than the line it ends.
+ *
+ * An open head is two strokes; scaling one down scales its pen down with it, and a pen narrower
+ * than the line cannot cover the line's square end at any distance — the arms end up as two thin
+ * whiskers on either side of a blunt stub, which is what a small head on a thick line looked like.
+ * Marker units are stroke widths, so "as wide as the line" is the constant 1 at every size.
+ */
+const MIN_HEAD_STROKE = ARROWHEAD_LINE_WIDTH;
+
+/** The clearance a box that had to grow keeps beyond the ink that made it grow. */
+const MARKER_BOX_MARGIN = 0.05;
+
+/** Every head name that is not a small variant of another. */
+export type ArrowheadShapeKind = Exclude<ArrowheadKind, `${string}Small`>;
+
+/**
+ * How a head is authored: an outline, the box it is drawn in, and what its anchor means.
+ *
+ * Everything else about a head — where its point lands, where the line has to stop, how much of the
+ * line it costs — is measured off the ink this produces rather than written down beside it, so a
+ * head drawn at another size cannot keep a number that only held at its first one.
+ */
+interface ArrowheadOutlineSpec {
+  readonly idPrefix: string;
+  readonly markerWidth: number;
+  readonly markerHeight: number;
+  readonly refY: number;
+  /**
+   * `point` heads are anchored on their front-most ink and flip at a start endpoint; `centre` heads
+   * mark the endpoint from both sides and are anchored on the middle of their own ink.
+   */
+  readonly anchor: "point" | "centre";
+  readonly geometry: ArrowheadGeometry;
+}
+
+/**
+ * One outline per shape, at its normal size.
+ *
+ * Keyed by shape so the compiler demands an entry for every non-small value in
+ * `OVERLAY_ARROWHEADS`. A new head added to the document model breaks this table before it can
+ * reach a renderer that silently draws nothing.
+ */
+const ARROWHEAD_SHAPE_SPEC_TABLE: Record<ArrowheadShapeKind, ArrowheadOutlineSpec> = {
   arrow: {
     idPrefix: "arrowhead",
-    // Wide enough for the miter: the vertex is at 7 but the ink runs to 8.45, and `<marker>` clips
+    // Wide enough for the miter: the vertex is at 7 but the ink runs past it, and `<marker>` clips
     // whatever passes its own box.
     markerWidth: 9,
     markerHeight: 8,
-    tipX: 8.45,
-    lineStopX: 7,
     refY: 4,
-    reversibleOrient: true,
+    anchor: "point",
     geometry: {
       kind: "polyline",
       points: [{ x: 1.5, y: 1.5 }, { x: 7, y: 4 }, { x: 1.5, y: 6.5 }],
@@ -114,10 +155,8 @@ const ARROWHEAD_MARKER_SPEC_TABLE: Record<ArrowheadKind, Omit<ArrowheadMarkerSpe
     idPrefix: "triangle",
     markerWidth: 8,
     markerHeight: 8,
-    tipX: 7,
-    lineStopX: 1.5,
     refY: 4,
-    reversibleOrient: true,
+    anchor: "point",
     geometry: {
       kind: "polyline",
       points: [{ x: 1, y: 1 }, { x: 7, y: 4 }, { x: 1, y: 7 }],
@@ -130,10 +169,8 @@ const ARROWHEAD_MARKER_SPEC_TABLE: Record<ArrowheadKind, Omit<ArrowheadMarkerSpe
     idPrefix: "openArrow",
     markerWidth: 9,
     markerHeight: 10,
-    tipX: 8.07,
-    lineStopX: 7,
     refY: 5,
-    reversibleOrient: true,
+    anchor: "point",
     geometry: {
       kind: "polyline",
       points: [{ x: 0.8, y: 0.8 }, { x: 7, y: 5 }, { x: 0.8, y: 9.2 }],
@@ -147,26 +184,22 @@ const ARROWHEAD_MARKER_SPEC_TABLE: Record<ArrowheadKind, Omit<ArrowheadMarkerSpe
     // Two units wider than the vertex: a 15° point overshoots it by most of two units at the miter.
     markerWidth: 11,
     markerHeight: 8,
-    tipX: 10.7,
-    lineStopX: 9,
     refY: 4,
-    reversibleOrient: true,
+    anchor: "point",
     geometry: {
       kind: "polyline",
       points: [{ x: 1, y: 1.8 }, { x: 9, y: 4 }, { x: 1, y: 6.2 }],
       closed: false,
       filled: false,
-      strokeWidth: 0.9,
+      strokeWidth: MIN_HEAD_STROKE,
     },
   },
   diamond: {
     idPrefix: "diamond",
     markerWidth: 10,
     markerHeight: 8,
-    tipX: 9,
-    lineStopX: 1.5,
     refY: 4,
-    reversibleOrient: true,
+    anchor: "point",
     geometry: {
       kind: "polyline",
       points: [{ x: 1, y: 4 }, { x: 5, y: 1 }, { x: 9, y: 4 }, { x: 5, y: 7 }],
@@ -179,22 +212,18 @@ const ARROWHEAD_MARKER_SPEC_TABLE: Record<ArrowheadKind, Omit<ArrowheadMarkerSpe
     idPrefix: "dot",
     markerWidth: 8,
     markerHeight: 8,
+    refY: 4,
     // A dot marks the endpoint rather than pointing at it: its centre belongs on the endpoint, and
     // from there the circle already covers the line's end.
-    tipX: 4,
-    lineStopX: 4,
-    refY: 4,
-    reversibleOrient: false,
+    anchor: "centre",
     geometry: { kind: "circle", cx: 4, cy: 4, r: 3, filled: true },
   },
   bar: {
     idPrefix: "bar",
     markerWidth: 8,
     markerHeight: 12,
-    tipX: 4,
-    lineStopX: 4,
     refY: 6,
-    reversibleOrient: false,
+    anchor: "centre",
     geometry: {
       kind: "polyline",
       points: [{ x: 4, y: 0 }, { x: 4, y: 12 }],
@@ -203,6 +232,149 @@ const ARROWHEAD_MARKER_SPEC_TABLE: Record<ArrowheadKind, Omit<ArrowheadMarkerSpe
       strokeWidth: 2,
     },
   },
+};
+
+/**
+ * One head, at one size, with every derived number measured off the ink it will actually draw.
+ *
+ * Scaling a head scales its outline, its box and its anchor together, but **not** its pen below the
+ * width of the line it ends: a small head keeps its shape and gives up only its size, because a
+ * head that ends up thinner than the line can never hide the line's square end. Everything the
+ * renderers read then follows from the result — the box grows if the floored pen no longer fits in
+ * it, the point sits on the head's front-most ink, and the line stops where that ink first covers
+ * it.
+ */
+function buildSpec(outline: ArrowheadOutlineSpec, scale: number): Omit<ArrowheadMarkerSpec, "kind"> {
+  const scaled = roundGeometry(scaleGeometry(outline.geometry, scale));
+  const scaledBounds = getArrowheadInkBounds(scaled);
+
+  // A `<marker>` clips at its own box, so ink the floored pen pushed out behind the origin moves the
+  // whole head forward rather than being silently cut off.
+  const shiftX = shiftIntoBox(scaledBounds.minX);
+  const shiftY = shiftIntoBox(scaledBounds.minY);
+  const geometry = roundGeometry(translateArrowheadGeometry(scaled, shiftX, shiftY));
+  const ink = getArrowheadInkBounds(geometry);
+  const refY = rounded(outline.refY * scale + shiftY);
+
+  const tipX = outline.anchor === "point" ? ink.maxX : (ink.minX + ink.maxX) / 2;
+  const lineStopX = outline.anchor === "point"
+    ? findArrowheadLineStopX(geometry, refY, frontOutlineX(geometry))
+    : tipX;
+
+  return {
+    // Its own marker id: a shape may carry the normal head at one end and the small one at the
+    // other, and an id that named only the shape would describe two different outlines.
+    idPrefix: scale === 1 ? outline.idPrefix : `${outline.idPrefix}Small`,
+    markerWidth: roundedBox(fitBox(outline.markerWidth * scale, ink.maxX)),
+    markerHeight: roundedBox(fitBox(outline.markerHeight * scale, ink.maxY)),
+    tipX: rounded(tipX),
+    lineStopX: rounded(lineStopX),
+    refY,
+    reversibleOrient: outline.anchor === "point",
+    sizeRatio: scale,
+    geometry,
+  };
+}
+
+/**
+ * Marker units, to a thousandth.
+ *
+ * These numbers are written straight into `markerWidth`/`refX` and into the exported SVG, and a
+ * measured one carries the tail of the search that produced it. A thousandth of a stroke width is
+ * five thousandths of a pixel on the thickest line the editor draws, and it keeps the markup — and
+ * the tests that read it — legible.
+ */
+function rounded(value: number): number {
+  return Number(value.toFixed(3));
+}
+
+/**
+ * The same precision for a marker box, but never rounded down onto the ink it has to contain.
+ *
+ * The epsilon absorbs the tail of `12 × 0.55`, which is a hair over 6.6 and would otherwise buy a
+ * whole extra thousandth of box for nothing.
+ */
+function roundedBox(value: number): number {
+  return Math.ceil(value * 1000 - 1e-6) / 1000;
+}
+
+/** The outline as the renderers will write it out, so every number below describes that drawing. */
+function roundGeometry(geometry: ArrowheadGeometry): ArrowheadGeometry {
+  if (geometry.kind === "circle") {
+    return {
+      ...geometry,
+      cx: rounded(geometry.cx),
+      cy: rounded(geometry.cy),
+      r: rounded(geometry.r),
+    };
+  }
+  return {
+    ...geometry,
+    points: geometry.points.map((point) => ({ x: rounded(point.x), y: rounded(point.y) })),
+    strokeWidth: rounded(geometry.strokeWidth),
+  };
+}
+
+/** How far the head has to move to bring ink that fell behind the box origin back inside it. */
+function shiftIntoBox(inkMin: number): number {
+  return inkMin < 0 ? -inkMin + MARKER_BOX_MARGIN : 0;
+}
+
+/**
+ * The marker box, grown if the head no longer fits in the one it was authored with.
+ *
+ * The boxes below are hand-fitted to their outlines, so a head that still fits keeps exactly the
+ * box it has always had — and with it the selection box the editor draws around a line carrying it.
+ * A head whose floored pen now reaches past its box gets a bigger one instead of being cut off:
+ * `<marker>` clips at its own box, silently.
+ */
+function fitBox(authored: number, ink: number): number {
+  return ink > authored ? ink + MARKER_BOX_MARGIN : authored;
+}
+
+/**
+ * The head's own front-most vertex, which is as far forward as the line may ever stop.
+ *
+ * Past it a pointing head is only its miter — the ink narrowing to the point — so a line allowed in
+ * there would be wider than the point it is supposed to end at.
+ */
+function frontOutlineX(geometry: ArrowheadGeometry): number {
+  return geometry.kind === "circle" ? geometry.cx : Math.max(...geometry.points.map((point) => point.x));
+}
+
+function scaleGeometry(geometry: ArrowheadGeometry, scale: number): ArrowheadGeometry {
+  if (geometry.kind === "circle") {
+    return { ...geometry, cx: geometry.cx * scale, cy: geometry.cy * scale, r: geometry.r * scale };
+  }
+  return {
+    ...geometry,
+    points: geometry.points.map((point) => ({ x: point.x * scale, y: point.y * scale })),
+    strokeWidth: geometry.filled
+      ? geometry.strokeWidth * scale
+      : Math.max(geometry.strokeWidth * scale, MIN_HEAD_STROKE),
+  };
+}
+
+/**
+ * Every head the document may store, in menu order: the shapes first, then the same shapes small.
+ *
+ * Keyed by head so the compiler demands an entry for every value in `OVERLAY_ARROWHEADS`.
+ */
+const ARROWHEAD_MARKER_SPEC_TABLE: Record<ArrowheadKind, Omit<ArrowheadMarkerSpec, "kind">> = {
+  arrow: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.arrow, 1),
+  triangle: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.triangle, 1),
+  openArrow: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.openArrow, 1),
+  thinArrow: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.thinArrow, 1),
+  diamond: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.diamond, 1),
+  dot: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.dot, 1),
+  bar: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.bar, 1),
+  arrowSmall: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.arrow, SMALL_HEAD_SCALE),
+  triangleSmall: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.triangle, SMALL_HEAD_SCALE),
+  openArrowSmall: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.openArrow, SMALL_HEAD_SCALE),
+  thinArrowSmall: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.thinArrow, SMALL_HEAD_SCALE),
+  diamondSmall: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.diamond, SMALL_HEAD_SCALE),
+  dotSmall: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.dot, SMALL_HEAD_SCALE),
+  barSmall: buildSpec(ARROWHEAD_SHAPE_SPEC_TABLE.bar, SMALL_HEAD_SCALE),
 };
 
 /** The specs in menu order. */
@@ -321,17 +493,20 @@ export function planArrowheadEndpoints(
   const endSpec = getArrowheadMarkerSpec(end);
   const stroke = Number.isFinite(strokeWidth) && strokeWidth > 0 ? strokeWidth : 0;
 
+  // Planned in marker units rather than pixels, because `refX` is a marker-unit number: taking the
+  // trim to pixels and dividing it back out again lands `refX` a float tail away from the marker
+  // coordinate it is supposed to name, and that tail is written into every page and every export.
   let startTrim = clampToSegment(
-    clampToCeiling(idealTrim(startSpec, stroke), maxTrimPx?.start),
-    terminalSegmentLengthPx.start,
+    clampToCeiling(idealTrim(startSpec, stroke), inStrokes(maxTrimPx?.start, stroke)),
+    inStrokes(terminalSegmentLengthPx.start, stroke),
   );
   let endTrim = clampToSegment(
-    clampToCeiling(idealTrim(endSpec, stroke), maxTrimPx?.end),
-    terminalSegmentLengthPx.end,
+    clampToCeiling(idealTrim(endSpec, stroke), inStrokes(maxTrimPx?.end, stroke)),
+    inStrokes(terminalSegmentLengthPx.end, stroke),
   );
 
-  const budget = Number.isFinite(pathLengthPx) && pathLengthPx > 0
-    ? pathLengthPx * MAX_TOTAL_TRIM_RATIO
+  const budget = Number.isFinite(pathLengthPx) && pathLengthPx > 0 && stroke > 0
+    ? (pathLengthPx * MAX_TOTAL_TRIM_RATIO) / stroke
     : 0;
   const total = startTrim + endTrim;
   if (total > budget) {
@@ -346,11 +521,19 @@ export function planArrowheadEndpoints(
   };
 }
 
+/** A length in pixels as a count of stroke widths, which is what a marker measures in. */
+function inStrokes(lengthPx: number | undefined, strokeWidth: number): number | undefined {
+  if (lengthPx === undefined) {
+    return undefined;
+  }
+  return strokeWidth > 0 ? lengthPx / strokeWidth : 0;
+}
+
 function idealTrim(spec: ArrowheadMarkerSpec | null, strokeWidth: number): number {
   if (!spec || strokeWidth <= 0) {
     return 0;
   }
-  return Math.max(0, spec.tipX - spec.lineStopX) * strokeWidth;
+  return Math.max(0, spec.tipX - spec.lineStopX);
 }
 
 function clampToCeiling(trim: number, ceiling: number | undefined): number {
@@ -360,8 +543,8 @@ function clampToCeiling(trim: number, ceiling: number | undefined): number {
   return Number.isFinite(ceiling) && ceiling > 0 ? Math.min(trim, ceiling) : 0;
 }
 
-function clampToSegment(trim: number, segmentLength: number): number {
-  if (!Number.isFinite(segmentLength) || segmentLength <= 0) {
+function clampToSegment(trim: number, segmentLength: number | undefined): number {
+  if (segmentLength === undefined || !Number.isFinite(segmentLength) || segmentLength <= 0) {
     return 0;
   }
   return Math.min(trim, segmentLength * MAX_TERMINAL_SEGMENT_TRIM_RATIO);
@@ -375,69 +558,10 @@ function toPlacement(
   if (!spec) {
     return NO_ARROWHEAD_PLACEMENT;
   }
-  const trimPx = Number.isFinite(trim) && trim > 0 && strokeWidth > 0 ? trim : 0;
-  return { spec, trimPx, refX: spec.tipX - (strokeWidth > 0 ? trimPx / strokeWidth : 0) };
-}
-
-/**
- * How far a head's own ink reaches forward, in marker units.
- *
- * Not the same as the front-most point in `points`: an open head is a stroked polyline whose miter
- * runs past its vertex by `strokeWidth / |u1 + u2|`, and a butt cap spreads half a stroke sideways.
- * The table's `tipX` is checked against this rather than trusted, because the overshoot moves the
- * moment the head's own stroke width does.
- */
-export function getArrowheadInkApexX(geometry: ArrowheadGeometry): number {
-  if (geometry.kind === "circle") {
-    return geometry.cx + geometry.r;
-  }
-
-  const { points, filled, strokeWidth } = geometry;
-  let apex = Math.max(...points.map((point) => point.x));
-  if (filled || strokeWidth <= 0 || points.length < 2) {
-    // A filled outline is its own ink; the table gives these heads `strokeWidth: 0`.
-    return apex;
-  }
-
-  const half = strokeWidth / 2;
-  const directions: ArrowheadPoint[] = [];
-  for (let index = 1; index < points.length; index += 1) {
-    directions.push(normalize({
-      x: points[index].x - points[index - 1].x,
-      y: points[index].y - points[index - 1].y,
-    }));
-  }
-
-  // Butt caps square off across the segment, so the two ends spread half a stroke sideways.
-  for (const [point, direction] of [
-    [points[0], directions[0]],
-    [points[points.length - 1], directions[directions.length - 1]],
-  ] as const) {
-    apex = Math.max(apex, point.x + Math.abs(direction.y) * half);
-  }
-
-  // Miter joins run past the vertex along the bisector of the outer angle.
-  for (let index = 1; index < points.length - 1; index += 1) {
-    const incoming = directions[index - 1];
-    const outgoing = directions[index];
-    const bisector = { x: incoming.x - outgoing.x, y: incoming.y - outgoing.y };
-    const opening = Math.hypot(incoming.x + outgoing.x, incoming.y + outgoing.y);
-    if (opening <= 1e-9) {
-      continue;
-    }
-    const direction = normalize(bisector);
-    apex = Math.max(apex, points[index].x + (direction.x * strokeWidth) / opening);
-  }
-
-  return apex;
-}
-
-function normalize(vector: ArrowheadPoint): ArrowheadPoint {
-  const length = Math.hypot(vector.x, vector.y);
-  if (!Number.isFinite(length) || length <= 0) {
-    return { x: 0, y: 0 };
-  }
-  return { x: vector.x / length, y: vector.y / length };
+  const trimInStrokes = Number.isFinite(trim) && trim > 0 && strokeWidth > 0 ? trim : 0;
+  // The pair the whole feature rests on: the line gives up `trimPx`, and the marker's reference
+  // point moves back by the same length, so the head's point lands on the stored endpoint.
+  return { spec, trimPx: trimInStrokes * strokeWidth, refX: spec.tipX - trimInStrokes };
 }
 
 export interface ArrowheadMarkerRequest {

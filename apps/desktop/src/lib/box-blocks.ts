@@ -32,6 +32,7 @@ const BOX_DECORATION_RENDER_CLASSES: Partial<Record<BoxDecorationSpec["type"], s
   doubleRule: "box-frame--double-rule",
   titleDoubleRule: "box-frame--title-double-rule",
   titleBand: "box-frame--title-band",
+  titleTab: "box-frame--title-tab",
   titlePlate: "box-frame--title-plate",
   leftBar: "box-frame--left-bar",
   shadow: "box-frame--shadow",
@@ -44,6 +45,7 @@ const BOX_DECORATION_DATA_ATTRIBUTES: Partial<Record<BoxDecorationSpec["type"], 
   doubleRule: "data-box-double-rule",
   titleDoubleRule: "data-box-title-double-rule",
   titleBand: "data-box-title-band",
+  titleTab: "data-box-title-tab",
   titlePlate: "data-box-title-plate",
   leftBar: "data-box-left-bar",
   shadow: "data-box-shadow",
@@ -64,6 +66,11 @@ const SOFT_BORDER = "#cbd5e1";
 const BAND_FILL = "#e2e8f0";
 const SHADE_FILL = "#f1f5f9";
 const LEFTBAR_FILL = "#f8fafc";
+const BAND_RULE = "#111111";
+const TITLE_BAND_FILL = "#e5e7eb";
+const DARK_BAND_FILL = "#1f2937";
+const THEOREM_INK = "#1f3864";
+const THEOREM_FILL = "#eef1f8";
 const NOTEBOOK_FRAME = "#9ca3af";
 const NOTEBOOK_BINDING = "#b9b3a1";
 const NOTEBOOK_RING = "#706b5a";
@@ -83,6 +90,47 @@ export const BUILTIN_BOX_STYLES: BoxStyleDefinition[] = [
     },
   },
   {
+    id: "titlebox",
+    commandName: "titlebox",
+    displayName: "titlebox",
+    frame: {
+      borderWidthPx: 1.2,
+      borderColor: "#111111",
+      borderStyle: "solid",
+      backgroundColor: "#ffffff",
+      titleBackgroundColor: TITLE_BAND_FILL,
+      titleAlign: "left",
+      titleFontWeight: "bold",
+      cornerStyle: "sharp",
+      paddingPx: { top: 30, right: 14, bottom: 12, left: 14 },
+      decorations: [{
+        type: "titleBand",
+        heightPx: 30,
+        backgroundColor: TITLE_BAND_FILL,
+        ruleWidthPx: 1.2,
+        ruleColor: BAND_RULE,
+      }],
+    },
+  },
+  {
+    id: "bandbox",
+    commandName: "bandbox",
+    displayName: "bandbox",
+    frame: {
+      borderWidthPx: 1.2,
+      borderColor: "#111111",
+      borderStyle: "solid",
+      backgroundColor: "#ffffff",
+      titleBackgroundColor: DARK_BAND_FILL,
+      titleColor: "#ffffff",
+      titleAlign: "left",
+      titleFontWeight: "bold",
+      cornerStyle: "sharp",
+      paddingPx: { top: 30, right: 14, bottom: 12, left: 14 },
+      decorations: [{ type: "titleBand", heightPx: 30, backgroundColor: DARK_BAND_FILL }],
+    },
+  },
+  {
     id: "itembox",
     commandName: "itembox",
     displayName: "itembox",
@@ -97,6 +145,48 @@ export const BUILTIN_BOX_STYLES: BoxStyleDefinition[] = [
       cornerStyle: "sharp",
       paddingPx: { top: 16, right: 14, bottom: 12, left: 14 },
       decorations: [],
+    },
+  },
+  {
+    id: "theorembox",
+    commandName: "theorembox",
+    displayName: "theorembox",
+    frame: {
+      borderWidthPx: 0,
+      borderColor: "transparent",
+      borderStyle: "none",
+      backgroundColor: THEOREM_FILL,
+      titleColor: THEOREM_INK,
+      titleAlign: "left",
+      titleFontWeight: "bold",
+      cornerStyle: "sharp",
+      paddingPx: { top: 12, right: 16, bottom: 12, left: 18 },
+      decorations: [{ type: "leftBar", widthPx: 4, color: THEOREM_INK }],
+    },
+  },
+  {
+    id: "tabbox",
+    commandName: "tabbox",
+    displayName: "tabbox",
+    frame: {
+      borderWidthPx: 1.4,
+      borderColor: THEOREM_INK,
+      borderStyle: "solid",
+      backgroundColor: "#ffffff",
+      titleBackgroundColor: THEOREM_INK,
+      titleColor: "#ffffff",
+      titleAlign: "left",
+      titleFontWeight: "bold",
+      cornerStyle: "round",
+      radiusPx: 4,
+      paddingPx: { top: 14, right: 16, bottom: 14, left: 16 },
+      decorations: [{
+        type: "titleTab",
+        heightPx: 26,
+        radiusPx: 4,
+        offsetXPx: 0,
+        paddingPx: { top: 0, right: 14, bottom: 0, left: 14 },
+      }],
     },
   },
   {
@@ -473,12 +563,14 @@ export function boxFrameStyleVars(frame: BoxFrameSpec): Record<string, string> {
   const doubleRule = findBoxDecoration(frame, "doubleRule");
   const titleDoubleRule = findBoxDecoration(frame, "titleDoubleRule");
   const titleBand = findBoxDecoration(frame, "titleBand");
+  const titleTab = findBoxDecoration(frame, "titleTab");
   const titlePlate = findBoxDecoration(frame, "titlePlate");
   const leftBar = findBoxDecoration(frame, "leftBar");
   const shadow = findBoxDecoration(frame, "shadow");
   const horizontalRules = findBoxDecoration(frame, "horizontalRules");
   const notebookRules = findBoxDecoration(frame, "notebookRules");
   const titlePlatePadding = titlePlate?.paddingPx ?? { top: 2, right: 10, bottom: 2, left: 10 };
+  const titleTabPadding = titleTab?.paddingPx ?? { top: 0, right: 12, bottom: 0, left: 12 };
   const notebookFrameHeight = notebookRules?.frameHeightPx ?? notebookRules?.minHeightPx ?? DEFAULT_NOTEBOOK_FRAME_HEIGHT_PX;
   const notebookRingLeftOverhang = notebookRules?.ringLeftOverhangPx ?? 14;
   const titlePosition = frame.titlePosition ?? "l";
@@ -491,7 +583,7 @@ export function boxFrameStyleVars(frame: BoxFrameSpec): Record<string, string> {
     "--sigma-doc-box-border-color": frame.borderColor ?? "#111111",
     "--sigma-doc-box-border-style": frame.borderStyle ?? "solid",
     "--sigma-doc-box-background": frame.backgroundColor ?? "#ffffff",
-    "--sigma-doc-box-title-background": frame.titleBackgroundColor ?? titleBand?.backgroundColor ?? frame.backgroundColor ?? "#ffffff",
+    "--sigma-doc-box-title-background": frame.titleBackgroundColor ?? titleBand?.backgroundColor ?? titleTab?.backgroundColor ?? frame.backgroundColor ?? "#ffffff",
     ...(frame.titleColor ? { "--sigma-doc-box-title-color": frame.titleColor } : {}),
     "--sigma-doc-box-title-align": frame.titlePosition ? titlePositionAlign : frame.titleAlign ?? titlePositionAlign,
     ...(frame.titleFontWeight ? { "--sigma-doc-box-title-weight": frame.titleFontWeight === "bold" ? "700" : "400" } : {}),
@@ -517,6 +609,13 @@ export function boxFrameStyleVars(frame: BoxFrameSpec): Record<string, string> {
     "--sigma-doc-box-title-rule-color": titleDoubleRule?.ruleColor ?? "#111111",
     "--sigma-doc-box-title-guide-color": titleDoubleRule?.guideColor ?? "#b8b8b8",
     "--sigma-doc-box-title-band-height": `${titleBand?.heightPx ?? 32}px`,
+    "--sigma-doc-box-title-band-rule-width": `${titleBand?.ruleWidthPx ?? 0}px`,
+    "--sigma-doc-box-title-band-rule-color": titleBand?.ruleColor ?? frame.borderColor ?? "#111111",
+    "--sigma-doc-box-title-tab-height": `${titleTab?.heightPx ?? 26}px`,
+    "--sigma-doc-box-title-tab-radius": `${titleTab?.radiusPx ?? 4}px`,
+    "--sigma-doc-box-title-tab-offset-x": `${titleTab?.offsetXPx ?? 0}px`,
+    "--sigma-doc-box-title-tab-padding-right": `${titleTabPadding.right}px`,
+    "--sigma-doc-box-title-tab-padding-left": `${titleTabPadding.left}px`,
     "--sigma-doc-box-title-plate-border-color": titlePlate?.borderColor ?? frame.borderColor ?? "#111111",
     "--sigma-doc-box-title-plate-radius": `${titlePlate?.radiusPx ?? 3}px`,
     "--sigma-doc-box-title-plate-padding-top": `${titlePlatePadding.top}px`,
@@ -707,7 +806,12 @@ export function boxFrameAppliesFontFamily(
   return !isCornerBoxFrame(styleId, frame);
 }
 
-function mergeBoxFrame(base: BoxFrameSpec | undefined, override: BoxFrameSpec | undefined): BoxFrameSpec {
+/**
+ * 枠仕様を重ねる。`decorations` は**配列ごと**上書きする (片方だけ足すと、同じ種類の装飾が
+ * 二重に載って描画が壊れる)。設定ダイアログの patch と、スタイルごとに覚えた既定の適用が
+ * 同じ規約で動くよう、外へも出している。
+ */
+export function mergeBoxFrame(base: BoxFrameSpec | undefined, override: BoxFrameSpec | undefined): BoxFrameSpec {
   const paddingPx = override?.paddingPx
     ? { ...(base?.paddingPx ?? override.paddingPx), ...override.paddingPx }
     : base?.paddingPx;

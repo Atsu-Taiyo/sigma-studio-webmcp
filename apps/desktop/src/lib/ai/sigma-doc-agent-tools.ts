@@ -9,11 +9,17 @@ import {
   createGraphAxisLabelShapeEntries,
   createGraphFormulaLabelShapeEntries,
   createGraphPointLabelShapeEntries,
+  DEFAULT_TEXT_SHAPE_WIDTH,
+  estimateTextWidthEm,
   getGraphPlotSize,
-  measureOverlayText,
+  getOverlayTextBlocksLineCount,
   normalizeCalloutCornerRadius,
+  TEXT_ASCENT_EM,
+  TEXT_DESCENT_EM,
+  TEXT_SHAPE_LINE_HEIGHT,
 } from "@/features/drawing";
-import { createGraphLabelLayoutPort } from "@/features/rendering/adapters";
+import { createGraphLabelLayoutPort, measureTexBoxEm } from "@/features/rendering/adapters";
+import { DEFAULT_MATH_RENDER_ENVIRONMENT } from "@/lib/math-environment";
 import {
   clearMaterializedGraphLabelTexts,
   formatInlineNodeRange,
@@ -47,7 +53,7 @@ import {
   type OverlayImageShape,
   type OverlayLineKind,
   type OverlayPoint,
-  type OverlayRichTextDocument,
+  type OverlayTextBlock,
   type OverlayShape,
   type OverlayShapeId,
   type OverlayTableShape,
@@ -132,7 +138,7 @@ import {
   materialMatchesQuery,
 } from "@/lib/materials";
 import {
-  inlineNodesToOverlayRichTextDocument,
+  inlineNodesToOverlayTextBlocks,
   inlineNodesToPlainText,
 } from "@/lib/tiptap-adapter";
 
@@ -582,7 +588,6 @@ export const DraftInsertShapeArgsSchema = z.object({
   placement: PlacementSchema.optional(),
   w: z.number().positive().optional(),
   h: z.number().positive().optional(),
-  maxWidth: z.number().positive().optional(),
   rotation: z.number().optional(),
   label: z.string().optional(),
   text: z.string().optional(),
@@ -624,21 +629,22 @@ export const DraftInsertShapeArgsSchema = z.object({
     });
   }
 
-  const hasW_H_Sizing = value.w !== undefined || value.h !== undefined;
-  const hasMaxWidthFontSize = value.maxWidth !== undefined || value.fontSize !== undefined;
-  if (value.kind !== "text" && value.kind !== "callout" && hasW_H_Sizing) {
+  if (value.kind !== "text" && value.kind !== "callout" && value.w !== undefined) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: tv("tools.insertShape2"),
     });
   }
-  if (value.kind !== "text" && value.kind !== "callout" && hasMaxWidthFontSize) {
+  if (value.kind !== "text" && value.kind !== "callout" && value.fontSize !== undefined) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: tv("tools.insertShape3"),
     });
   }
-  if (value.kind === "callout" && value.maxWidth !== undefined) {
+  // A text shape's height is its content's, so a caller naming one is asking for something that
+  // cannot be honoured — the editor overwrites it with the measured height the first time it
+  // draws the shape. Refused rather than accepted and dropped.
+  if (value.kind !== "callout" && value.h !== undefined) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: tv("tools.insertShape4"),
@@ -648,12 +654,6 @@ export const DraftInsertShapeArgsSchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: tv("tools.insertShape5"),
-    });
-  }
-  if (value.maxWidth !== undefined && (value.w !== undefined || value.h !== undefined)) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: tv("tools.insertShape6"),
     });
   }
 });
@@ -4232,7 +4232,6 @@ function remapOverlayShapeReferences<T extends OverlayShape>(shape: T, idMap: Ma
 type DraftInsertShapeArgs = z.infer<typeof DraftInsertShapeArgsSchema>;
 
 const AI_TEXT_SHAPE_MIN_WIDTH = 8;
-const AI_TEXT_SHAPE_FALLBACK_WIDTH = 60;
 const AI_SHAPE_LABEL_PADDING_X = 32;
 const AI_SHAPE_LABEL_PADDING_Y = 24;
 
@@ -4392,15 +4391,16 @@ function createOverlayShapeFromShapeToolArgs(
 
   if (args.kind === "text") {
     const children = createShapeToolInlineContent(args);
-    const estimatedSize = measureShapeToolText(children, size, args.fontSize, args.maxWidth);
-    const hasFixedSize = args.w !== undefined || args.h !== undefined;
+    const blocks = inlineNodesToOverlayTextBlocks(children);
+    // `h` is never taken from the caller: it is a cache of the measured DOM, and a number invented
+    // here would be overwritten the first time the editor draws the shape.
+    const defaultBox = getShapeToolTextBox(blocks, size, args.fontSize, args.w);
     const box = {
       x: args.x ?? 0,
       y: args.y ?? 44,
-      w: args.w ?? estimatedSize.w,
-      h: args.h ?? estimatedSize.h,
+      w: defaultBox.w,
+      h: defaultBox.h,
     };
-    const richText = inlineNodesToOverlayRichTextDocument(children);
     const placed = resolveShapeToolPlacement(args, document, targetId, box);
     return {
       ...common,
@@ -4411,10 +4411,7 @@ function createOverlayShapeFromShapeToolArgs(
       props: {
         w: box.w,
         h: box.h,
-        ...(args.maxWidth === undefined ? {} : { maxWidth: args.maxWidth }),
-        scale: 1,
-        richText,
-        autoSize: !hasFixedSize,
+        blocks,
         color,
         ...(args.fontSize === undefined ? {} : { fontSize: args.fontSize }),
         size,
@@ -4423,7 +4420,15 @@ function createOverlayShapeFromShapeToolArgs(
   }
 
   const children = createShapeToolInlineContent(args);
-  const estimatedTextSize = measureShapeToolText(children, size, args.fontSize);
+  const calloutBlocks = inlineNodesToOverlayTextBlocks(children);
+  // A callout is sized to the words it holds, not to the default a text shape takes: its width is
+  // part of a drawn bubble with a tail on it, and a bubble that is always the same width whatever
+  // it says is not a bubble anyone drew. So this keeps estimating the caption, which is what it
+  // did before the text shape stopped estimating anything.
+  const estimatedTextSize = {
+    w: estimateShapeToolContentWidth(children, size, args.fontSize),
+    h: getShapeToolTextBox(calloutBlocks, size, args.fontSize).h,
+  };
   const hasContent = Boolean(args.text || args.tex || args.label);
   const defaultWidth = hasContent
     ? Math.max(80, estimatedTextSize.w + AI_CALLOUT_PADDING * 2)
@@ -4451,7 +4456,7 @@ function createOverlayShapeFromShapeToolArgs(
         baseEnd: args.tailBaseEnd ?? defaultBaseEnd,
         tip: args.tailTip ?? defaultTip,
       },
-      richText: inlineNodesToOverlayRichTextDocument(children),
+      blocks: inlineNodesToOverlayTextBlocks(children),
       color,
       ...(args.fontSize === undefined ? {} : { fontSize: args.fontSize }),
       size,
@@ -4516,47 +4521,69 @@ export function createShapeToolInlineContent(args: { text?: string; tex?: string
   return children;
 }
 
-export function measureShapeToolText(
-  children: InlineNode[],
+/**
+ * The box a text shape gets from a tool that did not name one.
+ *
+ * Not a measurement. A text shape's width is chosen, not derived — nothing re-fits the box to its
+ * content — so an author (or a tool acting for one) either names a width or takes the same default
+ * every other creation path takes. The height is the floor the content cannot go under: the lines
+ * its own breaks put in it. The editor writes the real height back from the measured DOM the first
+ * time it draws the shape, and that is the only place a true height comes from.
+ */
+export function getShapeToolTextBox(
+  blocks: readonly OverlayTextBlock[],
   size: OverlayTextSize,
   fontSizePt?: number,
-  maxWidthPx?: number,
-  scale = 1,
+  widthPx?: number,
 ): { w: number; h: number } {
-  const text = inlineNodesToPlainText(children);
-  const normalizedScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-  const estimated = measureOverlayText({
-    inlineContent: children,
-    fontSizePx: (fontSizePt === undefined ? overlayTextSizeToPx(size) : ptToPx(fontSizePt)) * normalizedScale,
-    ...(maxWidthPx === undefined ? {} : { maxWidthPx }),
-  });
+  const fontSizePx = fontSizePt === undefined ? overlayTextSizeToPx(size) : ptToPx(fontSizePt);
+  const lineHeightPx = Math.ceil(fontSizePx * TEXT_SHAPE_LINE_HEIGHT);
   return {
-    w: maxWidthPx ?? Math.max(AI_TEXT_SHAPE_MIN_WIDTH, estimated.w, text.length === 0 ? AI_TEXT_SHAPE_FALLBACK_WIDTH : 0),
-    h: estimated.h,
+    w: Math.max(AI_TEXT_SHAPE_MIN_WIDTH, widthPx ?? DEFAULT_TEXT_SHAPE_WIDTH),
+    h: getOverlayTextBlocksLineCount(blocks) * lineHeightPx,
   };
 }
 
-export function measureShapeToolRichText(
-  richText: OverlayRichTextDocument,
+/**
+ * The box a caption occupies, for a shape being sized to fit the one it carries.
+ *
+ * This one *is* a measurement, because a `props.label` is drawn straight into the SVG as a single
+ * line with no box of its own to wrap in — the same estimate `shape-label-geometry.ts` places it
+ * with, so a shape sized here and the caption drawn there agree.
+ */
+/**
+ * How wide the content of a callout wants to be, on one line.
+ *
+ * A formula is measured as the box it renders in, not as the characters of its TeX: `\frac{1}{2}`
+ * is one small stacked fraction, and counting its thirteen source characters would blow the bubble
+ * out to several times the width it needs. Plain text has no rendered box to ask about, so it
+ * keeps the caption estimate.
+ */
+function estimateShapeToolContentWidth(
+  children: readonly InlineNode[],
   size: OverlayTextSize,
   fontSizePt?: number,
-  maxWidthPx?: number,
-  scale = 1,
-): { w: number; h: number } {
-  const normalizedScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-  const estimated = measureOverlayText({
-    richText,
-    fontSizePx: (fontSizePt === undefined ? overlayTextSizeToPx(size) : ptToPx(fontSizePt)) * normalizedScale,
-    ...(maxWidthPx === undefined ? {} : { maxWidthPx }),
-  });
-  return {
-    w: maxWidthPx ?? Math.max(AI_TEXT_SHAPE_MIN_WIDTH, estimated.w, estimated.w === 0 ? AI_TEXT_SHAPE_FALLBACK_WIDTH : 0),
-    h: estimated.h,
-  };
+): number {
+  const fontSizePx = fontSizePt === undefined ? overlayTextSizeToPx(size) : ptToPx(fontSizePt);
+  const widthEm = children.reduce((sum, child) => {
+    if (child.type === "mathInline") {
+      return sum + measureTexBoxEm(child.tex, DEFAULT_MATH_RENDER_ENVIRONMENT).widthEm;
+    }
+    return sum + (child.type === "text" ? estimateTextWidthEm(child.text.replace(/\s+/g, " ")) : 0);
+  }, 0);
+  return Math.ceil(widthEm * fontSizePx);
 }
 
-function estimatePlainTextToolSize(text: string, size: OverlayTextSize): { w: number; h: number } {
-  return measureOverlayText({ lines: [text], fontSizePx: overlayTextSizeToPx(size) });
+function estimateShapeToolLabelSize(
+  text: string,
+  size: OverlayTextSize,
+  fontSizePt?: number,
+): { w: number; h: number } {
+  const fontSizePx = fontSizePt === undefined ? overlayTextSizeToPx(size) : ptToPx(fontSizePt);
+  return {
+    w: Math.ceil(estimateTextWidthEm(text.replace(/\s+/g, " ")) * fontSizePx),
+    h: Math.ceil(fontSizePx * (TEXT_ASCENT_EM + TEXT_DESCENT_EM)),
+  };
 }
 
 function getShapeToolBox(
@@ -4637,7 +4664,7 @@ function getDefaultShapeToolSize(kind: DraftInsertShapeArgs["kind"], label: stri
     return baseSize;
   }
 
-  const labelSize = estimatePlainTextToolSize(label, size);
+  const labelSize = estimateShapeToolLabelSize(label, size);
   return {
     w: Math.max(baseSize.w, labelSize.w + AI_SHAPE_LABEL_PADDING_X),
     h: Math.max(baseSize.h, labelSize.h + AI_SHAPE_LABEL_PADDING_Y),

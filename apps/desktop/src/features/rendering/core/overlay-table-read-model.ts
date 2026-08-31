@@ -1,4 +1,5 @@
 import {
+  getTableCellMatrix,
   resolveDocumentFontFamily,
   type SigmaTableCell,
   type SigmaTableGridLineOverride,
@@ -382,7 +383,9 @@ export interface OverlayTableLineConnectorModel {
 /**
  * Span expansion for a table: which cell owns each grid position and which positions it covers.
  *
- * The static view walks this. Two editor surfaces — `table-shape-editor.tsx` and the preview inside
+ * The expansion itself lives in `getTableCellMatrix` (`features/document/model/table-grid.ts`), so
+ * this layout model and the chart derivation agree on which cell owns a merged position. The static
+ * view walks this. Two editor surfaces — `table-shape-editor.tsx` and the preview inside
  * `TableSettingsDialog.tsx` — still hand-roll the same `coveredCells` pass inside their render;
  * folding those onto this model is follow-up work, deliberately out of this change's scope. The one
  * copy that did NOT expand spans at all (`AiEditInlinePreviewCard`'s table preview, whose merged
@@ -396,27 +399,16 @@ export function getTableGridModel(
 ): OverlayTableGridModel {
   const columnWidths = resolveTableColumnWidths(table, width);
   const rowHeights = resolveTableRowHeights(table, height);
-  const cellMap = new Map(table.cells.map((cell) => [`${cell.rowId}:${cell.columnId}`, cell]));
-  const coveredCells = new Set<string>();
+  const matrix = getTableCellMatrix(table);
 
   const rows = table.rows.map((row, rowIndex) => {
-    const cells: OverlayTableGridCell[] = [];
-    table.columns.forEach((column, columnIndex) => {
-      if (coveredCells.has(`${rowIndex}:${columnIndex}`)) {
-        return;
-      }
-      const cell = cellMap.get(`${row.id}:${column.id}`);
-      const rowSpan = cell?.rowSpan ?? 1;
-      const colSpan = cell?.colSpan ?? 1;
-      for (let y = rowIndex; y < rowIndex + rowSpan; y += 1) {
-        for (let x = columnIndex; x < columnIndex + colSpan; x += 1) {
-          if (y !== rowIndex || x !== columnIndex) {
-            coveredCells.add(`${y}:${x}`);
-          }
-        }
-      }
-      cells.push({ cell, colSpan, columnIndex, rowIndex, rowSpan });
-    });
+    const cells: OverlayTableGridCell[] = (matrix.origins[rowIndex] ?? []).map((placement) => ({
+      cell: placement.cell,
+      colSpan: placement.colSpan,
+      columnIndex: placement.columnIndex,
+      rowIndex: placement.rowIndex,
+      rowSpan: placement.rowSpan,
+    }));
     return { cells, height: rowHeights[rowIndex], rowId: row.id };
   });
 

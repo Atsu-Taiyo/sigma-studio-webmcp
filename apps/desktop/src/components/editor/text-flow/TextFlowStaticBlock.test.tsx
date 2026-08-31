@@ -4,7 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { TextFlowStaticBlock } from "@/components/editor/text-flow/TextFlowStaticBlock";
-import type { CodeBlockNode, ListNode } from "@/features/document";
+import { HeadingNumberingProvider } from "@/components/editor/text-flow/HeadingNumberingContext";
+import type { CodeBlockNode, HeadingNode, ListNode } from "@/features/document";
 
 /**
  * `TextFlowStaticBlock` is the only static body renderer: print, PDF, the embedded viewer, and
@@ -20,7 +21,6 @@ function orderedList(markerStyle?: ListNode["markerStyle"]): ListNode {
     items: [{ type: "listItem", id: "li_1", children: [{ type: "text", text: "本文" }] }],
   };
 }
-
 function documentSurfaceCss(): string {
   return readFileSync(new URL("../../../app/document-surface.css", import.meta.url), "utf8");
 }
@@ -29,6 +29,25 @@ function documentSurfaceCss(): string {
 function editorCss(): string {
   return readFileSync(new URL("../../../app/globals.css", import.meta.url), "utf8");
 }
+
+describe("TextFlowStaticBlock heading numbers", () => {
+  it("keeps the derived number in the heading's accessible text", () => {
+    const block: HeadingNode = {
+      type: "heading",
+      id: "heading_1",
+      level: 2,
+      children: [{ type: "text", text: "Methods" }],
+    };
+    const markup = renderToStaticMarkup(
+      <HeadingNumberingProvider numbers={new Map([[block.id, "1.2"]])}>
+        <TextFlowStaticBlock block={block} />
+      </HeadingNumberingProvider>,
+    );
+
+    expect(markup).toContain('<span class="heading-number-prefix">1.2 </span>Methods');
+    expect(markup).not.toContain('aria-hidden="true"');
+  });
+});
 
 describe("TextFlowStaticBlock ordered list markers", () => {
   it("marks a paren list so print, PDF, and the viewer draw (1)", () => {
@@ -249,7 +268,6 @@ function plainCodeText(markup: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
 }
-
 
 describe("TextFlowStaticBlock block space after", () => {
   it("puts the shared custom property on a paragraph", () => {

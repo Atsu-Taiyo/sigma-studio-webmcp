@@ -1,4 +1,7 @@
-import "../register-math-metrics";
+export {
+  createGraph3DIntersectionSvg,
+  type Graph3DSectionSvgResult,
+} from "./graph3d-intersection-svg";
 
 export {
   serializeOverlayPreviewSvg,

@@ -111,16 +111,12 @@ function text(id: string, x: number, y: number, w: number, h: number): OverlaySh
     props: {
       w,
       h,
-      scale: 1,
-      richText: {
-        blocks: [
+      blocks: [
           {
-            type: "paragraph",
+            type: "paragraph", id: "shape_arrangement_test_5",
             children: [{ type: "text", text: "label" }],
           },
         ],
-      },
-      autoSize: false,
       color: "black",
       size: "m",
     },
@@ -248,14 +244,12 @@ describe("shape arrangement", () => {
     ["center", [{ x: 65, y: 10 }, { x: 60, y: 80 }, { x: 65, y: 40 }, { x: 55, y: 50 }]],
     ["right", [{ x: 120, y: 10 }, { x: 110, y: 80 }, { x: 120, y: 40 }, { x: 100, y: 50 }]],
     ["top", [{ x: 40, y: 10 }, { x: 10, y: 10 }, { x: 120, y: 10 }, { x: 70, y: 10 }]],
-    // The mixed-shape "text" fixture (70,50,40,24, autoSize:false) wraps its "label" content
-    // at its stored 40px width, needing 2 lines (32px) at the default 16px font — taller than
-    // the stored h:24. getShapeBounds now grows to that measured height (grow-only) instead of
-    // silently reporting the too-small stored height, which is the fix this phase makes: the
-    // text no longer gets clipped by the print foreignObject. That +8px shifts every
-    // vertical-alignment offset that depends on this shape's bounds.
-    ["middle", [{ x: 40, y: 36 }, { x: 10, y: 45.5 }, { x: 120, y: 41 }, { x: 70, y: 30 }]],
-    ["bottom", [{ x: 40, y: 62 }, { x: 10, y: 81 }, { x: 120, y: 72 }, { x: 70, y: 50 }]],
+    // The mixed-shape "text" fixture (70,50,40,24) keeps its stored 24px height: a text box wraps
+    // at the width the user set, and how many lines that takes is the renderer's business — the
+    // box only ever floors at the lines the content breaks itself into. Every vertical alignment
+    // below is measured against that box.
+    ["middle", [{ x: 40, y: 35.5 }, { x: 10, y: 45 }, { x: 120, y: 40.5 }, { x: 70, y: 33.5 }]],
+    ["bottom", [{ x: 40, y: 61 }, { x: 10, y: 80 }, { x: 120, y: 71 }, { x: 70, y: 57 }]],
   ] satisfies [OverlayAlignAction, { x: number; y: number }[]][])("aligns mixed shapes to %s by visible bounds", (action, expected) => {
     const aligned = alignShapes([
       rect("box", 40, 10, 20, 20),

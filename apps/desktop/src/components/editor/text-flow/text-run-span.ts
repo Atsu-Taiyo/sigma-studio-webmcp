@@ -21,6 +21,7 @@ import {
   writeTextSliceClipboardData,
 } from "@/lib/editor-clipboard";
 import { PROBLEM_AREA_ORDER, type SigmaBlock } from "@/features/document";
+import { posAtClientPoint } from "@/components/editor/text-flow/pos-at-client-point";
 import { createId } from "@/lib/id";
 import { tiptapNodesToInlineNodes } from "@/lib/tiptap-adapter";
 import {
@@ -2024,13 +2025,7 @@ function editorAtPoint(
 }
 
 function posInEditor(editor: Editor, clientX: number, clientY: number): number | null {
-  const rect = editor.view.dom.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) {
-    return null;
-  }
-  const left = clamp(clientX, rect.left + 1, rect.right - 1);
-  const top = clamp(clientY, rect.top + 1, rect.bottom - 1);
-  return editor.view.posAtCoords({ left, top })?.pos ?? null;
+  return posAtClientPoint(editor.view, clientX, clientY);
 }
 
 function getEditorDomRange(editor: Editor, from: number, to: number): Range | null {

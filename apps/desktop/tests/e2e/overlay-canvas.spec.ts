@@ -2062,49 +2062,74 @@ test("autosizes text shape height for tall inline math", async ({ page }) => {
   })).toBeGreaterThanOrEqual(-1);
 });
 
-test("scales text font when resizing a text shape", async ({ page }) => {
+test("resizes a text shape by width alone", async ({ page }) => {
   await page.goto("/");
 
   await chooseShape(page, "テキスト");
   const textShape = page.locator(".overlay-shape-text").first();
+  const textShapeId = await textShape.getAttribute("data-overlay-shape-id");
+  expect(textShapeId).not.toBeNull();
   const textBody = textShape.locator(".overlay-text-shape").first();
   const editor = textShape.locator(".overlay-text-shape-content");
   await expect(editor).toBeFocused();
-  await page.keyboard.type("abc");
-  await expect(editor).toContainText("abc");
+  await page.keyboard.type("あいうえおかきくけこさしすせそ");
+  await expect(editor).toContainText("あいうえお");
+
+  const readSaved = async () => {
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("sigma-studio:flush-overlay-changes")));
+    return (await getSavedOverlayShapes(page)).find((shape) => shape.id === textShapeId);
+  };
 
   const beforeBox = await textShape.boundingBox();
   expect(beforeBox).not.toBeNull();
   const beforeFontSize = await textBody.evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
   await page.keyboard.press("Escape");
 
-  await dragHandle(page, page.locator(".overlay-resize-handle.se").first(), 90, 60);
+  // The width is the author's and the height comes from the content, so the corners that used to
+  // scale the glyphs are gone and only the two width handles are left. Rotation is unaffected.
+  await expect(page.locator(".overlay-resize-handle")).toHaveCount(2);
+  await expect(page.locator(".overlay-resize-handle.e")).toHaveCount(1);
+  await expect(page.locator(".overlay-resize-handle.w")).toHaveCount(1);
+  await expect(page.locator(".overlay-rotate-handle")).toHaveCount(1);
 
-  await expect.poll(async () => {
-    const box = await textShape.boundingBox();
-    return box?.height ?? 0;
-  }).toBeGreaterThan(beforeBox!.height + 30);
-  await expect.poll(async () => {
-    return textBody.evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
-  }).toBeGreaterThan(beforeFontSize + 8);
+  // Narrowing wraps the text: the box gets taller without the type getting smaller, and it grows
+  // downwards from where it already was instead of drifting.
+  await dragHandle(page, page.locator(".overlay-resize-handle.e").first(), -90, 40);
+
+  await expect.poll(async () => (await textShape.boundingBox())?.width ?? 0)
+    .toBeLessThan(beforeBox!.width - 60);
+  await expect.poll(async () => (await textShape.boundingBox())?.height ?? 0)
+    .toBeGreaterThan(beforeBox!.height + 4);
+  const narrowed = await textShape.boundingBox();
+  expect(narrowed).not.toBeNull();
+  expect(Math.abs(narrowed!.x - beforeBox!.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(narrowed!.y - beforeBox!.y)).toBeLessThanOrEqual(2);
+  expect(await textBody.evaluate((element) => parseFloat(getComputedStyle(element).fontSize)))
+    .toBeCloseTo(beforeFontSize, 1);
+
+  // The west handle moves the left edge and leaves the right one where it is.
+  const savedBeforeWest = await readSaved();
+  expect(typeof savedBeforeWest?.anchor?.dx).toBe("number");
+  await dragHandle(page, page.locator(".overlay-resize-handle.w").first(), -60, 0);
+
+  await expect.poll(async () => (await textShape.boundingBox())?.x ?? 0)
+    .toBeLessThan(narrowed!.x - 40);
+  const widened = await textShape.boundingBox();
+  expect(widened).not.toBeNull();
+  expect(Math.abs((widened!.x + widened!.width) - (narrowed!.x + narrowed!.width))).toBeLessThanOrEqual(2);
+
+  // A shape's position is stored twice — `x`/`y` and the anchor's offset — and the anchor is what
+  // the loader reads. A resize that moved the left edge without re-anchoring looks right until the
+  // document is opened again, then snaps back (PR #447). So both have to move by the same amount.
+  const savedAfterWest = await readSaved();
+  expect(savedAfterWest?.x).toBeLessThan(savedBeforeWest!.x!);
+  expect(savedAfterWest!.anchor!.dx! - savedBeforeWest!.anchor!.dx!)
+    .toBeCloseTo(savedAfterWest!.x! - savedBeforeWest!.x!, 1);
+
+  // The height stays the content's, so the box still ends where the text ends.
   await expect.poll(async () => textShape.evaluate((element) => {
     const shapeBox = element.getBoundingClientRect();
-    const content = element.querySelector(".ProseMirror");
-    if (!content) {
-      return 999;
-    }
-    const contentRects = [content, ...Array.from(content.querySelectorAll("*"))]
-      .map((item) => item.getBoundingClientRect())
-      .filter((rect) => rect.width > 0 || rect.height > 0);
-    if (contentRects.length === 0) {
-      return 999;
-    }
-    const contentRight = Math.max(...contentRects.map((rect) => rect.right));
-    return Math.ceil(shapeBox.right - contentRight);
-  })).toBeLessThanOrEqual(8);
-  await expect.poll(async () => textShape.evaluate((element) => {
-    const shapeBox = element.getBoundingClientRect();
-    const content = element.querySelector(".ProseMirror");
+    const content = element.querySelector(".overlay-text-shape-content");
     if (!content) {
       return 999;
     }
@@ -2117,6 +2142,54 @@ test("scales text font when resizing a text shape", async ({ page }) => {
     const contentBottom = Math.max(...contentRects.map((rect) => rect.bottom));
     return Math.ceil(shapeBox.bottom - contentBottom);
   })).toBeLessThanOrEqual(8);
+});
+
+test("creates and persists lists inside a text shape from the toolbar", async ({ page }) => {
+  await page.goto("/");
+
+  await chooseShape(page, "テキスト");
+  const textShape = page.locator(".overlay-shape-text").first();
+  const editor = textShape.locator(".overlay-text-shape-content");
+  await expect(editor).toBeFocused();
+  await page.keyboard.type("一次式");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("二次式");
+  await page.keyboard.press("ControlOrMeta+A");
+
+  const bulletList = page.getByRole("button", { name: "箇条書き", exact: true });
+  await expect(bulletList).toBeEnabled();
+  await bulletList.click();
+  await expect(editor.locator("ul > li")).toHaveCount(2);
+
+  const orderedList = page.getByRole("button", { name: "番号付きリスト", exact: true });
+  await expect(orderedList).toBeEnabled();
+  await orderedList.click();
+  await page.getByRole("menuitem", { name: "1. 2. 3.", exact: true }).click();
+  await expect(editor.locator("ol > li")).toHaveCount(2);
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("sigma-studio:flush-overlay-changes")));
+
+  await expect.poll(async () => {
+    const saved = (await getSavedOverlayShapes(page)).find((shape) => shape.type === "text");
+    return saved?.props?.blocks?.[0];
+  }).toMatchObject({ type: "list", listType: "ordered", items: [{}, {}] });
+
+  const savedDocument = await page.evaluate(() => {
+    const raw = window.localStorage.getItem("sigma-studio:e2e-document");
+    return raw ? JSON.parse(raw) : null;
+  }) as SigmaDocument | null;
+  expect(savedDocument).not.toBeNull();
+
+  // The desktop runtime mock intentionally resets its in-memory document on a same-page reload.
+  // Open a fresh app surface seeded with the saved SigmaDoc to exercise the real load/render path.
+  const reopenedPage = await page.context().newPage();
+  await installDesktopRuntimeMock(reopenedPage, savedDocument!);
+  await reopenedPage.goto("/");
+  const preview = reopenedPage.locator(".page-overlay-preview .overlay-shape-text").first();
+  await expect(preview.locator("ol > li")).toHaveCount(2);
+  await expect(preview).toContainText("一次式");
+  await expect(preview).toContainText("二次式");
+  await reopenedPage.close();
 });
 
 test("undoes text shape edits one step at a time with ctrl z", async ({ page }) => {
@@ -2501,6 +2574,7 @@ type SavedOverlayShape = {
   parentId?: string;
   x?: number;
   y?: number;
+  anchor?: { type?: string; blockId?: string; dx?: number; dy?: number };
   rotation?: number;
   flipX?: boolean;
   flipY?: boolean;
@@ -2510,14 +2584,14 @@ type SavedOverlayShape = {
     r?: number;
     rx?: number;
     ry?: number;
-    richText?: SavedOverlayRichTextNode;
+    blocks?: SavedOverlayRichTextNode[];
   };
 };
 
 type SavedOverlayRichTextNode = {
   text?: string;
   children?: SavedOverlayRichTextNode[];
-  blocks?: SavedOverlayRichTextNode[];
+  items?: SavedOverlayRichTextNode[];
 };
 
 type SelectionBoxState = {
@@ -2600,7 +2674,7 @@ async function expectSavedTextShapeMatchesRender(
     const savedWidth = savedShape?.props?.w;
     const savedHeight = savedShape?.props?.h;
     return {
-      text: savedShape?.props?.richText ? savedRichTextPlainText(savedShape.props.richText).trim() : null,
+      text: savedShape?.props?.blocks ? savedRichTextBlocksPlainText(savedShape.props.blocks).trim() : null,
       sizeMatches: Boolean(
         renderedBounds &&
         typeof savedWidth === "number" &&
@@ -2615,7 +2689,11 @@ async function expectSavedTextShapeMatchesRender(
 function savedRichTextPlainText(node: SavedOverlayRichTextNode): string {
   return (node.text ?? "")
     + (node.children ?? []).map(savedRichTextPlainText).join("")
-    + (node.blocks ?? []).map(savedRichTextPlainText).join("\n");
+    + (node.items ?? []).map(savedRichTextPlainText).join("\n");
+}
+
+function savedRichTextBlocksPlainText(blocks: SavedOverlayRichTextNode[]): string {
+  return blocks.map(savedRichTextPlainText).join("\n");
 }
 
 async function rotateSelectedShape(page: Page, shape: Locator) {

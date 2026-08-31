@@ -5,6 +5,7 @@ import type {
   OverlayArcShape,
   OverlayArrowShape,
   OverlayGraphShape,
+  OverlayGraph3DShape,
   OverlayLineShape,
   OverlayShape,
   OverlayTextShape,
@@ -12,7 +13,7 @@ import type {
 
 import {
   getArcRadii,
-  getOverlayRichTextLineCount,
+  getOverlayTextBlocksLineCount,
   getShapeBounds,
   getShapeDimensionBounds,
   getShapeRotation,
@@ -22,7 +23,6 @@ import {
   getTextShapeLineHeightPx,
   getTextShapeRenderedFontSizePx,
   getTextShapeRenderedLineHeightPx,
-  normalizeTextShapeScale,
 } from "./shape-bounds";
 
 function graphSpec(kind: Graph2DSpec["kind"] = "cartesian"): Graph2DSpec {
@@ -59,6 +59,43 @@ function graphShape(
   };
 }
 
+function graph3DShape(
+  props: Partial<OverlayGraph3DShape["props"]> = {},
+): OverlayGraph3DShape {
+  return {
+    id: "graph3d",
+    type: "graph3dShape",
+    x: 18,
+    y: 26,
+    props: {
+      w: 320,
+      h: 220,
+      spec: {
+        version: 1,
+        parameters: [],
+        objects: [],
+        cuts: [],
+        regions: [],
+        annotations: [],
+        camera: {
+          projection: "perspective",
+          position: { x: 5, y: -6, z: 4 },
+          target: { x: 0, y: 0, z: 0 },
+          up: { x: 0, y: 0, z: 1 },
+        },
+        view: {
+          coordinateSystem: "zUp",
+          showAxes: true,
+          showGrid: true,
+          showAxisLabels: true,
+          backgroundColor: "#ffffff",
+        },
+      },
+      ...props,
+    },
+  };
+}
+
 function textShape(
   props: Partial<OverlayTextShape["props"]> = {},
 ): OverlayTextShape {
@@ -69,14 +106,14 @@ function textShape(
     y: 40,
     props: {
       w: 4,
-      richText: {
-        blocks: [
+      h: 16,
+      blocks: [
           {
-            type: "paragraph",
+            type: "paragraph", id: "shape_bounds_test_7",
             children: [{ type: "text", text: "a\nb\n" }],
           },
           {
-            type: "paragraph",
+            type: "paragraph", id: "shape_bounds_test_8",
             children: [{
               type: "mathInline",
               id: "math_x",
@@ -85,8 +122,6 @@ function textShape(
             }],
           },
         ],
-      },
-      autoSize: true,
       color: "black",
       size: "m",
       ...props,
@@ -95,6 +130,14 @@ function textShape(
 }
 
 describe("shape bounds", () => {
+  it("uses the persisted 3D preview rectangle as its bounds", () => {
+    const shape = graph3DShape();
+
+    expect(getShapeBounds(shape)).toEqual({ x: 18, y: 26, w: 320, h: 220 });
+    expect(getShapeSelectionBounds(shape)).toEqual(getShapeBounds(shape));
+    expect(getShapeDimensionBounds(shape)).toEqual(getShapeBounds(shape));
+  });
+
   it("uses canonical plot bounds directly for current graph shapes", () => {
     const shape = graphShape({ boundsMode: "plot", w: 296, h: 188 });
 
@@ -251,11 +294,10 @@ describe("shape bounds", () => {
   it("counts rich-text lines and expands text bounds using rendered line height", () => {
     const shape = textShape();
 
-    expect(getOverlayRichTextLineCount(shape.props.richText)).toBe(4);
+    expect(getOverlayTextBlocksLineCount(shape.props.blocks)).toBe(4);
     expect(getTextShapeRenderedLineHeightPx(shape)).toBe(16);
-    // Width stays clamped to the stored width / shape minimum -- only the height is derived from
-    // the content (see `getTextShapeEffectiveSize`). Widening from the estimate would make the
-    // box wider than the glyphs an `auto-size` shape actually renders at `width: max-content`.
+    // The width is the user's, clamped to the shape minimum; only the height is derived from the
+    // content, and only as the floor the measured cache can never drop below.
     expect(getShapeBounds(shape)).toEqual({
       x: 30,
       y: 40,
@@ -265,24 +307,14 @@ describe("shape bounds", () => {
     expect(getShapeBounds(textShape({ h: 80 })).h).toBe(80);
   });
 
-  it("preserves point-to-pixel conversion and scale clamping", () => {
-    const pointSized = textShape({
-      fontSize: 10.5,
-      scale: 1,
-    });
-    const scaled = textShape({
-      fontSize: 10.5,
-      scale: 2,
-    });
+  it("preserves point-to-pixel conversion", () => {
+    const pointSized = textShape({ fontSize: 10.5 });
 
     expect(getTextShapeFontSizePt(pointSized)).toBe(10.5);
     expect(getTextShapeRenderedFontSizePx(pointSized)).toBe(14);
-    expect(getTextShapeFontSizePt(scaled)).toBe(21);
-    expect(getTextShapeRenderedFontSizePx(scaled)).toBe(28);
+    expect(getTextShapeFontSizePt(textShape({ fontSize: 21 }))).toBe(21);
+    expect(getTextShapeRenderedFontSizePx(textShape({ fontSize: 21 }))).toBe(28);
     expect(getTextShapeLineHeightPx("s")).toBe(13);
-    expect(normalizeTextShapeScale(0)).toBe(0.25);
-    expect(normalizeTextShapeScale(20)).toBe(8);
-    expect(normalizeTextShapeScale(Number.NaN)).toBe(1);
   });
 
   it("keeps groups and tables unrotated in interaction geometry", () => {

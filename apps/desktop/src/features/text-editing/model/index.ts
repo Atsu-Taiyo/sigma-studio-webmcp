@@ -80,6 +80,7 @@ export {
 export {
   filterTextFlowCommandDefinitions,
   parseTextFlowCommandTrigger,
+  textFlowCommandNameMatchRank,
   type FilterTextFlowCommandDefinitionsOptions,
   type TextFlowCommandDefinition,
   type TextFlowCommandTriggerQuery,

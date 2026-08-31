@@ -55,6 +55,14 @@ export function moveShapes(
   return shapes.map((shape) => moveShape(shape, dx, dy));
 }
 
+/**
+ * Scales a selection from one box to another, shape by shape.
+ *
+ * Each shape decides what a new box means for it, and a text shape takes only the horizontal
+ * factor: its height is derived from its content and its type size is not geometry. Scaling a
+ * group used to enlarge the glyphs inside it, which is the same "resizing changes the font"
+ * behaviour the single-shape path dropped.
+ */
 export function resizeShapesToBounds(
   shapes: OverlayShape[],
   fromBounds: OverlayBounds,

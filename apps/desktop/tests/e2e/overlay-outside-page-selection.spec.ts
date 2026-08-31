@@ -123,11 +123,9 @@ function textShape({ id, x, y }: Placement) {
     props: {
       w: 140,
       h: 40,
-      scale: 1,
-      autoSize: false,
       color: "#111111",
       size: "m",
-      richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "そと" }] }] },
+      blocks: [{ type: "paragraph", id: "overlay_outside_page_selection_spec_43", children: [{ type: "text", text: "そと" }] }],
     },
   };
 }

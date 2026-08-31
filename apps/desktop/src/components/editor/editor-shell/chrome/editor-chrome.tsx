@@ -32,7 +32,9 @@ import { LINE_HEIGHT_STEP, MAX_LINE_HEIGHT, MIN_LINE_HEIGHT } from "@/features/d
 import { DocumentTitleText } from "@/features/rendering/adapters/react";
 import type { Translate } from "@/lib/i18n";
 import { SUPPORTED_OVERLAY_IMAGE_MIME_TYPES } from "@/lib/overlay-image-files";
-import { AlertTriangle, ArrowDownRight, ArrowLeft, Bold, BringToFront, Building2, ChartSpline, Check, ChevronDown, ChevronRight, ChevronUp, Code, Columns3, Copy, Download, FilePlus, FileQuestion, FileText, FolderOpen, Highlighter, ImageIcon, Italic, Keyboard, LayoutTemplate, Library, List, ListChevronsUpDown, ListOrdered, ListPlus, Loader2, MessageSquare, Minus, MinusCircle, MoreHorizontal, MoveDown, MoveUp, PaintBucket, PenLine, Plus, PlusCircle, Quote, Redo2, Replace, Rows3, Search, SendToBack, SeparatorHorizontal, Settings, Sigma, SlidersHorizontal, Sparkles, Square, SquareFunction, Trash2, Type, Underline, Undo2, X } from "lucide-react";
+import { EDITOR_MATH_IMPORT_ACCEPT, EDITOR_MATH_IMPORT_AVAILABLE } from "@/lib/classic-format-import";
+import { PRESENTATION_IMPORT_ACCEPT } from "@/lib/presentation-import";
+import { AlertTriangle, AppWindow, ArrowDownRight, ArrowLeft, Bold, Braces, BringToFront, Building2, ChartSpline, Check, ChevronDown, ChevronRight, ChevronUp, Code, Columns3, Copy, Cuboid, Download, FileCog, FilePlus, FileQuestion, FileText, FolderOpen, Highlighter, ImageIcon, Italic, Keyboard, LayoutTemplate, Library, List, ListChevronsUpDown, ListOrdered, ListPlus, ListTree, Loader2, MessageSquare, Minus, MinusCircle, MoreHorizontal, MoveDown, MoveUp, PaintBucket, PenLine, Plus, PlusCircle, Quote, Redo2, Replace, Rows3, Search, SendToBack, SeparatorHorizontal, Sigma, SlidersHorizontal, Sparkles, Square, SquareFunction, Trash2, Type, Underline, Undo2, X } from "lucide-react";
 import { Fragment } from "react";
 import type { ReactNode } from "react";
 import type { DesktopUpdateState } from "@/types/desktop";
@@ -65,7 +67,7 @@ interface RibbonGroupDefinition {
 }
 
 export function renderEditorChrome(chrome: EditorChromeValue) {
-  const { activeDocumentOpenFailure, activeFileId, addBlock, aiMenuButtonRef, appUpdateState, closeDocumentTab, commentsPanelOpen, createDocumentTab, createWhiteboardDocumentTab, degradedWatcherScopes, deleteActiveDocument, documentMetadatas, documentTitle, duplicateActiveDocument, exportJson, exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction, hasPendingAiApprovalAdoption, importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId, mcpPreviewBusy, newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace, openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openPrintPreview, openWorkspaceScreen, promoteAiToSidebar, reportIssue, requestOverlayImages, resolvedDocumentTitle, retryPendingAiApprovalAdoption, scheduleCloseNewDocMenu, setAiSettingsOpen, setDesktopSettingsOpen, setExportMenuOpen, setNewDocMenuOpen, setOutlineDialogOpen, setOverlayEditing, setPageSettingsOpen, setTemplateGalleryOpen, setTexCommandReferenceOpen, setTexEnvironmentSettingsOpen, setTitleInputFocused, settingsMenuButtonRef, showRichTitle, showTitleUpdateButton, titleInputValue, titleRichNodes, titleUpdateButtonDisabled, toggleCommentsPanel, uiLayoutPreference, updateMetadata } = chrome.appMenu;
+  const { activeDocumentOpenFailure, activeFileId, addBlock, aiMenuButtonRef, appUpdateState, closeDocumentTab, commentsPanelOpen, createDocumentTab, createWhiteboardDocumentTab, degradedWatcherScopes, deleteActiveDocument, documentMetadatas, documentTitle, duplicateActiveDocument, exportJson, exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction, hasPendingAiApprovalAdoption, importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId, mcpPreviewBusy, newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace, openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openOtherImportDialog, openPrintPreview, openWorkspaceScreen, otherImportInputRef, promoteAiToSidebar, reportIssue, requestOverlayImages, resolvedDocumentTitle, retryPendingAiApprovalAdoption, scheduleCloseNewDocMenu, setAiSettingsOpen, setDesktopSettingsOpen, setExportMenuOpen, setNewDocMenuOpen, setOutlineDialogOpen, setOverlayEditing, setPageSettingsOpen, setTemplateGalleryOpen, setTexCommandReferenceOpen, setTexEnvironmentSettingsOpen, setTitleInputFocused, settingsMenuButtonRef, showRichTitle, showTitleUpdateButton, titleInputValue, titleRichNodes, titleUpdateButtonDisabled, toggleCommentsPanel, uiLayoutPreference, updateMetadata } = chrome.appMenu;
   const { commandTooltip, renderMenuShortcut } = chrome.commands;
   const { setMaterialLibraryOpen } = chrome.editing;
   const { ActiveTextAlignIcon, activeFontFamilyLabel, activeTextAlignOption, activeTextFontSize, applyBlockStructure, applyBoxedTextPaddingY, applyInlineFormat, applyLineHeight, applyTextAlign, applyTextStyle, blockStyleState, boldActive, boxedTextActive, boxedTextButtonRef, boxedTextMenuOpen, boxedTextPaddingY, boxedTextVariant, canUseBlockStructure, canUseLineHeight, canUseTextAlign, canUseTextBlockStyle, canUseTextToolbar, fontFamily, fontFamilyButtonRef, fontFamilyIsKnownOption, fontFamilyIsMixed, fontFamilyMenuOpen, fontFamilyQuery, handleLineHeightStepClick, italicActive, lineHeight, lineHeightButtonRef, lineHeightCustomOpen, lineHeightInput, lineHeightInputError, lineHeightMenuOpen, moreBlocksMenuButtonRef, moreBlocksMenuOpen, orderedListMenuButtonRef, orderedListMenuOpen, setMoreBlocksMenuOpen, setOrderedListMenuOpen, saveEditorFontFamilyPreference, selectBoxedTextVariant, selectedTextAlign, selectedTextStyle, setFontFamily, setFontFamilyQuery, setLineHeightCustomOpen, setLineHeightInput, setLineHeightInputError, setTextBackgroundColor, setTextColor, setTextFontSize, startLineHeightStepping, stopLineHeightStepping, textAlignButtonRef, textAlignMenuOpen, textBackgroundColor, textBackgroundColorButtonRef, textColor, textColorButtonRef, toggleBoxedText, underlineActive, visibleCustomFontOptions, visibleFontFamilyGroups, blockStyleButtonRef, blockStyleMenuOpen, fontSizeButtonRef, fontSizeMenuOpen } = chrome.format;
@@ -166,6 +168,10 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
             <FolderOpen size={16} />
             <span>{t("appMenu.file.import")}</span>
           </button>
+          {EDITOR_MATH_IMPORT_AVAILABLE && <button type="button" role="menuitem" onClick={openOtherImportDialog}>
+            <FolderOpen size={16} />
+            <span>{t("appMenu.file.importOther")}</span>
+          </button>}
           <div
             className={`app-menu-submenu ${exportMenuOpen ? "open" : ""}`}
             role="none"
@@ -245,6 +251,11 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
             <span>{t("appMenu.insert.graph")}</span>
             {renderMenuShortcut("overlay.graph")}
           </button>
+          <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); runOverlayCommand("graph3d"); }}>
+            <Cuboid size={16} />
+            <span>{t("appMenu.insert.graph3d")}</span>
+            {renderMenuShortcut("overlay.graph3d")}
+          </button>
           <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); imageInputRef.current?.click(); }}>
             <ImageIcon size={16} />
             <span>{t("appMenu.insert.image")}</span>
@@ -317,7 +328,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
             <span>{t("appMenu.settings.comments")}</span>
           </button>
           <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); setOutlineDialogOpen(true); }}>
-            <Rows3 size={16} />
+            <ListTree size={16} />
             <span>{t("appMenu.settings.outline")}</span>
           </button>
           <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); openCommandSettings(); }}>
@@ -330,17 +341,17 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
             <span>{t("appMenu.settings.texReference")}</span>
           </button>
           <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); setTexEnvironmentSettingsOpen(true); }}>
-            <SquareFunction size={16} />
+            <Braces size={16} />
             <span>{t("appMenu.settings.texEnvironment")}</span>
           </button>
           <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); setPageSettingsOpen(true); }}>
-            <Settings size={16} />
+            <FileCog size={16} />
             <span>{t("appMenu.settings.pageSettings")}</span>
             {renderMenuShortcut("settings.page")}
           </button>
-          {isDesktopApp && (
+          {!isEmbedded && (
             <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); setDesktopSettingsOpen(true); }}>
-              <Settings size={16} />
+              <AppWindow size={16} />
               <span>{t("appMenu.settings.appSettings")}</span>
             </button>
           )}
@@ -1662,6 +1673,19 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
       </EditorToolbarIconButton>
   );
 
+  const graph3DButton = (
+      <EditorToolbarIconButton
+        disabled={aiDocumentWriteInProgress}
+        active={activeOverlayTool.kind === "insert" && activeOverlayTool.command === "graph3d"}
+        tooltip={{ label: t("insert.graph3d.tooltip") }}
+        aria-label={t("insert.graph3d.label")}
+        aria-pressed={activeOverlayTool.kind === "insert" && activeOverlayTool.command === "graph3d"}
+        onClick={() => runOverlayCommand("graph3d")}
+      >
+        <Cuboid size={EDITOR_TOOLBAR_ICON_SIZE} />
+      </EditorToolbarIconButton>
+  );
+
   const tableButton = (
       <EditorToolbarIconButton
         disabled={aiDocumentWriteInProgress}
@@ -1813,6 +1837,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
       {inlineMathControl}
       {overlayTextButton}
       {graphButton}
+      {graph3DButton}
       {tableButton}
       {shapeMenuControl}
       {lineToolControl}
@@ -2165,16 +2190,11 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
   const zoomSelect = (
     <EditorToolbarSelect
       compact
-      value={zoom}
-      onChange={(event) => applyZoom(Number(event.target.value))}
+      value={String(zoom)}
+      options={zoomOptions.map((value) => ({ value: String(value), label: `${value}%` }))}
+      onChange={(value) => applyZoom(Number(value))}
       aria-label={t("view.zoom")}
-    >
-      {zoomOptions.map((value) => (
-        <option key={value} value={value}>
-          {value}%
-        </option>
-      ))}
-    </EditorToolbarSelect>
+    />
   );
 
   const zoomInButton = (
@@ -2207,6 +2227,21 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
     />
   );
 
+  const otherImportInput = EDITOR_MATH_IMPORT_AVAILABLE ? (
+    <input
+      ref={otherImportInputRef}
+      type="file"
+      accept={`${EDITOR_MATH_IMPORT_ACCEPT},${PRESENTATION_IMPORT_ACCEPT}`}
+      hidden
+      onChange={(event) => {
+        const file = event.target.files?.[0];
+        if (file) {
+          void importDocumentFile(file);
+        }
+        event.currentTarget.value = "";
+      }}
+    />
+  ) : null;
 
   const imageInput = (
     <input
@@ -2366,6 +2401,12 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
               <FolderOpen size={18} aria-hidden="true" />
               <span>{t("appMenu.file.import")}</span>
             </button>
+            {EDITOR_MATH_IMPORT_AVAILABLE && (
+              <button type="button" className="ribbon-backstage-command" title={t("appMenu.file.importOther")} aria-label={t("appMenu.file.importOther")} onClick={() => runBackstageCommand(openOtherImportDialog)}>
+                <FolderOpen size={18} aria-hidden="true" />
+                <span>{t("appMenu.file.importOther")}</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -2402,9 +2443,9 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
 
         {backstage.section === "options" && (
           <div className="ribbon-backstage-group">
-            {isDesktopApp && (
+            {!isEmbedded && (
               <button type="button" className="ribbon-backstage-command" title={t("appMenu.settings.appSettings")} aria-label={t("appMenu.settings.appSettings")} onClick={() => runBackstageCommand(() => setDesktopSettingsOpen(true))}>
-                <Settings size={18} aria-hidden="true" />
+                <AppWindow size={18} aria-hidden="true" />
                 <span>{t("appMenu.settings.appSettings")}</span>
               </button>
             )}
@@ -2418,11 +2459,11 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
               <span>{t("appMenu.settings.texReference")}</span>
             </button>
             <button type="button" className="ribbon-backstage-command" title={t("appMenu.settings.texEnvironment")} aria-label={t("appMenu.settings.texEnvironment")} onClick={() => runBackstageCommand(() => setTexEnvironmentSettingsOpen(true))}>
-              <SquareFunction size={18} aria-hidden="true" />
+              <Braces size={18} aria-hidden="true" />
               <span>{t("appMenu.settings.texEnvironment")}</span>
             </button>
             <button type="button" className="ribbon-backstage-command" title={t("appMenu.settings.pageSettings")} aria-label={t("appMenu.settings.pageSettings")} onClick={() => runBackstageCommand(() => setPageSettingsOpen(true))}>
-              <Settings size={18} aria-hidden="true" />
+              <FileCog size={18} aria-hidden="true" />
               <span>{t("appMenu.settings.pageSettings")}</span>
               {renderMenuShortcut("settings.page")}
             </button>
@@ -2520,6 +2561,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
               <ImageIcon size={EDITOR_TOOLBAR_ICON_SIZE} />
             </EditorToolbarIconButton>
             {graphButton}
+            {graph3DButton}
           </Fragment>,
         ],
       },
@@ -2552,7 +2594,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
         label: t("ribbon.group.pageSetup"),
         large: (
           <EditorToolbarIconButton large title={t("ribbon.pageSetup")} aria-label={t("ribbon.pageSetup")} onClick={() => setPageSettingsOpen(true)}>
-            <Settings size={EDITOR_TOOLBAR_TEXT_ICON_SIZE} />
+            <FileCog size={EDITOR_TOOLBAR_TEXT_ICON_SIZE} />
             <span>{t("ribbon.pageSetup")}</span>
           </EditorToolbarIconButton>
         ),
@@ -2606,7 +2648,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
         rows: [
           <Fragment key="show-1">
             <EditorToolbarIconButton withText title={t("ribbon.outlineTooltip")} aria-label={t("ribbon.outlineTooltip")} onClick={() => setOutlineDialogOpen(true)}>
-              <Rows3 size={EDITOR_TOOLBAR_TEXT_ICON_SIZE} />
+              <ListTree size={EDITOR_TOOLBAR_TEXT_ICON_SIZE} />
               <span>{t("ribbon.outline")}</span>
             </EditorToolbarIconButton>
           </Fragment>,
@@ -2806,6 +2848,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
     searchGroup,
     viewGroup,
     importInput,
+    otherImportInput,
     imageInput,
     ribbonTabBar,
     ribbonBody,

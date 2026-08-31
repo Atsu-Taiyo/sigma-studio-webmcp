@@ -232,14 +232,14 @@ export function getGraphOwnedTextLabelAnchorPreservingPosition(
 
 export type GraphOwnedLabelTextSyncedProps = Pick<
   OverlayTextShape["props"],
-  "w" | "h" | "richText" | "autoSize" | "color" | "size"
+  "w" | "h" | "blocks" | "color" | "size"
 >;
 
 /**
  * Fields to copy from a freshly-computed label shape entry (from `createGraph*LabelShapeEntries`)
  * onto an existing graph-owned label text shape when its content changes (axis/point/annotation
  * label edits). Point and annotation label sync already copied all of these; axis label sync used
- * to copy only `richText`, silently leaving `w`/`h` stale after editing an axis label's TeX (see
+ * to copy only the content, silently leaving `w`/`h` stale after editing an axis label's TeX (see
  * the graph shape editor's axis-label callback). Sharing this picker keeps the three call sites
  * from drifting again.
  */
@@ -249,8 +249,7 @@ export function getGraphOwnedLabelTextSyncedProps(
   return {
     w: labelShapeEntryProps.w,
     h: labelShapeEntryProps.h,
-    richText: labelShapeEntryProps.richText,
-    autoSize: labelShapeEntryProps.autoSize,
+    blocks: labelShapeEntryProps.blocks,
     color: labelShapeEntryProps.color,
     size: labelShapeEntryProps.size,
   };

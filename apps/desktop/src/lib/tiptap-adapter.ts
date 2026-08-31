@@ -1,12 +1,10 @@
 import {
-  isOverlayRichTextDocument,
   type BoxedTone,
   type BoxedVariant,
   type HeadingNode,
   type InlineNode,
   type LineHeight,
-  type OverlayRichTextBlock,
-  type OverlayRichTextDocument,
+  type OverlayTextBlock,
   type ParagraphNode,
   type TextAlign,
   type TextMark,
@@ -14,10 +12,11 @@ import {
   resolveDocumentFontFamily,
 } from "@/features/document";
 import { parseCssFontSizeToPt } from "@/lib/font-size-units";
+import { createId } from "@/lib/id";
 
 export {
   inlineNodesToPlainText,
-  overlayRichTextDocumentToInlineNodes,
+  overlayTextBlocksToInlineNodes,
   overlayRichTextInlinesToInlineNodes,
 } from "@/features/document";
 
@@ -32,88 +31,6 @@ export interface TiptapNode {
 export interface TiptapDoc extends TiptapNode {
   type: "doc";
   content: TiptapNode[];
-}
-
-/** Projects canonical overlay rich text into Tiptap's editor-only JSON shape. */
-export function overlayRichTextToTiptapDoc(document: OverlayRichTextDocument): TiptapDoc {
-  return {
-    type: "doc",
-    content: document.blocks.map((block) => ({
-      type: block.type,
-      attrs: {
-        ...(block.type === "heading" ? { level: block.level } : {}),
-        ...(block.align ? { textAlign: block.align } : {}),
-        ...(block.lineHeight ? { lineHeight: block.lineHeight } : {}),
-      },
-      content: inlineNodesToTiptapNodes(block.children),
-    })),
-  };
-}
-
-/** Converts Tiptap's editor-only JSON back to canonical overlay rich text. */
-export function tiptapDocToOverlayRichText(document: TiptapDoc): OverlayRichTextDocument {
-  if (!isSupportedOverlayTiptapDocument(document)) {
-    throw new TypeError("Tiptap produced unsupported overlay rich-text JSON.");
-  }
-  const blocks: OverlayRichTextBlock[] = [];
-  for (const block of document.content) {
-    if (block.type !== "paragraph" && block.type !== "heading") {
-      continue;
-    }
-    const align = normalizeTextAlign(block.attrs?.textAlign);
-    const lineHeight = normalizeLineHeight(block.attrs?.lineHeight);
-    const children = tiptapNodesToInlineNodes(block.content ?? []);
-    if (block.type === "heading") {
-      const rawLevel = Number(block.attrs?.level);
-      const level = rawLevel === 1 || rawLevel === 2 || rawLevel === 3 ? rawLevel : 2;
-      blocks.push({
-        type: "heading" as const,
-        level,
-        children,
-        ...(align ? { align } : {}),
-        ...(lineHeight ? { lineHeight } : {}),
-      });
-      continue;
-    }
-    blocks.push({
-      type: "paragraph" as const,
-      children,
-      ...(align ? { align } : {}),
-      ...(lineHeight ? { lineHeight } : {}),
-    });
-  }
-  const result: OverlayRichTextDocument = { blocks };
-  if (!isOverlayRichTextDocument(result)) {
-    throw new TypeError("Tiptap produced unsupported overlay rich-text JSON.");
-  }
-  return result;
-}
-
-function isSupportedOverlayTiptapDocument(document: TiptapDoc): boolean {
-  return document.type === "doc" && document.content.every((block) => (
-    (block.type === "paragraph" || block.type === "heading") &&
-    (block.content ?? []).every((node) => {
-      if (node.type !== "text" && node.type !== "hardBreak" && node.type !== "mathInline") {
-        return false;
-      }
-      if (node.type === "text" && typeof node.text !== "string") {
-        return false;
-      }
-      if (
-        node.type === "mathInline" &&
-        (typeof node.attrs?.tex !== "string" ||
-          (node.attrs.id !== undefined && node.attrs.id !== null && typeof node.attrs.id !== "string"))
-      ) {
-        return false;
-      }
-      return (node.marks ?? []).every((mark) => {
-        if (mark.type === "styledText" || mark.type === "boxed" || mark.type === "underline") {
-          return true;
-        }
-        return node.type === "text" && (mark.type === "bold" || mark.type === "italic");
-      });
-    })
-  ));
 }
 
 export function toTiptap(block: ParagraphNode | HeadingNode): TiptapDoc {
@@ -182,19 +99,18 @@ export function inlineNodesToTiptapDoc(
   };
 }
 
-export function inlineNodesToOverlayRichTextDocument(
+export function inlineNodesToOverlayTextBlocks(
   children: InlineNode[],
   align?: TextAlign,
   lineHeight?: LineHeight,
-): OverlayRichTextDocument {
-  return {
-    blocks: [{
-      type: "paragraph",
-      children,
-      ...(align ? { align } : {}),
-      ...(lineHeight ? { lineHeight } : {}),
-    }],
-  };
+): OverlayTextBlock[] {
+  return [{
+    type: "paragraph",
+    id: createId("p"),
+    children,
+    ...(align ? { align } : {}),
+    ...(lineHeight ? { lineHeight } : {}),
+  }];
 }
 
 function normalizeTextAlign(value: unknown): TextAlign | undefined {

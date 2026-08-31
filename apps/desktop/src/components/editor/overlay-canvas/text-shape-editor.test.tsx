@@ -34,7 +34,167 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("OverlayTextShapeEditor auto-size", () => {
+/**
+ * Typing `- ` in a shape has always produced a list — the editing schema never disabled them —
+ * but the converter threw on the way back, from inside `onUpdate`, where nothing catches it. The
+ * shape now saves and draws lists, so the editing surface has to be able to hold one.
+ */
+describe("OverlayTextShapeEditor list editing", () => {
+  it("opens a shape whose content is a list, as a real list", async () => {
+    const shape: Extract<OverlayShape, { type: "text" }> = {
+      id: "text_list",
+      type: "text",
+      x: 0,
+      y: 0,
+      props: {
+        w: 200,
+        h: 32,
+        color: "#111827",
+        size: "m",
+        blocks: [{
+          type: "list",
+          id: "list_1",
+          listType: "bullet",
+          items: [
+            { type: "listItem", id: "li_1", children: [{ type: "text", text: "ひとつ" }] },
+            { type: "listItem", id: "li_2", children: [{ type: "text", text: "ふたつ" }] },
+          ],
+        }],
+      },
+    };
+    const onChange = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <OverlayTextShapeEditor
+          shape={shape}
+          externalRevision={0}
+          editing={false}
+          onFocus={vi.fn()}
+          onCancel={vi.fn()}
+          onMeasuredHeight={vi.fn()}
+          onChange={onChange}
+        />,
+      );
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const items = container.querySelectorAll("ul li");
+    expect(items).toHaveLength(2);
+    expect(items[0]?.textContent).toContain("ひとつ");
+    // Opening a document must not rewrite it: a spurious `onChange` here would commit a
+    // converted-and-back version of the author's content on mount.
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps the ordered-list marker style the shape saved", async () => {
+    const shape: Extract<OverlayShape, { type: "text" }> = {
+      id: "text_ordered",
+      type: "text",
+      x: 0,
+      y: 0,
+      props: {
+        w: 200,
+        h: 32,
+        color: "#111827",
+        size: "m",
+        blocks: [{
+          type: "list",
+          id: "list_1",
+          listType: "ordered",
+          markerStyle: "paren",
+          items: [{ type: "listItem", id: "li_1", children: [{ type: "text", text: "いち" }] }],
+        }],
+      },
+    };
+
+    await act(async () => {
+      root.render(
+        <OverlayTextShapeEditor
+          shape={shape}
+          externalRevision={0}
+          editing={false}
+          onFocus={vi.fn()}
+          onCancel={vi.fn()}
+          onMeasuredHeight={vi.fn()}
+          onChange={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    // The attribute the stylesheet swaps the counter style on — the same one the static renderer
+    // writes, so the marker does not change shape when the shape is focused.
+    expect(container.querySelector("ol")?.getAttribute("data-list-marker")).toBe("paren");
+  });
+});
+
+describe("OverlayTextShapeEditor body blocks", () => {
+  /**
+   * The three blocks a shape gained are typed with the body's input rules: `> ` for a quote, a
+   * fence for code, `---` for a rule. (The `/` menu is the body editor's own component, not one of
+   * these extensions, so it does not follow them into a shape.) What the editor has to prove here
+   * is that it *mounts* them — the extensions owning those rules sit behind the same option that
+   * decides whether the converter can save the result, so a shape that draws a block it cannot
+   * save, or refuses to draw one it can, is the failure this pins against.
+   */
+  it("opens a shape whose content is a quote, a code block and a rule", async () => {
+    const shape: Extract<OverlayShape, { type: "text" }> = {
+      id: "text_body_blocks",
+      type: "text",
+      x: 0,
+      y: 0,
+      props: {
+        w: 240,
+        h: 96,
+        color: "#111827",
+        size: "m",
+        blocks: [
+          {
+            type: "quote",
+            id: "quote_1",
+            blocks: [{ type: "paragraph", id: "quote_p", children: [{ type: "text", text: "引用" }] }],
+          },
+          {
+            type: "codeBlock",
+            id: "code_1",
+            language: "typescript",
+            children: [{ type: "text", text: "const a = 1;" }],
+          },
+          { type: "divider", id: "divider_1" },
+        ],
+      },
+    };
+    const onChange = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <OverlayTextShapeEditor
+          shape={shape}
+          externalRevision={0}
+          editing={false}
+          onFocus={vi.fn()}
+          onCancel={vi.fn()}
+          onMeasuredHeight={vi.fn()}
+          onChange={onChange}
+        />,
+      );
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector("blockquote")?.textContent).toContain("引用");
+    expect(container.querySelector("pre")?.textContent).toContain("const a = 1;");
+    expect(container.querySelectorAll("hr")).toHaveLength(1);
+    // Opening a document must not rewrite it: a spurious `onChange` here would commit a
+    // converted-and-back version of the author's content on mount.
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("OverlayTextShapeEditor height measurement", () => {
   it("ignores rotated descendant AABBs and saves the local layout height", async () => {
     const localWidth = 200;
     const localHeight = 24;
@@ -78,14 +238,10 @@ describe("OverlayTextShapeEditor auto-size", () => {
         color: "#111827",
         size: "m",
         fontSize: 18,
-        scale: 1,
-        autoSize: true,
-        richText: {
-          blocks: [{ type: "paragraph", children: [{ type: "text", text: "single line" }] }],
-        },
+        blocks: [{ type: "paragraph", id: "text_shape_editor_test_23", children: [{ type: "text", text: "single line" }] }],
       },
     };
-    const onAutoSize = vi.fn();
+    const onMeasuredHeight = vi.fn();
 
     await act(async () => {
       root.render(
@@ -95,7 +251,7 @@ describe("OverlayTextShapeEditor auto-size", () => {
           editing={false}
           onFocus={vi.fn()}
           onCancel={vi.fn()}
-          onAutoSize={onAutoSize}
+          onMeasuredHeight={onMeasuredHeight}
           onChange={vi.fn()}
         />,
       );
@@ -104,8 +260,8 @@ describe("OverlayTextShapeEditor auto-size", () => {
     });
 
     expect(container.querySelector(".ProseMirror")).not.toBeNull();
-    expect(onAutoSize).toHaveBeenCalled();
-    expect(onAutoSize.mock.calls.at(-1)).toEqual([shape.id, localWidth, localHeight]);
-    expect(onAutoSize.mock.calls.at(-1)?.[2]).not.toBe(Math.ceil(rotatedAabbSize));
+    expect(onMeasuredHeight).toHaveBeenCalled();
+    expect(onMeasuredHeight.mock.calls.at(-1)).toEqual([shape.id, localHeight]);
+    expect(onMeasuredHeight.mock.calls.at(-1)?.[1]).not.toBe(Math.ceil(rotatedAabbSize));
   });
 });

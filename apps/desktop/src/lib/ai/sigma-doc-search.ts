@@ -1,6 +1,7 @@
 import {
   listItemContinuationInlineNodes,
   normalizeOverlaySnapshot,
+  overlayTextBlockInlineRuns,
   type OverlayRichTextShape,
   type OverlayTableShape,
   type SigmaTableCellContent,
@@ -210,13 +211,11 @@ function searchTableCellContent(shapeId: string, content: SigmaTableCellContent,
 }
 
 function searchTextShape(shape: OverlayRichTextShape, context: SearchContext): void {
-  for (const block of shape.props.richText.blocks) {
-    for (const inline of block.children) {
-      if (inline.type === "text") {
-        recordMatches(shape.id, "overlayShape", "overlay", "text", inline.text, context);
-      } else if (inline.type === "mathInline") {
-        recordMatches(shape.id, "overlayShape", "overlay", "tex", inline.tex, context);
-      }
+  for (const inline of shape.props.blocks.flatMap(overlayTextBlockInlineRuns)) {
+    if (inline.type === "text") {
+      recordMatches(shape.id, "overlayShape", "overlay", "text", inline.text, context);
+    } else if (inline.type === "mathInline") {
+      recordMatches(shape.id, "overlayShape", "overlay", "tex", inline.tex, context);
     }
   }
 }

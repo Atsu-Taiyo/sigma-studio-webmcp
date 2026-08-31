@@ -1,17 +1,31 @@
 import { describe, expect, it } from "vitest";
 
-import type { OverlayCalloutShape, OverlayRichTextDocument, OverlayTextShape } from "@/features/document";
+import type { OverlayCalloutShape, OverlayTextBlock, OverlayTextShape } from "@/features/document";
 
 import { CALLOUT_TEXT_PADDING } from "./text-shape-font";
 import { getCalloutBodySize, getTextShapeEffectiveSize } from "./overlay-text-box";
 
-function richTextOf(text: string): OverlayRichTextDocument {
-  return {
-    blocks: [{
-      type: "paragraph",
+let blockId = 0;
+
+function blocksOf(text: string): OverlayTextBlock[] {
+  return [{
+    type: "paragraph",
+    id: `p_${blockId += 1}`,
+    children: [{ type: "text", text }],
+  }];
+}
+
+function listOf(...items: string[]): OverlayTextBlock[] {
+  return [{
+    type: "list",
+    id: `list_${blockId += 1}`,
+    listType: "bullet",
+    items: items.map((text) => ({
+      type: "listItem",
+      id: `li_${blockId += 1}`,
       children: [{ type: "text", text }],
-    }],
-  };
+    })),
+  }];
 }
 
 function textShape(props: Partial<OverlayTextShape["props"]> = {}): OverlayTextShape {
@@ -22,8 +36,8 @@ function textShape(props: Partial<OverlayTextShape["props"]> = {}): OverlayTextS
     y: 0,
     props: {
       w: 100,
-      richText: richTextOf("a"),
-      autoSize: true,
+      h: 16,
+      blocks: blocksOf("a"),
       color: "black",
       size: "m",
       ...props,
@@ -32,67 +46,49 @@ function textShape(props: Partial<OverlayTextShape["props"]> = {}): OverlayTextS
 }
 
 describe("getTextShapeEffectiveSize", () => {
-  it("grows a fixed-width shape's height to fit content wrapped at the stored width", () => {
-    // 16px default font, 32px stored width -> 2 units/line fit exactly 2 CJK glyphs per line,
-    // so this 10-glyph string needs exactly 5 wrapped lines (5 * 16 = 80).
-    const shape = textShape({
-      w: 32,
-      h: 16,
-      autoSize: false,
-      richText: richTextOf("ああああああああああ"),
-    });
-
-    expect(getTextShapeEffectiveSize(shape).h).toBe(80);
+  it("keeps the user's width, clamped to the minimum", () => {
+    expect(getTextShapeEffectiveSize(textShape({ w: 240 })).w).toBe(240);
+    expect(getTextShapeEffectiveSize(textShape({ w: 1 })).w).toBe(8);
   });
 
-  it("never shrinks below the stored height (grow-only)", () => {
-    const shape = textShape({
-      w: 200,
-      h: 400,
-      autoSize: false,
-      richText: richTextOf("word"),
-    });
-
-    expect(getTextShapeEffectiveSize(shape).h).toBe(400);
+  it("keeps the stored height when it already covers the content", () => {
+    expect(getTextShapeEffectiveSize(textShape({ w: 200, h: 400 })).h).toBe(400);
   });
 
-  it("uses the explicit maxWidth as the width for auto-sized wrapping shapes", () => {
-    const shape = textShape({
-      w: 10,
-      autoSize: true,
-      maxWidth: 150,
-      richText: richTextOf("this content is irrelevant to the resulting width"),
-    });
+  it("floors the height at one line box per hard line, so a stale cache cannot clip", () => {
+    // Three lines from the content's own breaks; the stored 16 is one line box behind.
+    const shape = textShape({ w: 200, h: 16, blocks: blocksOf("a\nb\nc") });
 
-    expect(getTextShapeEffectiveSize(shape).w).toBe(150);
+    expect(getTextShapeEffectiveSize(shape).h).toBe(48);
   });
 
-  it("feeds fontSize, size, and scale into the measured box (all three change the result)", () => {
-    // Asserted on height, the only content-derived axis: `size`, an explicit `fontSize` in points,
-    // and `scale` all have to reach the measurement, or a shape whose font grew keeps a box sized
-    // for the old font and gets clipped in print.
-    const text = richTextOf("ああああああああああ");
+  it("counts one line per list item in that floor", () => {
+    const shape = textShape({ w: 200, h: 16, blocks: listOf("a", "b", "c") });
 
-    const small = textShape({ w: 10, autoSize: true, size: "s", richText: text });
-    const large = textShape({ w: 10, autoSize: true, size: "l", richText: text });
+    expect(getTextShapeEffectiveSize(shape).h).toBe(48);
+  });
+
+  it("does not change the height when the width changes (the font size is independent)", () => {
+    const narrow = textShape({ w: 32, h: 16, blocks: blocksOf("ああああああああああ") });
+    const wide = textShape({ w: 320, h: 16, blocks: blocksOf("ああああああああああ") });
+
+    expect(getTextShapeEffectiveSize(narrow).h).toBe(getTextShapeEffectiveSize(wide).h);
+  });
+
+  it("feeds fontSize and size into the line-box floor", () => {
+    const text = blocksOf("a\nb\nc");
+
+    const small = textShape({ h: 1, size: "s", blocks: text });
+    const large = textShape({ h: 1, size: "l", blocks: text });
     expect(getTextShapeEffectiveSize(large).h).toBeGreaterThan(getTextShapeEffectiveSize(small).h);
 
-    const basePt = textShape({ w: 10, autoSize: true, size: "m", fontSize: 9, richText: text });
-    const biggerPt = textShape({ w: 10, autoSize: true, size: "m", fontSize: 30, richText: text });
+    const basePt = textShape({ h: 1, size: "m", fontSize: 9, blocks: text });
+    const biggerPt = textShape({ h: 1, size: "m", fontSize: 30, blocks: text });
     expect(getTextShapeEffectiveSize(biggerPt).h).toBeGreaterThan(getTextShapeEffectiveSize(basePt).h);
-
-    const unscaled = textShape({ w: 10, autoSize: true, size: "m", scale: 1, richText: text });
-    const scaledUp = textShape({ w: 10, autoSize: true, size: "m", scale: 3, richText: text });
-    expect(getTextShapeEffectiveSize(scaledUp).h).toBeGreaterThan(getTextShapeEffectiveSize(unscaled).h);
   });
 
   it("never mutates the shape it measures", () => {
-    const shape = textShape({
-      w: 32,
-      h: 16,
-      autoSize: false,
-      richText: richTextOf("ああああああああああ"),
-    });
+    const shape = textShape({ w: 32, h: 16, blocks: blocksOf("ああああああああああ") });
     const before = structuredClone(shape);
 
     getTextShapeEffectiveSize(shape);
@@ -116,7 +112,7 @@ function calloutShape(props: Partial<OverlayCalloutShape["props"]> = {}): Overla
         baseEnd: { x: 68, y: 72 },
         tip: { x: 24, y: 100 },
       },
-      richText: richTextOf("a"),
+      blocks: blocksOf("a"),
       color: "black",
       size: "m",
       dash: "solid",
@@ -128,42 +124,28 @@ function calloutShape(props: Partial<OverlayCalloutShape["props"]> = {}): Overla
 
 describe("getCalloutBodySize", () => {
   it("never grows the width past the stored value", () => {
-    const shape = calloutShape({
-      richText: richTextOf("説明".repeat(30)),
-    });
+    const shape = calloutShape({ blocks: blocksOf("説明".repeat(30)) });
 
     expect(getCalloutBodySize(shape).w).toBe(shape.props.w);
   });
 
-  it("grows the height to fit the measured content plus padding on both sides", () => {
-    // 136px content width (160 stored - 2*12 padding) at the default 16px font wraps this
-    // 40-glyph CJK string into several lines, so the measured content height comfortably
-    // exceeds what the stored 72px box leaves after padding.
-    const shape = calloutShape({
-      h: 72,
-      richText: richTextOf("説明".repeat(20)),
-    });
+  it("grows the height to fit the content's own lines plus padding on both sides", () => {
+    const shape = calloutShape({ h: 40, blocks: blocksOf("a\nb\nc\nd") });
 
     const body = getCalloutBodySize(shape);
-    const contentH = body.h - CALLOUT_TEXT_PADDING * 2;
 
-    expect(body.h).toBeGreaterThanOrEqual(contentH + CALLOUT_TEXT_PADDING * 2);
+    expect(body.h).toBe(4 * 16 + CALLOUT_TEXT_PADDING * 2);
     expect(body.h).toBeGreaterThan(shape.props.h);
   });
 
   it("never shrinks below the stored height (grow-only)", () => {
-    const shape = calloutShape({
-      h: 400,
-      richText: richTextOf("short"),
-    });
+    const shape = calloutShape({ h: 400, blocks: blocksOf("short") });
 
     expect(getCalloutBodySize(shape).h).toBe(400);
   });
 
   it("never mutates the shape it measures", () => {
-    const shape = calloutShape({
-      richText: richTextOf("説明".repeat(20)),
-    });
+    const shape = calloutShape({ blocks: blocksOf("説明".repeat(20)) });
     const before = structuredClone(shape);
 
     getCalloutBodySize(shape);

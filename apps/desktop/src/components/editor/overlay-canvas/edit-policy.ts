@@ -17,6 +17,7 @@ export function getOverlayActionTargetShapeIds(action: OverlayInteractionAction)
     case "editText":
     case "editImageCrop":
     case "editGraph":
+    case "editGraph3D":
     case "editTable":
     case "pickOrigin":
     case "pickGraphFill":

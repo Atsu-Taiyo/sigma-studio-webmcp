@@ -116,6 +116,13 @@
   line-height: 1.35;
 }
 
+.fieldHint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .field,
 .controlGroup {
   display: grid;
@@ -159,13 +166,29 @@
   background: var(--background);
 }
 
-.colorField input {
-  width: 36px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  background: transparent;
+.colorField {
   cursor: pointer;
+  text-align: left;
+}
+
+.colorSwatch {
+  width: 36px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+/* 色が付いていない (transparent) ことを、塗り潰さずに斜線で見せる。 */
+
+.colorSwatch[data-empty="true"] {
+  background:
+    linear-gradient(
+      to top right,
+      transparent calc(50% - 1px),
+      var(--border-strong) calc(50% - 1px),
+      var(--border-strong) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    );
 }
 
 .colorField output {
@@ -219,6 +242,35 @@
 
 .modeSwitch .segmentedButton {
   flex: 0 0 auto;
+}
+
+/* 記憶の説明と「既定に戻す」。設定の下に 1 行だけ置く。 */
+
+.footer {
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+  gap: var(--space-md);
+}
+
+.resetButton {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--background);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.resetButton:hover,
+.resetButton:focus-visible {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  outline: none;
 }
 
 @media (max-width: 720px) {

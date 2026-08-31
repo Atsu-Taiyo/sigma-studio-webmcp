@@ -23,6 +23,9 @@ const INTENTIONAL_JAPANESE = new Set([
   // Locale endonyms are deliberately written in their own language.
   "settings.language.options.ja",
   // Search aliases stay bilingual so a language switch does not invalidate familiar queries.
+  "editor.slash.block.quote.aliases",
+  "editor.slash.block.codeBlock.aliases",
+  "editor.slash.block.divider.aliases",
   "editor.slash.problem.aliases",
 ]);
 

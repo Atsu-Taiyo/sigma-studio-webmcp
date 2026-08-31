@@ -22,8 +22,10 @@ import {
   type RichBlock,
   type SigmaBlock,
   type SigmaCommentThread,
+  type HeadingNumberingConfig,
 } from "@/features/document";
 import { getProblemNumberMap } from "@/lib/problem-numbering";
+import { getHeadingNumberMap } from "@/lib/heading-numbering";
 import {
   chunkTextRun,
   type ChunkBoundaryState,
@@ -55,10 +57,12 @@ export function buildRenderUnits(
   content: SigmaBlock[],
   previousChunks: ChunkBoundaryState | null = null,
   pinnedChunkAnchors: ReadonlySet<string> | null = null,
+  headingNumbering?: HeadingNumberingConfig,
 ): RenderUnit[] {
   const units: RenderUnit[] = [];
   let textRun: TextFlowBlock[] = [];
   const problemNumbers = getProblemNumberMap(content);
+  const headingNumbers = getHeadingNumberMap(content, headingNumbering);
 
   const flushTextRun = () => {
     if (textRun.length === 0) {
@@ -70,6 +74,7 @@ export function buildRenderUnits(
         type: "textFlow",
         id: chunk[0].id,
         blocks: chunk,
+        headingNumbers: pickHeadingNumbers(chunk, headingNumbers),
       });
     }
     textRun = [];
@@ -92,6 +97,7 @@ export function buildRenderUnits(
         id: block.id,
         section: block,
         blocks: block.children.map(cloneTextFlowBlock),
+        headingNumbers: pickHeadingNumbers(block.children, headingNumbers),
       });
       continue;
     }
@@ -104,6 +110,20 @@ export function buildRenderUnits(
 
   flushTextRun();
   return units;
+}
+
+function pickHeadingNumbers(
+  blocks: readonly { id: string }[],
+  numbers: ReadonlyMap<string, string>,
+): Readonly<Record<string, string>> {
+  const picked: Record<string, string> = {};
+  for (const block of blocks) {
+    const number = numbers.get(block.id);
+    if (number) {
+      picked[block.id] = number;
+    }
+  }
+  return picked;
 }
 
 export function problemToAreaUnits(problem: ProblemNode, index?: number, problemNumber?: number): RenderUnit[] {
@@ -155,6 +175,7 @@ export function problemToAreaUnits(problem: ProblemNode, index?: number, problem
         ...base,
         section: block,
         blocks: block.children.map(cloneTextFlowBlock),
+        headingNumbers: {},
         showAreaSideNote: !showedAreaSideNote,
       });
       subIndex += 1;
@@ -398,7 +419,8 @@ function isSameRenderUnit(previous: RenderUnit, next: RenderUnit): boolean {
   // `cloneTextFlowBlock` で毎回作り直されるので、identity 比較は必ず false になる。代わりに
   // 「そのクローンの出所」(problem / section とエリア種別) が同じなら中身も同じ、と判断する。
   if (previous.type === "textFlow" && next.type === "textFlow") {
-    return isSameBlockList(previous.blocks, next.blocks);
+    return isSameBlockList(previous.blocks, next.blocks)
+      && isSameHeadingNumbers(previous.headingNumbers, next.headingNumbers);
   }
   if (previous.type === "problemArea" && next.type === "problemArea") {
     return previous.problem === next.problem
@@ -411,7 +433,8 @@ function isSameRenderUnit(previous: RenderUnit, next: RenderUnit): boolean {
       && previous.isLastProblemFrameArea === next.isLastProblemFrameArea;
   }
   if (previous.type === "layoutSection" && next.type === "layoutSection") {
-    return previous.section === next.section;
+    return previous.section === next.section
+      && isSameHeadingNumbers(previous.headingNumbers, next.headingNumbers);
   }
   if (previous.type === "problemLayoutSection" && next.type === "problemLayoutSection") {
     return previous.section === next.section
@@ -422,12 +445,22 @@ function isSameRenderUnit(previous: RenderUnit, next: RenderUnit): boolean {
       && previous.isLastProblemArea === next.isLastProblemArea
       && previous.isFirstProblemFrameArea === next.isFirstProblemFrameArea
       && previous.isLastProblemFrameArea === next.isLastProblemFrameArea
-      && previous.showAreaSideNote === next.showAreaSideNote;
+      && previous.showAreaSideNote === next.showAreaSideNote
+      && isSameHeadingNumbers(previous.headingNumbers, next.headingNumbers);
   }
   if (previous.type === "block" && next.type === "block") {
     return previous.block === next.block;
   }
   return false;
+}
+
+function isSameHeadingNumbers(
+  previous: Readonly<Record<string, string>> = {},
+  next: Readonly<Record<string, string>> = {},
+): boolean {
+  const previousEntries = Object.entries(previous);
+  return previousEntries.length === Object.keys(next).length
+    && previousEntries.every(([id, number]) => Object.hasOwn(next, id) && next[id] === number);
 }
 
 function isSameBlockList(previous: readonly TextFlowBlock[], next: readonly TextFlowBlock[]): boolean {

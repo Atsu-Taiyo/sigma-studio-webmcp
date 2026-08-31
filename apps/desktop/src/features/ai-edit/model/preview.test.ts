@@ -994,6 +994,7 @@ describe("dedupeAiSourceReferences", () => {
 function makePreview(overrides: {
   operations?: AiEditDraft[];
   mutationOperations?: SigmaDocMutationOp[];
+  lockTargets?: boolean;
 }): AiEditPreviewState {
   return {
     targetId: "t1",
@@ -1008,6 +1009,7 @@ function makePreview(overrides: {
     proposalIds: ["p1"],
     baseRevision: 1,
     providers: [],
+    lockTargets: overrides.lockTargets,
   };
 }
 
@@ -1251,6 +1253,15 @@ describe("derivePendingAiProposalLockTargets", () => {
   it("does not lock a body anchor for a shape-only insert or its generated empty-area support draft", () => {
     const locks = derivePendingAiProposalLockTargets([
       makePreview({ operations: [emptyAreaOverlayAnchorDraft, insertGraphShapeDraft] }),
+    ]);
+
+    expect(locks.blockIds.size).toBe(0);
+    expect(locks.shapeIds.size).toBe(0);
+  });
+
+  it("allows an explicitly editable web proposal target to change before its freshness check", () => {
+    const locks = derivePendingAiProposalLockTargets([
+      makePreview({ operations: [replaceDraft], lockTargets: false }),
     ]);
 
     expect(locks.blockIds.size).toBe(0);

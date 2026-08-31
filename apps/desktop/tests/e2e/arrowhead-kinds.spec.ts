@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import { getArrowheadTrimInStrokes } from "@/features/rendering/core";
 import { sampleDocument } from "@/lib/sample-document";
 import type { SigmaDocument } from "@/types/sigma-doc";
 
@@ -65,15 +66,25 @@ test("offers every head as a drawn preview rather than a name alone", async ({ p
 
   const menu = await openEndpointMenu(page, "end");
   const options = menu.getByRole("menuitemradio");
-  await expect(options).toHaveCount(8);
-  for (const name of ["なし", "矢印", "三角", "矢印（開）", "矢印（細）", "ひし形", "丸", "バー"]) {
+  // Seven shapes at two sizes, plus "なし".
+  await expect(options).toHaveCount(15);
+  const shapes = ["矢印", "三角", "矢印（開）", "矢印（細）", "ひし形", "丸", "バー"];
+  for (const name of ["なし", ...shapes, ...shapes.map((shape) => `${shape}（小）`)]) {
     await expect(menu.getByRole("menuitemradio", { name, exact: true })).toBeVisible();
   }
   // Every option but "なし" draws its shape; the label alone would not tell them apart.
   const drawn = await options.evaluateAll((nodes) => nodes.filter((node) => (
     node.querySelectorAll(".line-endpoint-preview path, .line-endpoint-preview circle:not(.endpoint-side-cue)").length > 0
   )).length);
-  expect(drawn).toBe(7);
+  expect(drawn).toBe(14);
+
+  // …and a small head really is drawn smaller, not merely named so.
+  const widths = await Promise.all(["三角", "三角（小）"].map((name) => (
+    menu.getByRole("menuitemradio", { name, exact: true })
+      .locator(".line-endpoint-preview path")
+      .evaluate((path) => (path as SVGPathElement).getBBox().width)
+  )));
+  expect(widths[1]).toBeLessThan(widths[0]);
 });
 
 test("keeps a head on an open curve and on an arc, and in the saved document", async ({ page }) => {
@@ -183,16 +194,17 @@ test("stops the line behind the head without moving the stored endpoint", async 
   const tipped = page.locator('[data-overlay-shape-id="overlay_shape_tipped"] line');
   await expect(tipped).toHaveCount(1);
 
-  // `xl` is a 5px stroke and a diamond gives up 7.5 marker units, so the ink is 37.5px shorter.
+  // `xl` is a 5px stroke, so the ink is 5px shorter for every marker unit the diamond gives up.
+  const trim = getArrowheadTrimInStrokes("diamond");
   const plainSpan = await lineSpan(plain);
   const tippedSpan = await lineSpan(tipped);
   expect(tippedSpan.x1).toBeCloseTo(plainSpan.x1, 3);
-  expect(plainSpan.x2 - tippedSpan.x2).toBeCloseTo(37.5, 3);
+  expect(plainSpan.x2 - tippedSpan.x2).toBeCloseTo(trim * 5, 3);
 
   // The head is anchored behind its own point by exactly what the line gave up, which is what puts
   // the point back on the stored end coordinate. `9` — the tip — would leave the stub in place.
   const marker = page.locator("marker#diamond-overlay_shape_tipped-end");
-  expect(Number(await marker.getAttribute("refX"))).toBeCloseTo(1.5, 6);
+  expect(Number(await marker.getAttribute("refX"))).toBeCloseTo(9 - trim, 6);
 });
 
 test("trims an arc's ink without moving its angle handles", async ({ page }) => {

@@ -59,6 +59,9 @@ describe("MathLive config", () => {
     });
     expect(mathField.menuItems).toEqual([]);
     expect(mathField.popoverPolicy).toBe("auto");
+    // 開き括弧だけ打っても閉じ括弧が入る MathLive の smartFence。既定値任せにすると
+    // 「片方しか入らない」に戻りうるので明示で固定する。
+    expect(mathField.smartFence).toBe(true);
     expect(mathField.executeCommand).toHaveBeenCalledWith("hideVirtualKeyboard");
   });
 

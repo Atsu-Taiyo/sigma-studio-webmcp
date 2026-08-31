@@ -60,6 +60,15 @@ export function DesktopSettingsModal({
   if (!open) {
     return null;
   }
+  if (!getDesktopBridge()) {
+    return mode === "app" ? (
+      <WebSettingsBody
+        onClose={onClose}
+        embedded={embedded}
+        focusEntryId={focusEntryId}
+      />
+    ) : null;
+  }
   return (
     <DesktopSettingsBody
       onClose={onClose}
@@ -69,6 +78,99 @@ export function DesktopSettingsModal({
       mode={mode}
       embedded={embedded}
     />
+  );
+}
+
+function WebSettingsBody({
+  onClose,
+  embedded,
+  focusEntryId,
+}: {
+  onClose: () => void;
+  embedded: boolean;
+  focusEntryId?: string;
+}) {
+  const t = useT("settings");
+  const uiLocale = useAppLocale();
+  const [requestedLocale, setRequestedLocale] = useState<AppLocale | null>(null);
+  useSettingsEntryFocus(focusEntryId);
+
+  const confirmUiLocaleChange = () => {
+    if (!requestedLocale) {
+      return;
+    }
+    const next = requestedLocale;
+    setRequestedLocale(null);
+    if (next !== uiLocale) {
+      setAppLocale(next);
+    }
+  };
+
+  return (
+    <ModalFrame
+      open
+      onDismiss={onClose}
+      embedded={embedded}
+      size="md"
+      ariaLabel={t("app.title")}
+      className="desktop-settings-overlay"
+      surfaceClassName="desktop-settings-modal web-settings-modal"
+    >
+      {!embedded && <ModalHeader title={t("app.title")} onClose={onClose} />}
+      <ModalBody className="desktop-settings-content" padding={embedded ? "none" : "xl"}>
+        <SettingsSection id="desktop-settings-language" title={t("language.title")}>
+          <SettingsRow
+            id="desktop-settings-language-row"
+            label={t("language.label")}
+            description={t("language.description")}
+            control={(
+              <LanguageSettingButton
+                locale={uiLocale}
+                dialogOpen={requestedLocale !== null}
+                onOpen={() => setRequestedLocale(uiLocale)}
+              />
+            )}
+          />
+        </SettingsSection>
+      </ModalBody>
+      <LanguageChangeDialog
+        open={requestedLocale !== null}
+        currentLocale={uiLocale}
+        selectedLocale={requestedLocale ?? uiLocale}
+        onLocaleChange={setRequestedLocale}
+        onCancel={() => setRequestedLocale(null)}
+        onConfirm={confirmUiLocaleChange}
+      />
+      <style>{`
+        .web-settings-modal { font-size: 14px; }
+        .web-settings-modal .desktop-settings-content { display: flex; flex-direction: column; gap: var(--space-xl); }
+        .web-settings-modal .language-setting-trigger {
+          min-width: 152px;
+          justify-content: flex-start;
+          padding-inline: var(--space-sm);
+          box-shadow:
+            0 0 0 1px color-mix(in srgb, var(--text-primary) 4%, transparent),
+            0 1px 2px color-mix(in srgb, var(--text-primary) 5%, transparent);
+        }
+        .web-settings-modal .language-setting-trigger-code {
+          display: grid;
+          width: 26px;
+          height: 26px;
+          flex: 0 0 auto;
+          place-items: center;
+          border-radius: calc(var(--radius-control) - var(--space-xs));
+          background: var(--surface-muted);
+          color: var(--text-secondary);
+          font-size: 10px;
+          font-weight: 750;
+          letter-spacing: 0.04em;
+        }
+        .web-settings-modal .language-setting-trigger-chevron {
+          margin-inline-start: auto;
+          color: var(--text-muted);
+        }
+      `}</style>
+    </ModalFrame>
   );
 }
 

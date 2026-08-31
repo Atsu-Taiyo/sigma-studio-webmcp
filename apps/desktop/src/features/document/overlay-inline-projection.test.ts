@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { InlineNode } from "./model";
 import {
-  overlayRichTextDocumentToInlineNodes,
+  overlayTextBlocksToInlineNodes,
   overlayRichTextInlinesToInlineNodes,
 } from "./overlay-inline-projection";
 
@@ -30,11 +30,21 @@ describe("overlay rich-text inline projection", () => {
   });
 
   it("projects only the first semantic block for the compatibility helper", () => {
-    expect(overlayRichTextDocumentToInlineNodes({
-      blocks: [
-        { type: "paragraph", children: [{ type: "text", text: "first" }] },
-        { type: "paragraph", children: [{ type: "text", text: "second" }] },
+    expect(overlayTextBlocksToInlineNodes([
+      { type: "paragraph", id: "p_1", children: [{ type: "text", text: "first" }] },
+      { type: "paragraph", id: "p_2", children: [{ type: "text", text: "second" }] },
+    ])).toEqual([{ type: "text", text: "first" }]);
+  });
+
+  it("projects the first item when the shape starts with a list", () => {
+    expect(overlayTextBlocksToInlineNodes([{
+      type: "list",
+      id: "list_1",
+      listType: "bullet",
+      items: [
+        { type: "listItem", id: "li_1", children: [{ type: "text", text: "first" }] },
+        { type: "listItem", id: "li_2", children: [{ type: "text", text: "second" }] },
       ],
-    })).toEqual([{ type: "text", text: "first" }]);
+    }])).toEqual([{ type: "text", text: "first" }]);
   });
 });

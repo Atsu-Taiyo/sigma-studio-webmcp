@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_TEXT_SHAPE_WIDTH } from "@/features/drawing";
 import { createSigmaDocAgentSession, executeSigmaDocAgentDraftTool } from "@/lib/ai/sigma-doc-agent-tools";
 import { exportOverlaySvg, getOverlayPreviewSvg } from "@/features/rendering/adapters/svg";
 import type { SigmaDocument } from "@/types/sigma-doc";
 
 import { createGraphShapeProps, getGraphRenderLayout } from "./shapes/graph";
 import { createTableShapeProps, insertTableColumn } from "./shapes/table";
-import type { OverlaySnapshot } from "./types";
+import type { OverlayShape, OverlaySnapshot } from "./types";
 
 interface ForeignObjectRect {
   x: number;
@@ -84,9 +85,8 @@ describe("overlay svg export", () => {
             baseEnd: { x: 68, y: 72 },
             tip: { x: 24, y: 104 },
           },
-          richText: {
-            blocks: [{
-              type: "paragraph",
+          blocks: [{
+              type: "paragraph", id: "svg_export_test_24",
               children: [
                 { type: "text", text: "式 " },
                 {
@@ -97,7 +97,6 @@ describe("overlay svg export", () => {
                 },
               ],
             }],
-          },
           color: "#111111",
           size: "m",
           dash: "solid",
@@ -136,7 +135,7 @@ describe("overlay svg export", () => {
             baseEnd: { x: 68, y: 72 },
             tip: { x: 24, y: 104 },
           },
-          richText: { blocks: [{ type: "paragraph", children: [] }] },
+          blocks: [{ type: "paragraph", id: "svg_export_test_25", children: [] }],
           color: "#111111",
           size: "m",
           dash: "dashed",
@@ -535,7 +534,7 @@ describe("overlay svg export", () => {
     // The curve carries an `arrow` at its end, so it is drawn a stroke short of its stored end
     // point (312,132) and the head's own point takes that place. Only the ink moves — the exported
     // shape's coordinates are still the ones in the snapshot above.
-    expect(svg).toContain('<path d="M 220 120 Q 259.11 92.62 309.68 130.25"');
+    expect(svg).toContain('<path d="M 220 120 Q 258.51 93.04 308.15 129.12"');
     expect(svg).toContain('marker-start="url(#bar-shape_curve-start)"');
     expect(svg).toContain('marker-end="url(#arrowhead-shape_curve-end)"');
     expect(svg).toContain('transform="rotate(180 440 74)"');
@@ -854,15 +853,12 @@ describe("overlay svg export", () => {
           props: {
             w: 120,
             h: 24,
-            scale: 1,
-            autoSize: false,
             color: "#111827",
             fontSize: 10.5,
             size: "s",
-            richText: {
-              blocks: [
+            blocks: [
                 {
-                  type: "paragraph",
+                  type: "paragraph", id: "svg_export_test_26",
                   children: [
                     {
                       type: "mathInline",
@@ -878,7 +874,6 @@ describe("overlay svg export", () => {
                   ],
                 },
               ],
-            },
           },
         },
       ],
@@ -926,16 +921,12 @@ describe("overlay svg export", () => {
           props: {
             w: 72,
             h: 48,
-            scale: 1,
-            autoSize: false,
             color: "#111827",
             size: "m",
-            richText: {
-              blocks: [{
-                type: "paragraph",
+            blocks: [{
+                type: "paragraph", id: "svg_export_test_27",
                 children: [{ type: "text", text: "固定幅の長いテキストはエディタと同じ幅で折り返す" }],
               }],
-            },
           },
         },
       ],
@@ -944,14 +935,15 @@ describe("overlay svg export", () => {
 
     const svg = getOverlayPreviewSvg({ overlaySnapshot });
 
-    // The stored 72px width forces 6 wrapped lines of this string at the 16px default font
-    // (4.5 CJK-glyph units per line), so the effective content height (96px = 6*16) now grows
-    // past the stale stored h:48 instead of getting clipped in print. The foreignObject rect
-    // then bleeds by floor(16*0.6) = 10px on every side around that content box.
-    expect(getForeignObjectRects(svg)).toEqual([{ x: 20, y: 30, width: 92, height: 116 }]);
-    expect(svg).toContain("width:72px;min-height:96px");
-    expect(svg).toContain("white-space:pre-wrap;");
-    expect(svg).not.toContain("white-space:pre;");
+    // The box is the stored one — width the user set, height the DOM measured — and the exported
+    // markup wraps inside it at that width. The foreignObject rect bleeds by floor(16*0.6) = 10px
+    // on every side so a glyph that overflows the box is not clipped by the PDF backend.
+    expect(getForeignObjectRects(svg)).toEqual([{ x: 20, y: 30, width: 92, height: 68 }]);
+    expect(svg).toContain("width:72px;min-height:48px");
+    // The wrapping rules now travel with the content box the blocks are drawn in, because that is
+    // the element the stylesheet puts them on — the export inlines the same rule rather than
+    // writing a second one onto the shape's outer div.
+    expect(svg).toContain('class="overlay-text-shape-content" style="overflow-wrap:anywhere;white-space:pre-wrap"');
   });
 
   it("exports legacy sub-minimum text shapes at the editor fallback bounds", () => {
@@ -966,16 +958,12 @@ describe("overlay svg export", () => {
           props: {
             w: 2,
             h: 1,
-            scale: 1,
-            autoSize: false,
             color: "#111827",
             size: "m",
-            richText: {
-              blocks: [{
-                type: "paragraph",
+            blocks: [{
+                type: "paragraph", id: "svg_export_test_28",
                 children: [{ type: "text", text: "旧" }],
               }],
-            },
           },
         },
       ],
@@ -991,7 +979,7 @@ describe("overlay svg export", () => {
     expect(svg).toContain("width:8px;min-height:16px");
   });
 
-  it("exports a freshly tool-measured text shape with at least its estimator box", () => {
+  it("exports a tool-created text shape at the default width and one line", () => {
     const session = createSigmaDocAgentSession({ document: createTextToolTestDocument(), selectedId: "p_1" });
     const result = executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
       targetId: "p_1",
@@ -1011,15 +999,17 @@ describe("overlay svg export", () => {
 
     const svg = exportOverlaySvg([shape], {}, { width: 400, height: 300 });
 
-    expect(shape.props).toMatchObject({ w: 160, h: 16, autoSize: true });
-    // Content box is unchanged (unconstrained auto-size already measured 160x16 for this
-    // string); the foreignObject rect is bled by 10px on every side.
-    expect(getForeignObjectRects(svg)).toEqual([{ x: 10, y: 20, width: 180, height: 36 }]);
-    expect(svg).toContain("width:160px;min-height:16px");
+    expect(shape.props).toMatchObject({ w: DEFAULT_TEXT_SHAPE_WIDTH, h: 16 });
+    // The stored box is what the shape draws at; the foreignObject rect is bled by 10px on
+    // every side.
+    expect(getForeignObjectRects(svg)).toEqual([
+      { x: 10, y: 20, width: DEFAULT_TEXT_SHAPE_WIDTH + 20, height: 36 },
+    ]);
+    expect(svg).toContain(`width:${DEFAULT_TEXT_SHAPE_WIDTH}px;min-height:16px`);
     expect(svg).toContain("overflow:visible");
   });
 
-  it("exports an explicitly fixed tool text shape at the editor minimum box", () => {
+  it("exports a narrow tool text shape at the editor minimum box", () => {
     const session = createSigmaDocAgentSession({ document: createTextToolTestDocument(), selectedId: "p_1" });
     const result = executeSigmaDocAgentDraftTool(session, "draft_insert_shape", {
       targetId: "p_1",
@@ -1029,7 +1019,6 @@ describe("overlay svg export", () => {
       y: 36,
       text: "固定",
       w: 5,
-      h: 7,
     });
     expect(result.ok).toBe(true);
     const shape = session.draftDocument.pageLayout?.overlay?.overlaySnapshot?.shapes
@@ -1041,12 +1030,48 @@ describe("overlay svg export", () => {
 
     const svg = exportOverlaySvg([shape], {}, { width: 400, height: 300 });
 
-    expect(shape.props.autoSize).toBe(false);
-    // Two CJK glyphs at the 8px stored/minimum width wrap onto 2 lines (32px), taller than
-    // the stale stored h:16 — the effective height grows to fit before the 10px bleed is
-    // applied on every side.
-    expect(getForeignObjectRects(svg)).toEqual([{ x: 14, y: 26, width: 28, height: 52 }]);
-    expect(svg).toContain("width:8px;min-height:32px");
+    // The requested 5x7 box is clamped to the 8px minimum width and to one 16px line box; the
+    // foreignObject rect adds the 10px bleed on every side. Wrapping no longer changes the stored
+    // geometry — the width is the user's and the DOM writes the height back.
+    expect(getForeignObjectRects(svg)).toEqual([{ x: 14, y: 26, width: 28, height: 36 }]);
+    expect(svg).toContain("width:8px;min-height:16px");
+  });
+
+  /**
+   * A shape holding the body blocks it gained. The export carries no stylesheet, so what has to
+   * survive is the typography itself — a bare `blockquote` would take a 40px UA indent and reflow
+   * the figure away from what the canvas draws.
+   */
+  it("exports a text shape's quote, code block and rule with their typography inline", () => {
+    const shape: OverlayShape = {
+      id: "shape_body_blocks",
+      type: "text",
+      x: 20,
+      y: 30,
+      rotation: 0,
+      props: {
+        w: 240,
+        h: 120,
+        color: "#111827",
+        size: "m",
+        blocks: [
+          {
+            type: "quote",
+            id: "quote_1",
+            blocks: [{ type: "paragraph", id: "quote_p", children: [{ type: "text", text: "引用" }] }],
+          },
+          { type: "codeBlock", id: "code_1", children: [{ type: "text", text: "code" }] },
+          { type: "divider", id: "divider_1" },
+        ],
+      },
+    };
+
+    const svg = exportOverlaySvg([shape], {}, { width: 400, height: 300 });
+
+    expect(svg).toContain("引用");
+    expect(svg).toMatch(/<blockquote[^>]*style="[^"]*border-left:3px solid/);
+    expect(svg).toMatch(/<pre[^>]*style="[^"]*background:#f7f8fa/);
+    expect(svg).toMatch(/<hr[^>]*style="[^"]*border-top:1px solid/);
   });
 
   it("exports table shapes with inline math content and no rotation transform", () => {

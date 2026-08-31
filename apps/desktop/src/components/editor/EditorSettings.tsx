@@ -11,7 +11,7 @@ import {
   Tag,
   Trash2,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 
 import { ColorPalette } from "@/components/editor/ColorPalette";
 import {
@@ -79,6 +79,8 @@ import {
 import type {
   Graph2DSpec,
   GraphCurve,
+  SigmaChartData,
+  SigmaChartSpec,
   GraphCurveDash,
   GraphFillRegion,
   GraphPoint,
@@ -113,6 +115,31 @@ function clampInlineMathCursor(cursor: number, tex: string): number {
   }
 
   return Math.min(Math.max(Math.round(cursor), 0), tex.length);
+}
+
+export const SELECT_OVERLAY_CHART_EVENT = "sigma-studio:select-overlay-chart";
+export const OPEN_OVERLAY_CHART_SETTINGS_EVENT = "sigma-studio:open-overlay-chart-settings";
+
+/**
+ * What the shell needs to draw the chart panel.
+ *
+ * `sourceTable` is the resolved table (or `null` when the reference is broken) rather than a flag,
+ * because the panel also lists the series it can colour, and those come from the live data.
+ */
+export interface SelectedOverlayChart {
+  shapeId: string;
+  spec: SigmaChartSpec;
+  data: SigmaChartData;
+  /** False when the chart is drawing from its snapshot because the table is gone. */
+  linked: boolean;
+  /**
+   * Writes a new spec back to the canvas.
+   *
+   * Carried in the payload rather than sent as a second event, matching `SelectedOverlayGraph`.
+   * `areSelectedOverlayChartsEqual` compares only the data fields, so a fresh closure per dispatch
+   * does not defeat the shell's bail.
+   */
+  onSpecChange: (spec: SigmaChartSpec) => void;
 }
 
 export const SELECT_OVERLAY_GRAPH_EVENT = "sigma-studio:select-overlay-graph";
@@ -1101,20 +1128,26 @@ function focusGraphSettingsSurface() {
   document.querySelector<HTMLElement>("[data-graph-settings-panel]")?.focus({ preventScroll: true });
 }
 
-function GraphItemActionsMenu({
+export function GraphItemActionsMenu({
   label,
   testId,
+  className,
+  hoverAnchorRef,
   onCloseNestedMenus,
   children,
 }: {
   label: string;
   testId?: string;
+  className?: string;
+  /** Optional larger hover target; the trigger remains the explicit keyboard/click control. */
+  hoverAnchorRef?: RefObject<HTMLElement | null>;
   onCloseNestedMenus: () => void;
   children: ReactNode;
 }) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleCloseRef = useRef<() => void>(() => undefined);
   const onCloseNestedMenusRef = useRef(onCloseNestedMenus);
   const [menuState, setMenuState] = useState(CLOSED_GRAPH_ITEM_ACTIONS_MENU_STATE);
   const open = menuState.open;
@@ -1133,20 +1166,48 @@ function GraphItemActionsMenu({
     setMenuState(closeGraphItemActionsMenu());
     onCloseNestedMenus();
   };
+  const isHoverRegionActive = () => {
+    const anchor = hoverAnchorRef?.current ?? buttonRef.current;
+    const popover = contentRef.current?.closest<HTMLElement>("[data-toolbar-popover]");
+    return anchor?.matches(":hover") === true || popover?.matches(":hover") === true;
+  };
   const scheduleClose = () => {
     cancelScheduledClose();
     closeTimerRef.current = setTimeout(() => {
       closeTimerRef.current = null;
+      // カードと portal された詳細面を1つの Hover 領域として扱う。カードを離れてから
+      // 詳細面へ到達するまでの隙間でタイマーが勝っても、操作先に着いていれば閉じない。
+      if (isHoverRegionActive()) return;
       setMenuState(closeGraphItemActionsMenu());
       onCloseNestedMenus();
-    }, 140);
+    }, 320);
   };
+  useEffect(() => {
+    scheduleCloseRef.current = scheduleClose;
+  });
 
   useEffect(() => () => {
     if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current);
     }
   }, []);
+
+  useEffect(() => {
+    const anchor = hoverAnchorRef?.current;
+    if (!anchor) return;
+    const openFromHover = () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+      setMenuState(openGraphItemActionsMenuByHover);
+    };
+    const closeFromHover = () => scheduleCloseRef.current();
+    anchor.addEventListener("mouseenter", openFromHover);
+    anchor.addEventListener("mouseleave", closeFromHover);
+    return () => {
+      anchor.removeEventListener("mouseenter", openFromHover);
+      anchor.removeEventListener("mouseleave", closeFromHover);
+    };
+  }, [hoverAnchorRef]);
 
   useEffect(() => {
     if (!open) {
@@ -1208,7 +1269,7 @@ function GraphItemActionsMenu({
         open={open}
         anchorRef={buttonRef}
         onClose={closeMenu}
-        className="shape-menu graph-item-actions-menu"
+        className={`shape-menu graph-item-actions-menu ${className ?? ""}`}
         // 中身は色・線種・太さのドロップダウンや濃さのスライダー。role="menu" の直下に
         // フォーム部品を置くと AT のメニューモードで正しく露出しないので dialog にする。
         role="dialog"

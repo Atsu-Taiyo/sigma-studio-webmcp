@@ -23,12 +23,20 @@ import { createPortal } from "react-dom";
 import type { CSSProperties, MouseEvent, PointerEvent as ReactPointerEvent, SetStateAction } from "react";
 
 import {
+  OPEN_OVERLAY_CHART_SETTINGS_EVENT,
   OPEN_OVERLAY_GRAPH_SETTINGS_EVENT,
+  SELECT_OVERLAY_CHART_EVENT,
   SELECT_OVERLAY_GRAPH_EVENT,
   type SelectedInlineMath,
+  type SelectedOverlayChart,
   type SelectedOverlayGraph,
 } from "@/components/editor/EditorSettings";
+import { ChartSettingsPanel } from "@/components/editor/ChartSettingsPanel";
 import { GraphSettingsPanel } from "@/components/editor/GraphSettingsPanel";
+import {
+  Graph3DSettingsPanelHost,
+  OPEN_OVERLAY_GRAPH3D_SETTINGS_EVENT,
+} from "@/components/editor/Graph3DSettingsPanel";
 import { DEFAULT_FILL_OPACITY } from "@/lib/fill-opacity";
 import { CommandSettingsDialog } from "@/components/editor/CommandSettingsDialog";
 import { TexCommandReferenceDialog } from "@/components/editor/TexCommandReferenceDialog";
@@ -73,7 +81,9 @@ import {
   useAiPinnedReferences,
   type AiApplyAnimationState,
   type AiEditReference,
+  type AiEditPreviewState,
   type AiEditShapeOnlyPreview,
+  type AiProposalApplyOutcome,
   type AiProposalRejectEffect,
   type RejectProposalsOutcome,
 } from "@/features/ai-edit";
@@ -88,6 +98,7 @@ import {
   MIN_PAGE_BODY_HEIGHT_MM,
   getPageMetrics,
   getDefaultPageLayout,
+  inlineNodesToPlainText,
   insertTopLevelDocumentBlocks,
   insertTopLevelDocumentBlocksBefore,
   normalizePageLayout,
@@ -140,11 +151,11 @@ import {
 } from "@/components/editor/text-flow/caret-bookmark-events";
 import { deliverCaret, requestCaret } from "@/components/editor/text-flow/caret-router";
 import { scrollElementIntoCanvasView } from "@/components/editor/text-flow/caret-scroll";
-import type { TextFlowChangeContext } from "@/components/editor/text-flow/types";
+import type { TextFlowChangeContext, TextFlowReplaceOptions } from "@/components/editor/text-flow/types";
 import { AiEditPanel } from "@/components/editor/AiEditPanel";
 import { AiTaskDock } from "@/components/editor/AiTaskDock";
 import { CommentDock } from "@/components/editor/CommentDock";
-import { WebMcpBridge } from "@/components/editor/webmcp/WebMcpBridge";
+import { WebMcpBridge, type WebMcpBridgeHandle } from "@/components/editor/webmcp/WebMcpBridge";
 import { AiEditWebPlaceholder } from "@/components/editor/AiEditWebPlaceholder";
 import {
   AI_INLINE_ANCHOR_OFFSET_Y,
@@ -199,6 +210,7 @@ import { isAiRunStatusActive, useAiRunSessions } from "@/lib/ai/ai-run-session-s
 import { useAiConnection, useClaudeConnection, useGeminiConnection } from "@/lib/ai/ai-connection";
 import { DEFAULT_CLAUDE_AI_EDIT_MODEL, DEFAULT_GEMINI_AI_EDIT_MODEL } from "@/lib/ai/ai-providers";
 import { countPerformanceEvent, measurePerformance } from "@/lib/performance";
+import { getHeadingNumberMap } from "@/lib/heading-numbering";
 import {
   addRichBlockToProblem,
   collectOutline,
@@ -346,7 +358,16 @@ import type { BackstageSectionId } from "@/components/editor/editor-shell/chrome
 import { AiSettingsDialog } from "@/components/editor/AiSettingsDialog";
 import { Tooltip } from "@/components/ui/Tooltip";
 import type { TooltipContent } from "@/components/ui/Tooltip";
+import {
+  importEditorMathProtectedBuffer,
+  isEditorMathPrtFilename,
+  isEditorMathSprFilename,
+  DEFAULT_EDITOR_MATH_IMPORT_FILENAME,
+  EDITOR_MATH_IMPORT_AVAILABLE,
+  EditorMathPrtPasswordError,
+} from "@/lib/classic-format-import";
 import { importTexDocument, isTexFilename } from "@/lib/tex-import";
+import { importPresentationSlidesBuffer, isPresentationSlidesFilename } from "@/lib/presentation-import";
 import { getSupportedOverlayImageFiles } from "@/lib/overlay-image-files";
 import {
   cloneMaterialContentForInsert,
@@ -436,7 +457,14 @@ import { useStore } from "zustand";
 
 import { createEditorStore, EditorStoreProvider, type EditorStore } from "@/features/editor-state";
 import { createBlockCommentAnchor } from "@/components/editor/page-canvas/popover-anchors";
-import type { TextFlowMaterialInsertRequest, TextFlowProblemCommandRequest } from "@/components/editor/text-flow/types";
+import type {
+  TextFlowBodyBlockCommandRequest,
+  TextFlowHeadingCommandRequest,
+  TextFlowMaterialInsertRequest,
+  TextFlowProblemCommandRequest,
+} from "@/components/editor/text-flow/types";
+import { handleHeadingCommandAutoNumbering } from "@/components/editor/editor-shell/heading-command";
+import { applyRememberedBoxFrame } from "@/lib/remembered-box-style";
 import { shouldDispatchSearchQuery } from "@/components/editor/search-query-dispatch";
 import { useStableCallback } from "@/lib/react/use-stable-callback";
 import { setLatestSearchQuery } from "@/components/tiptap/search-highlight-extension";
@@ -451,6 +479,7 @@ import {
 } from "@/components/editor/editor-shell/whiteboard-camera";
 import {
   areGraphSpecsEqual,
+  areSelectedOverlayChartsEqual,
   areSelectedOverlayGraphsEqual,
   getDefaultDocumentSelectionId,
   sameDocumentMetadatas,
@@ -967,6 +996,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   const [editorPageCount, setEditorPageCount] = useState(1);
   const selectedInlineMath = useStore(editorStore, (state) => state.selectedInlineMath);
   const [selectedOverlayGraph, setSelectedOverlayGraph] = useState<SelectedOverlayGraph | null>(null);
+  const [selectedOverlayChart, setSelectedOverlayChart] = useState<SelectedOverlayChart | null>(null);
   const pendingOverlayGraphEditsRef = useRef<PendingOverlayGraphEdits | null>(null);
   const recordPendingAxisLabelEdit = useCallback((
     shapeId: string,
@@ -991,7 +1021,10 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     );
   }, []);
   const [graphSettingsShapeId, setGraphSettingsShapeId] = useState<string | null>(null);
+  const [graph3DSettingsShapeId, setGraph3DSettingsShapeId] = useState<string | null>(null);
   const graphSettingsShapeIdRef = useRef<string | null>(null);
+  const [chartSettingsShapeId, setChartSettingsShapeId] = useState<string | null>(null);
+  const chartSettingsShapeIdRef = useRef<string | null>(null);
   const graphSettingsShapeWasInDocumentRef = useRef(false);
   const [aiEditReference, setAiEditReference] = useState<AiEditReference | null>(null);
   // ワンドボタン「AIに追加」で明示的に積んだ参照 (複数)。本文選択だけの暗黙候補
@@ -1233,10 +1266,26 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   const [overlayImageRequest, setOverlayImageRequest] = useState<OverlayImageRequest | null>(null);
   const [overlayActionRequest, setOverlayActionRequest] = useState<OverlayActionRequest | null>(null);
   const [overlaySelection, setOverlaySelection] = useState<OverlaySelectionSummary>(EMPTY_OVERLAY_SELECTION);
+  const [webMcpPreviewGroups, setWebMcpPreviewGroups] = useState<AiEditPreviewState[]>([]);
+  const webMcpBridgeRef = useRef<WebMcpBridgeHandle | null>(null);
+  const [webMcpPanelTarget, setWebMcpPanelTarget] = useState<HTMLDivElement | null>(null);
+  const visibleAiEditPreviewGroups = useMemo(
+    () => [...aiEditPreviewGroups, ...webMcpPreviewGroups],
+    [aiEditPreviewGroups, webMcpPreviewGroups],
+  );
+  /** 常に最新の選択。state 側はシェルの見た目に関わる差分でしか進まない。 */
+  const overlaySelectionRef = useRef<OverlaySelectionSummary>(EMPTY_OVERLAY_SELECTION);
   const [activeOverlayTool, setActiveOverlayTool] = useState<OverlayTool>({ kind: "select" });
   const [historyRevision, setHistoryRevision] = useState(0);
   const [documentInstanceRevision, setDocumentInstanceRevision] = useState(0);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const otherImportInputRef = useRef<HTMLInputElement | null>(null);
+  // EditorMath教材(.legacy/.archive)はパスワードゲート: 正しいパスワードが入力される
+  // まで選択ファイルを保持し、ダイアログで照合してからインポートする。
+  const [editorMathPasswordRequest, setEditorMathPasswordRequest] = useState<File | null>(null);
+  const [editorMathPassword, setEditorMathPassword] = useState("");
+  const [editorMathPasswordError, setEditorMathPasswordError] = useState<string | null>(null);
+  const [editorMathImporting, setEditorMathImporting] = useState(false);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fontFamilyButtonRef = useRef<HTMLButtonElement | null>(null);
   const blockStyleButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -1384,6 +1433,20 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       ),
     );
     setGraphSettingsShapeId(shapeId);
+  }, []);
+  const closeChartSettings = useCallback(() => {
+    chartSettingsShapeIdRef.current = null;
+    setChartSettingsShapeId(null);
+  }, []);
+  const openChartSettings = useCallback((shapeId: string) => {
+    chartSettingsShapeIdRef.current = shapeId;
+    setChartSettingsShapeId(shapeId);
+  }, []);
+  const closeGraph3DSettings = useCallback(() => {
+    setGraph3DSettingsShapeId(null);
+  }, []);
+  const openGraph3DSettings = useCallback((shapeId: string) => {
+    setGraph3DSettingsShapeId(shapeId);
   }, []);
 
   useEffect(() => {
@@ -1615,6 +1678,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     // 残す価値は無いので必ず閉じる。
     closeGraphSettings();
     setSelectedOverlayGraph(null);
+    closeChartSettings();
+    setSelectedOverlayChart(null);
+    closeGraph3DSettings();
     setCommentAnchorCandidate(null);
     setPendingCommentAnchor(null);
     setPendingCommentDraft([]);
@@ -1633,7 +1699,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     // 同名IDに誤って解決したり、存在しないブロックを指したまま残ったりする。
     setAiEditReference(null);
     clearAiEditPinnedReferences();
-  }, [clearAiEditPinnedReferences, closeGraphSettings, documentHistory, clearCommentReplyDrafts, setActiveCommentThreadId, setCommentAnchorCandidate, setHighlightedCommentThreadId, setPendingCommentAnchor, setSelectedId, setSelectedInlineMath]);
+  }, [clearAiEditPinnedReferences, closeChartSettings, closeGraph3DSettings, closeGraphSettings, documentHistory, clearCommentReplyDrafts, setActiveCommentThreadId, setCommentAnchorCandidate, setHighlightedCommentThreadId, setPendingCommentAnchor, setSelectedId, setSelectedInlineMath]);
 
   const rememberLeavingEditorTabViewState = useCallback((leavingFileId: string | null, nextFileId: string) => {
     if (!leavingFileId || leavingFileId === nextFileId) {
@@ -3038,6 +3104,10 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       setStatusMessage(aiDocumentWriteInProgressMessage());
       return;
     }
+    // Overlay edits reach the document on a short debounce. Undo pressed inside that window would
+    // otherwise skip straight past the edit the user just made and swallow the previous one, so the
+    // pending overlay change is committed first and becomes the step this undo takes back.
+    window.dispatchEvent(new CustomEvent(FLUSH_OVERLAY_CHANGES_EVENT));
     // A restore swaps the whole document, so peek before either stack moves and
     // refuse only when the entry would alter what AI is holding. Undoing edits
     // elsewhere stays available during a run.
@@ -3671,6 +3741,37 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, [closeGraphSettings]);
 
   useEffect(() => {
+    const handleOverlayChartSelect = (event: Event) => {
+      const detail = event instanceof CustomEvent ? (event.detail as SelectedOverlayChart | null) : null;
+      if (chartSettingsShapeIdRef.current && (!detail || detail.shapeId !== chartSettingsShapeIdRef.current)) {
+        // Selection left this chart: close, or the panel state lingers and the panel reappears by
+        // itself the next time the same chart is selected.
+        closeChartSettings();
+      }
+      // The canvas re-dispatches on every commit, so an equal payload must not call `setState` —
+      // that is the shell/canvas re-render loop the graph panel already guards against.
+      setSelectedOverlayChart((current) => (
+        areSelectedOverlayChartsEqual(current, detail) ? current : detail
+      ));
+    };
+
+    window.addEventListener(SELECT_OVERLAY_CHART_EVENT, handleOverlayChartSelect);
+    return () => window.removeEventListener(SELECT_OVERLAY_CHART_EVENT, handleOverlayChartSelect);
+  }, [closeChartSettings]);
+
+  useEffect(() => {
+    const handleOpenOverlayChartSettings = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail as { shapeId?: unknown } | null : null;
+      if (typeof detail?.shapeId === "string") {
+        openChartSettings(detail.shapeId);
+      }
+    };
+
+    window.addEventListener(OPEN_OVERLAY_CHART_SETTINGS_EVENT, handleOpenOverlayChartSettings);
+    return () => window.removeEventListener(OPEN_OVERLAY_CHART_SETTINGS_EVENT, handleOpenOverlayChartSettings);
+  }, [openChartSettings]);
+
+  useEffect(() => {
     const handleOpenOverlayGraphSettings = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail as { shapeId?: unknown } | null : null;
       if (typeof detail?.shapeId === "string") {
@@ -3681,6 +3782,17 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     window.addEventListener(OPEN_OVERLAY_GRAPH_SETTINGS_EVENT, handleOpenOverlayGraphSettings);
     return () => window.removeEventListener(OPEN_OVERLAY_GRAPH_SETTINGS_EVENT, handleOpenOverlayGraphSettings);
   }, [openGraphSettings]);
+
+  useEffect(() => {
+    const handleOpenOverlayGraph3DSettings = (event: Event) => {
+      const detail = event instanceof CustomEvent
+        ? event.detail as { shapeId?: unknown } | null
+        : null;
+      if (typeof detail?.shapeId === "string") openGraph3DSettings(detail.shapeId);
+    };
+    window.addEventListener(OPEN_OVERLAY_GRAPH3D_SETTINGS_EVENT, handleOpenOverlayGraph3DSettings);
+    return () => window.removeEventListener(OPEN_OVERLAY_GRAPH3D_SETTINGS_EVENT, handleOpenOverlayGraph3DSettings);
+  }, [openGraph3DSettings]);
 
   useEffect(() => {
     const closeTransientUi = (event: KeyboardEvent) => {
@@ -3932,7 +4044,14 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   // 日本語になる。既定が日本語なのは AI / MCP の呼び出しを固定するため)。
   // 画面のアウトラインは表示言語で引く (`t` を省略すると `collectOutline` の既定 =
   // 日本語になる。既定が日本語なのは AI / MCP の呼び出しを固定するため)。
-  const outline = useMemo(() => collectOutline(document, { t: tE }), [document, tE]);
+  const outline = useMemo(
+    () => collectOutline(document, { t: tE, includeLayoutHeadings: true }),
+    [document, tE],
+  );
+  const outlineHeadingNumbers = useMemo(
+    () => getHeadingNumberMap(document.content, document.metadata.headingNumbering),
+    [document.content, document.metadata.headingNumbering],
+  );
   // コメント装飾は本文ユニットごとの effect で更新されるので、コメントの無い文書で
   // 毎回新しい空配列を渡すと打鍵のたびにユニット数だけ無駄な更新が走る。
   const commentThreads = document.comments ?? EMPTY_COMMENT_THREADS;
@@ -4107,7 +4226,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
    * (`canUseTextBlockStyle`) だけで閉じてはいけない — 区切り線そのものを選んでいるときのように、
    * 文字書式の対象ではないが解除はしたい状態がある。ブロックの中に居ることが分かっていれば通す。
    */
-  const canUseBlockStructure = canUseTextBlockStyle
+  const canUseBlockStructure = canUseOverlayTextToolbar
+    || canUseTextBlockStyle
     || (!overlayEditing && !bodyToolbarLockedByAi && (
       blockStyleState.onDivider
       || blockStyleState.inQuoteBlock
@@ -4280,6 +4400,25 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         />
       )
     : null;
+  const overlayChartSettingsDialog = chartSettingsShapeId
+    && selectedOverlayChart?.shapeId === chartSettingsShapeId
+    ? (
+        <ChartSettingsPanel
+          chart={selectedOverlayChart}
+          onClose={closeChartSettings}
+          onSpecChange={(_shapeId, spec) => selectedOverlayChart.onSpecChange(spec)}
+        />
+      )
+    : null;
+  // spec の購読はホスト側に閉じている。ここで持つとリボンごと再レンダーされる。
+  const overlayGraph3DSettingsDialog = (
+    <Graph3DSettingsPanelHost
+      shapeId={graph3DSettingsShapeId}
+      onClose={closeGraph3DSettings}
+      onUndo={undoDocumentChange}
+      onRedo={redoDocumentChange}
+    />
+  );
 
   const writeOverlay = (overlay: PageOverlay, options?: OverlayChangeOptions) => {
     commitDocumentChange((current) => {
@@ -4404,7 +4543,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   };
 
   const addBlock = (type: SigmaBlock["type"]) => {
-    const block = createBlock(type, tEditor);
+    // 箱は「前に決めた見た目」で入る (設定ダイアログで変えた色や罫がそのまま次にも効く)。
+    const block = applyRememberedBoxFrame(createBlock(type, tEditor));
     let insertedBodyBlockId: string | null = null;
     commitDocumentChange((current) => {
       const next = block.type === "problem"
@@ -4704,19 +4844,22 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     targetBlockIds?: readonly string[],
   ): MaterialContent | null => {
     const currentDocument = documentRef.current;
+    // `overlaySelection` の state はグラフの spec 差し替えでは進めない (シェルの再レンダーを
+    // 避けるため)。素材にはその瞬間の spec が要るので、必ず ref 側を読む。
+    const currentSelection = overlaySelectionRef.current;
     const selectedBlockId = targetBlockId === undefined
-      ? overlaySelection.selectedShapes.length > 0
+      ? currentSelection.selectedShapes.length > 0
         ? materialBlockSelectionRef.current
         : selectedIdRef.current ?? materialBlockSelectionRef.current
       : targetBlockId;
     return buildSelectedMaterialContent(
       currentDocument,
       selectedBlockId,
-      overlaySelection.selectedShapes,
-      overlaySelection.selectedAssets,
+      currentSelection.selectedShapes,
+      currentSelection.selectedAssets,
       targetBlockIds,
     );
-  }, [overlaySelection.selectedAssets, overlaySelection.selectedShapes]);
+  }, []);
 
   const createMaterialFromContent = useCallback(async (content: MaterialContent, requestedName: string, metadataDraft?: MaterialMetadataDraft) => {
     const bridge = getDesktopBridge();
@@ -5015,6 +5158,11 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     );
   };
 
+  const blockStructureCommandRef = useRef<{
+    canUse: boolean;
+    apply: (value: BlockStyleCommandValue) => void;
+  }>({ canUse: false, apply: () => undefined });
+
   /**
    * リスト化・引用・コード・区切り線。段落スタイル (`applyTextStyle`) と違って ProseMirror
    * 経由で送る。入れ子・分割・結合の規則を SigmaDoc 側で書き直すと、PM のコマンドが既に
@@ -5035,12 +5183,19 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     if (!canUseBlockStructure) {
       return;
     }
+    const target = overlayEditing ? "overlay" : "document";
     const detail: { command: string; value: string; target: string; focusBlockId?: string | null } = {
       command: "blockStyle",
       value,
-      target: "document",
+      target,
     };
     window.dispatchEvent(new CustomEvent(FORMAT_TEXT_EVENT, { detail }));
+
+    // Overlay text stays inside one editor when its block structure changes, so the body-only
+    // block-id handoff below would target an unrelated SigmaDoc block and steal focus.
+    if (target === "overlay") {
+      return;
+    }
 
     const focusBlockId = detail.focusBlockId ?? selectedIdRef.current;
     if (focusBlockId) {
@@ -5049,6 +5204,12 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       scheduleEditorBlockFocus(focusBlockId, { collapseToEnd: true, onlyIfLost: true });
     }
   };
+
+  // `/` から来るブロック要求へ渡すための最新値。**毎レンダー**書き換える (依存配列を持たない
+  // effect) ので、キャンバスへ渡すハンドラは識別子を変えずに最新の可否と関数を読める。
+  useEffect(() => {
+    blockStructureCommandRef.current = { canUse: canUseBlockStructure, apply: applyBlockStructure };
+  });
 
   const applyTextAlign = (align: TextAlign) => {
     if (!canUseTextAlign) {
@@ -5367,9 +5528,11 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     if (command !== "select") {
       setStatusMessage(command === "graph"
         ? tEditor("status.graphDragHint")
-        : command === "circle" || command === "arc" || command === "sector"
-          ? tEditor("status.centerDragHint")
-        : tEditor("status.shapeDragHint"));
+        : command === "graph3d"
+          ? tEditor("status.graph3dDragHint")
+          : command === "circle" || command === "arc" || command === "sector"
+            ? tEditor("status.centerDragHint")
+            : tEditor("status.shapeDragHint"));
     }
   };
 
@@ -5481,6 +5644,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   };
 
   const handleOverlaySelectionSummaryChange = useCallback((summary: OverlaySelectionSummary) => {
+    // state はシェルの見た目が変わるときだけ進める。図形そのものが要る素材化は ref を読む。
+    overlaySelectionRef.current = summary;
     setOverlaySelection((current) => sameOverlaySelectionSummary(current, summary) ? current : summary);
     if (summary.selectedCount === 0 || !summary.canStyleLine) {
       setLineDashMenuOpen(false);
@@ -5750,6 +5915,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     previousIds: string[],
     nextBlocks: TextFlowBlock[],
     context?: TextFlowChangeContext,
+    options?: TextFlowReplaceOptions,
   ) => {
     commitDocumentChange((current) => {
       const content = replaceTopLevelTextFlowBlocks(current.content, previousIds, nextBlocks);
@@ -5763,7 +5929,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         updatedAt: new Date().toISOString(),
       };
     }, {
-      deferRender: true,
+      // ページを跨いで分割されたブロックへの編集だけは遅らせない (`PageCanvasEditor` が
+      // 同じタスクの中でページ割りを取り直す)。
+      deferRender: options?.immediateRender !== true,
       ...(context?.historyGroup ? { historyGroup: context.historyGroup } : {}),
     });
   }, [commitDocumentChange]);
@@ -6043,13 +6211,29 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     await deleteDocumentFromList(activeFileId);
   };
 
-  const importDocumentFile = async (file: File) => {
+  const importDocumentFile = async (file: File, options: { editorMathPassword?: string } = {}) => {
     try {
+      const isPrt = isEditorMathPrtFilename(file.name);
+      const isSpr = isEditorMathSprFilename(file.name);
+      const isEditorMath = isPrt || isSpr;
       const isTex = isTexFilename(file.name);
+      const isSlides = isPresentationSlidesFilename(file.name);
+      if (isEditorMath && options.editorMathPassword === undefined) {
+        setEditorMathPassword("");
+        setEditorMathPasswordError(null);
+        setEditorMathPasswordRequest(file);
+        return;
+      }
       let recoveryIssues: SigmaDocumentRecoveryIssue[] = [];
       let imported: SigmaDocument;
-      if (isTex) {
+      if (isEditorMath) {
+        imported = await importEditorMathProtectedBuffer(await file.arrayBuffer(), file.name, options.editorMathPassword ?? "");
+      } else if (isTex) {
         imported = importTexDocument(await file.text(), file.name);
+      } else if (isSlides) {
+        imported = await importPresentationSlidesBuffer(await file.arrayBuffer(), file.name, {
+          locale: getAppLocale(),
+        });
       } else {
         const recovered = recoverSigmaDocument(JSON.parse(await file.text()));
         if (!recovered.ok) {
@@ -6076,7 +6260,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         setOpenFileIds([importedDocument.docId]);
         setActiveFileId(importedDocument.docId);
         setSaveState("saved");
-        setStatusMessage(isTex ? tEditor("status.texConverted") : tEditor("status.jsonImported"));
+        setStatusMessage(isPrt ? tEditor("status.legacyImported") : isSpr ? tEditor("status.archiveImported") : isTex ? tEditor("status.texConverted") : isSlides ? tEditor("status.presentationConverted") : tEditor("status.jsonImported"));
         announceRecovery(recoveryIssues);
         return;
       }
@@ -6084,9 +6268,12 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         return;
       }
       const importedRecord = await createDocumentFromSigmaDocument(importedDocument);
-      await openDocumentAsTab(importedRecord, isTex ? tEditor("status.texConverted") : tEditor("status.jsonImported"));
+      await openDocumentAsTab(importedRecord, isPrt ? tEditor("status.legacyImported") : isSpr ? tEditor("status.archiveImported") : isTex ? tEditor("status.texConverted") : isSlides ? tEditor("status.presentationConverted") : tEditor("status.jsonImported"));
       announceRecovery(recoveryIssues);
     } catch (error) {
+      if (error instanceof EditorMathPrtPasswordError && options.editorMathPassword !== undefined) {
+        throw error;
+      }
       setSaveState("error");
       setStatusMessage(error instanceof Error ? error.message : tEditor("status.fileReadFailed"));
     }
@@ -6099,6 +6286,64 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       return;
     }
     importInputRef.current?.click();
+  };
+
+  const openOtherImportDialog = EDITOR_MATH_IMPORT_AVAILABLE ? () => {
+    setActiveMenu(null);
+    const bridge = getDesktopBridge();
+    if (isDesktopApp && bridge?.file.openImportOtherDocument) {
+      void (async () => {
+        try {
+          const result = await bridge.file.openImportOtherDocument!();
+          if (!result) {
+            return;
+          }
+          const baseName = result.filePath.split(/[\\/]/).pop() ?? DEFAULT_EDITOR_MATH_IMPORT_FILENAME;
+          const binary = window.atob(result.dataBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let index = 0; index < binary.length; index += 1) {
+            bytes[index] = binary.charCodeAt(index);
+          }
+          await importDocumentFile(new File([bytes], baseName));
+        } catch (error) {
+          setSaveState("error");
+          setStatusMessage(error instanceof Error ? error.message : tEditor("status.fileReadFailed"));
+        }
+      })();
+      return;
+    }
+    otherImportInputRef.current?.click();
+  } : () => undefined;
+
+  const cancelEditorMathImport = () => {
+    setEditorMathPasswordRequest(null);
+    setEditorMathPassword("");
+    setEditorMathPasswordError(null);
+    setEditorMathImporting(false);
+  };
+
+  const submitEditorMathPassword = async () => {
+    if (!editorMathPasswordRequest || editorMathImporting) {
+      return;
+    }
+    if (!editorMathPassword) {
+      setEditorMathPasswordError(tEditor("status.passwordRequired"));
+      return;
+    }
+    setEditorMathImporting(true);
+    setEditorMathPasswordError(null);
+    try {
+      await importDocumentFile(editorMathPasswordRequest, { editorMathPassword });
+      cancelEditorMathImport();
+    } catch (error) {
+      if (error instanceof EditorMathPrtPasswordError) {
+        setEditorMathPasswordError(error.message);
+      } else {
+        cancelEditorMathImport();
+      }
+    } finally {
+      setEditorMathImporting(false);
+    }
   };
 
   const desktopMenuHandlersRef = useRef({
@@ -6419,6 +6664,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       setCommentsPanelOpen(false);
     }
   };
+
+  const handleCanvasHeadingCommand = useStableCallback((request: TextFlowHeadingCommandRequest): boolean =>
+    handleHeadingCommandAutoNumbering(documentRef.current, updatePageLayoutAndMetadata, request));
 
   // Apply feedback is derived from the document that was actually returned by
   // the approval IPC. The old content is never held on screen for a pre-apply
@@ -8012,7 +8260,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
               focusRoomRequest={aiFocusRoomRequest}
             />
           ) : (
-            <AiEditWebPlaceholder />
+            <AiEditWebPlaceholder key={document.docId} instructionScopeId={document.docId} proposalSurfaceRef={setWebMcpPanelTarget} />
           )}
         </aside>
       </>
@@ -8149,10 +8397,23 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   // AI 提案の適用/破棄は文書・提案・実行状態を跨いで書き換える処理なので、依存を全部
   // useCallback へ畳み込むのは現実的でない。呼び出し口だけ identity を固定する
   // (紙面の AI 拡張オブジェクトがこの 2 つを掴んでおり、動くと紙面が毎打鍵で描き直される)。
-  const stableApplyAiEditPreviewGroup = useStableCallback(applyAiEditPreviewGroup);
-  const stableDismissAiEditPreviewGroup = useStableCallback(dismissAiEditPreviewGroup);
   // キャンバスへ渡すコールバックは全て安定させる。本文ユニット (memo 済み) の props に
   // そのまま流れるので、ここでインライン arrow を書くと打鍵のたびに全ユニットが描き直される。
+  const applyVisibleAiEditPreviewGroup = async (proposalIds: string[]): Promise<AiProposalApplyOutcome> => {
+    const webMcpOutcome = await webMcpBridgeRef.current?.applyProposalIds(proposalIds);
+    if (webMcpOutcome) {
+      return webMcpOutcome;
+    }
+    return applyAiEditPreviewGroup(proposalIds);
+  };
+  const dismissVisibleAiEditPreviewGroup = async (proposalIds: string[], reason?: string) => {
+    if (webMcpBridgeRef.current?.dismissProposalIds(proposalIds)) {
+      return;
+    }
+    await dismissAiEditPreviewGroup(proposalIds, reason);
+  };
+  const stableApplyVisibleAiEditPreviewGroup = useStableCallback(applyVisibleAiEditPreviewGroup);
+  const stableDismissVisibleAiEditPreviewGroup = useStableCallback(dismissVisibleAiEditPreviewGroup);
   const handleCanvasSelect = useCallback((blockId: string | null) => {
     setSelectedInlineMath(null);
     if (blockId !== selectedIdRef.current) {
@@ -8165,10 +8426,62 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     setSelectedId(blockId);
   }, [setAiEditReference, setSelectedId, setSelectedInlineMath]);
   const getWebMcpDocument = useCallback(() => documentRef.current, []);
+  const getWebMcpRevision = useCallback(() => documentDirtyRevisionRef.current, []);
   const getWebMcpSelectedBlockId = useCallback(() => selectedIdRef.current, []);
-  const selectWebMcpBlock = useCallback((blockId: string) => {
-    handleCanvasSelect(blockId);
-    scheduleEditorBlockFocus(blockId);
+  const webMcpSelectionRef = useRef({ selectedInlineMath, overlaySelection });
+  useLayoutEffect(() => {
+    webMcpSelectionRef.current = { selectedInlineMath, overlaySelection };
+  }, [overlaySelection, selectedInlineMath]);
+  const getWebMcpSelection = useCallback(() => {
+    const selection = webMcpSelectionRef.current;
+    const bookmark = textSelectionBookmarkRef.current;
+    const textRange = bookmark
+      && bookmark.anchor.kind === "text"
+      && bookmark.head.kind === "text"
+      && bookmark.anchor.blockId === bookmark.head.blockId
+      ? (() => {
+          const block = findBlock(documentRef.current, bookmark.anchor.blockId);
+          if (!block || (block.type !== "paragraph" && block.type !== "heading")) {
+            return null;
+          }
+          const from = Math.min(bookmark.anchor.offset, bookmark.head.offset);
+          const to = Math.max(bookmark.anchor.offset, bookmark.head.offset);
+          const text = inlineNodesToPlainText(block.children);
+          if (to > text.length) {
+            return null;
+          }
+          return { blockId: block.id, from, to, quote: text.slice(from, to) };
+        })()
+      : null;
+    return {
+      blockId: selectedIdRef.current,
+      textRange,
+      inlineMath: selection.selectedInlineMath
+        ? {
+            id: selection.selectedInlineMath.id,
+            tex: selection.selectedInlineMath.tex,
+            ...(selection.selectedInlineMath.blockId ? { blockId: selection.selectedInlineMath.blockId } : {}),
+          }
+        : null,
+      overlayShapes: selection.overlaySelection.selectedShapes.map((shape) => ({
+        id: shape.id,
+        type: shape.type,
+        shape,
+      })),
+    };
+  }, []);
+  const navigateToWebMcpTarget = useCallback((target: { kind: "block" | "shape"; id: string }) => {
+    if (target.kind === "block") {
+      handleCanvasSelect(target.id);
+      scheduleEditorBlockFocus(target.id);
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const element = window.document.querySelector<HTMLElement>(
+        `[data-overlay-shape-id="${CSS.escape(target.id)}"]`,
+      );
+      element?.scrollIntoView({ block: "center", inline: "center" });
+    });
   }, [handleCanvasSelect]);
   const handleDuplicateBlock = useCallback((blockId: string) => {
     commitDocumentChange((current) => duplicateTopLevelBlock(current, blockId));
@@ -8192,6 +8505,24 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   const handleCanvasProblemCommand = useCallback(({ triggerBlockId }: TextFlowProblemCommandRequest) => (
     insertProblemFromTextFlowCommand(triggerBlockId)
   ), [insertProblemFromTextFlowCommand]);
+  /**
+   * `/引用` `/コード` `/区切り線`。作るのは ProseMirror のコマンドなので、ここはツールバーの
+   * ブロックボタンと**同じ関数**へ渡すだけ — 押した後にキャレットをどこへ戻すかの規則
+   * (`applyBlockStructure`) を 1 箇所に保つ。
+   *
+   * ボタンが押せない状態 (`canUseBlockStructure` が false) では受けない。false を返すと
+   * エディタが自分でコマンドだけ実行するので、`/` から何も起きないことにはならない。
+   *
+   * 識別子は memo 済みのキャンバスへ渡るので固定し、そのときの関数と可否は ref から読む。
+   */
+  const handleCanvasBodyBlockCommand = useCallback(({ kind }: TextFlowBodyBlockCommandRequest) => {
+    const { canUse, apply } = blockStructureCommandRef.current;
+    if (!canUse) {
+      return false;
+    }
+    apply(kind === "quote" ? "quote" : kind === "codeBlock" ? "code" : "divider");
+    return true;
+  }, []);
   const handleOverlayCommandHandled = useCallback((requestId: number) => {
     setOverlayCommandRequest((current) => current?.id === requestId ? null : current);
   }, []);
@@ -8363,8 +8694,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction, hasPendingAiApprovalAdoption,
       importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId, mcpPreviewBusy,
       newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace,
-      openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu,
-      openPrintPreview,
+      openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openOtherImportDialog,
+      openPrintPreview, otherImportInputRef,
       openWorkspaceScreen, promoteAiToSidebar, reportIssue, requestOverlayImages,
       resolvedDocumentTitle, retryPendingAiApprovalAdoption, scheduleCloseNewDocMenu,
       setAiSettingsOpen, setDesktopSettingsOpen: openDesktopSettingsFromChrome, setExportMenuOpen, setNewDocMenuOpen,
@@ -8397,12 +8728,27 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       preamble={document.metadata.texPreamble}
     >
     {/* ribbon-chrome.css のセレクタはすべてこの属性から始まる。docs では "docs"。 */}
-    <div className="app-shell" data-ui-layout={uiLayoutPreference.mode} data-backstage-open={ribbonBackstageOpen ? "true" : undefined} data-ribbon-collapsed={ribbonCollapse.collapsed ? "true" : undefined}>
+    <div
+      className="app-shell"
+      data-ui-layout={uiLayoutPreference.mode}
+      data-backstage-open={ribbonBackstageOpen ? "true" : undefined}
+      data-ribbon-collapsed={ribbonCollapse.collapsed ? "true" : undefined}
+      data-ai-sidebar-open={aiDisplayMode === "sidebar" && aiSidebarOpen ? "true" : undefined}
+      style={{ "--ai-sidebar-width": `${AI_SIDEBAR_WIDTH}px` } as CSSProperties}
+    >
       <WebMcpBridge
+        ref={webMcpBridgeRef}
+        enabled={!isDesktopApp && !isEmbedded}
+        instructionScopeId={document.docId}
         getDocument={getWebMcpDocument}
+        getRevision={getWebMcpRevision}
         getSelectedBlockId={getWebMcpSelectedBlockId}
+        getSelection={getWebMcpSelection}
         commitDocumentChange={commitDocumentChange}
-        selectBlock={selectWebMcpBlock}
+        navigateToTarget={navigateToWebMcpTarget}
+        onPreviewGroupsChange={setWebMcpPreviewGroups}
+        sidebarOpen={aiDisplayMode === "sidebar" && aiSidebarOpen}
+        sidebarTarget={webMcpPanelTarget}
       />
       {/* 図形を選んでいる間、フォーカスを失った本文の選択を描き直す帯。
           「本文も図形も同時に選ばれている」ことが画面から読めないと混在コピーは事故になる。 */}
@@ -8600,7 +8946,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             overlaySelection={overlaySelection}
             overlayCommentAnchor={currentOverlayCommentAnchor}
             aiDocumentWriteInProgress={aiDocumentWriteInProgress}
-            aiEditPreviewGroups={aiEditPreviewGroups}
+            aiEditPreviewGroups={visibleAiEditPreviewGroups}
             aiEditPreviewApplying={mcpPreviewBusy}
             aiApplyAnimation={aiApplyAnimation}
             fontSize={BASE_EDITOR_FONT_SIZE}
@@ -8634,6 +8980,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             onMaterialSaveRequest={openMaterialAddDialog}
             onSelectionMaterialSaveRequest={handleSelectionMaterialSaveRequest}
             onProblemCommand={handleCanvasProblemCommand}
+            onBodyBlockCommand={handleCanvasBodyBlockCommand}
+            onHeadingCommand={handleCanvasHeadingCommand}
             pendingDeletion={pendingDeletion}
             onReanchorOverlay={reanchorOverlay}
             overlayCommandRequest={overlayCommandRequest}
@@ -8651,13 +8999,13 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             onCommentAnchorRequest={openCommentComposer}
             onCommentAnchorCandidateChange={setCommentAnchorCandidate}
             onCommentThreadSelect={selectCommentThread}
-            onAiReferenceRequest={requestAiEditWithReference}
-            onAiReferenceCandidateChange={updateAiEditReferenceCandidate}
-            onAiEditPreviewApply={stableApplyAiEditPreviewGroup}
-            onAiEditPreviewDismiss={stableDismissAiEditPreviewGroup}
+            onAiReferenceRequest={isDesktopApp ? requestAiEditWithReference : undefined}
+            onAiReferenceCandidateChange={isDesktopApp ? updateAiEditReferenceCandidate : undefined}
+            onAiEditPreviewApply={stableApplyVisibleAiEditPreviewGroup}
+            onAiEditPreviewDismiss={stableDismissVisibleAiEditPreviewGroup}
             onOpenSourceDocument={openSourceReferenceDocument}
             suppressSelectionActions={aiDisplayMode === "inline" && aiInlineOpen}
-            pinAiTextSelectionReference={pinAiTextSelectionReference}
+            pinAiTextSelectionReference={isDesktopApp && pinAiTextSelectionReference}
             onInlineRunPortalReady={handleInlineRunPortalReady}
             documentIdentityKey={activeFileId}
             documentWorkspaceId={activeDocumentMetadata?.workspaceId ?? null}
@@ -8669,6 +9017,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       </main>
 
       {overlayGraphSettingsDialog}
+      {overlayChartSettingsDialog}
+      {overlayGraph3DSettingsDialog}
 
       {materialLibraryOpen && (
         <div className="material-library-backdrop" data-modal-backdrop="" role="presentation" onPointerDown={() => setMaterialLibraryOpen(false)}>
@@ -8879,6 +9229,54 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         onInsert={insertTemplate}
       />
 
+      {editorMathPasswordRequest && (
+        <div className="classic-password-backdrop" data-modal-backdrop="" role="presentation" onPointerDown={cancelEditorMathImport}>
+          <section
+            className="classic-password-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={tE("password.title")}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <header className="classic-password-header">
+              <h2>{tE("password.heading")}</h2>
+              <button type="button" className="icon-button" title={tE("common.close")} aria-label={tE("common.close")} onClick={cancelEditorMathImport}>
+                <X size={16} />
+              </button>
+            </header>
+            <p className="classic-password-file" title={editorMathPasswordRequest.name}>{editorMathPasswordRequest.name}</p>
+            <p className="classic-password-note">{tE("password.note")}</p>
+            <form
+              className="classic-password-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitEditorMathPassword();
+              }}
+            >
+              <input
+                type="password"
+                value={editorMathPassword}
+                placeholder={tE("password.label")}
+                aria-label={tE("password.label")}
+                autoFocus
+                disabled={editorMathImporting}
+                onChange={(event) => {
+                  setEditorMathPassword(event.target.value);
+                  setEditorMathPasswordError(null);
+                }}
+              />
+              {editorMathPasswordError && <p className="classic-password-error" role="alert">{editorMathPasswordError}</p>}
+              <div className="classic-password-actions">
+                <button type="button" onClick={cancelEditorMathImport} disabled={editorMathImporting}>{tE("common.cancel")}</button>
+                <button type="submit" className="primary" disabled={editorMathImporting || editorMathPassword.length === 0}>
+                  {editorMathImporting ? tE("password.importing") : tE("password.import")}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
       {outlineDialogOpen && (
         <div className="outline-dialog-backdrop" data-modal-backdrop="" role="presentation" onPointerDown={() => setOutlineDialogOpen(false)}>
           <section
@@ -8907,7 +9305,14 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
                   className={selectedId === item.id ? "selected" : ""}
                   onClick={() => selectOutlineItem(item.id)}
                 >
-                  <span>{item.title}</span>
+                  <span>
+                    {(item.type === "section" || item.type === "heading") && outlineHeadingNumbers.get(item.id) ? (
+                      <span className="heading-number-prefix">
+                        {outlineHeadingNumbers.get(item.id)}{" "}
+                      </span>
+                    ) : null}
+                    {item.title}
+                  </span>
                   <code>{item.type}</code>
                 </button>
               ))}
@@ -8962,16 +9367,18 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         <PageSettingsDialog
           layout={document.pageLayout}
           mathFractionSizing={document.metadata.mathFractionSizing}
+          headingNumbering={document.metadata.headingNumbering}
           focusEntryId={settingsFocusEntryId}
           hasContent={hasMeaningfulBodyContent(document.content)}
           onClose={() => {
             setPageSettingsOpen(false);
             setSettingsFocusEntryId(undefined);
           }}
-          onChange={(layout, mathFractionSizing) => {
+          onChange={(layout, mathFractionSizing, headingNumbering) => {
             updatePageLayoutAndMetadata(layout, {
               ...document.metadata,
               mathFractionSizing,
+              headingNumbering,
             });
           }}
         />

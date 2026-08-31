@@ -615,6 +615,14 @@
     10px
     calc(var(--sigma-doc-box-padding-left, 14px) * -1);
   padding: 0 var(--sigma-doc-box-padding-right, 14px) 0 var(--sigma-doc-box-padding-left, 14px);
+  /*
+   * 帯と本文を切る罫。TeX の見出し付き枠 (EditorMath の問題枠もこの形) は地色だけでなく
+   * 帯の下に 1 本引く。既定幅は 0 なので、罫を持たない既存の帯箱は変わらない。
+   */
+  border-bottom:
+    var(--sigma-doc-box-title-band-rule-width, 0)
+    solid
+    var(--sigma-doc-box-title-band-rule-color, transparent);
   background: var(--sigma-doc-box-title-background, #e2e8f0);
 }
 
@@ -626,6 +634,78 @@
 .box-frame--title-band.box-frame--title-position-r .sigma-doc-box-title,
 .box-frame--title-band.box-frame--title-position-r .print-box-title {
   justify-content: flex-end;
+}
+
+/*
+ * 枠の左上に差し込む見出しタブ。地色で塗って白抜き文字を載せるので、`titlePlate`
+ * (枠線を背景色で切って文字を置く) とは別の装飾として持つ。
+ *
+ * タブは枠の**内側**に収める。上へはみ出させると、絶対配置でブロックを積む印刷経路
+ * (`PrintPreview`) では前のブロックへ重なる — 出っ張りは border box に入らないので、
+ * 高さを測って積む側からはタブが見えないため。内側に置けば箱の高さがそのまま伸び、
+ * 編集面・静的描画・印刷の 3 経路が同じ位置に描ける。
+ *
+ * 上と左の負のマージンでタブを枠線の上まで広げ (角の罫をタブで隠す)、`margin-bottom`
+ * で本文との間隔を戻す。
+ */
+
+.box-frame--title-tab .sigma-doc-box-title,
+.box-frame--title-tab .print-box-title {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: calc(100% + var(--sigma-doc-box-padding-left, 16px) + var(--sigma-doc-box-padding-right, 16px));
+  min-height: var(--sigma-doc-box-title-tab-height, 26px);
+  margin:
+    calc((var(--sigma-doc-box-padding-top, 14px) + var(--sigma-doc-box-border-width, 1.4px)) * -1)
+    auto
+    var(--sigma-doc-box-padding-top, 14px)
+    calc(
+      var(--sigma-doc-box-title-tab-offset-x, 0px)
+      - var(--sigma-doc-box-padding-left, 16px)
+      - var(--sigma-doc-box-border-width, 1.4px)
+    );
+  padding:
+    0
+    var(--sigma-doc-box-title-tab-padding-right, 12px)
+    0
+    var(--sigma-doc-box-title-tab-padding-left, 12px);
+  border-radius:
+    var(--sigma-doc-box-radius, 0)
+    var(--sigma-doc-box-title-tab-radius, 4px)
+    var(--sigma-doc-box-title-tab-radius, 4px)
+    0;
+  background: var(--sigma-doc-box-title-background, #1f3864);
+  color: var(--sigma-doc-box-title-color, #ffffff);
+}
+
+.box-frame--title-tab.box-frame--title-position-c .sigma-doc-box-title,
+.box-frame--title-tab.box-frame--title-position-c .print-box-title {
+  margin-right: auto;
+  margin-left: auto;
+  border-radius:
+    var(--sigma-doc-box-title-tab-radius, 4px)
+    var(--sigma-doc-box-title-tab-radius, 4px)
+    var(--sigma-doc-box-title-tab-radius, 4px)
+    var(--sigma-doc-box-title-tab-radius, 4px);
+}
+
+.box-frame--title-tab.box-frame--title-position-r .sigma-doc-box-title,
+.box-frame--title-tab.box-frame--title-position-r .print-box-title {
+  margin-right: calc(
+    var(--sigma-doc-box-title-tab-offset-x, 0px)
+    - var(--sigma-doc-box-padding-right, 16px)
+    - var(--sigma-doc-box-border-width, 1.4px)
+  );
+  margin-left: auto;
+  border-radius:
+    var(--sigma-doc-box-title-tab-radius, 4px)
+    var(--sigma-doc-box-radius, 0)
+    0
+    var(--sigma-doc-box-title-tab-radius, 4px);
 }
 
 .box-frame--title-plate .sigma-doc-box-title,
@@ -1129,6 +1209,13 @@ u:has(.math-preview) * {
   font-weight: 700;
 }
 
+/* Display-only heading labels share this element in ProseMirror widgets and static output. */
+.heading-number-prefix {
+  margin-inline-end: 0.5em;
+  user-select: none;
+  white-space: nowrap;
+}
+
 h1.print-heading {
   margin: 18px 0 14px;
   font-size: calc(var(--editor-font-size, 12pt) * 1.85);
@@ -1488,6 +1575,25 @@ li[data-list-marker-typography]::marker {
   overflow: visible;
 }
 
+/* A chart is native SVG, so the only thing the stylesheet owns is the box it sits in — every
+   colour, font and size is a presentation attribute on the SVG itself, because the exported figure
+   travels without this stylesheet. */
+.chart-shape {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: all;
+}
+
+.chart-shape .chart-shape-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .graph-shape {
   position: relative;
   display: block;
@@ -1504,38 +1610,88 @@ li[data-list-marker-typography]::marker {
   outline: none;
 }
 
-.overlay-text-shape .ProseMirror {
+/* 図中テキストは常にユーザーが決めた幅で折り返す (内容に合わせた自動フィットは廃止)。
+   幅そのものは図形の inline style が持つので、ここは中身を枠へ合わせるだけ。 */
+.overlay-text-shape {
+  width: 100%;
+  max-width: 100%;
+  min-width: 8px;
+}
+
+/* 中身の面。編集中は ProseMirror が、そうでないときは静的描画がこのクラスを付けるので、
+   図中テキストの組版はこの 1 箇所で決まる (フォーカスで見た目が変わらないのはこのため)。
+   SVG 書き出しは stylesheet を持たないので、折り返し規則は inline でも運ぶ:
+   `OverlayTextBlocksView.tsx` の定数と `rich-text-self-contained.test.ts` が対応を保つ。 */
+.overlay-text-shape .overlay-text-shape-content {
+  width: 100%;
+  max-width: 100%;
+  min-width: 8px;
   min-height: 1em;
   line-height: 1;
   overflow: visible;
   outline: none;
-  white-space: pre-wrap;
-}
-
-.overlay-text-shape.auto-size,
-.overlay-text-shape.auto-size .ProseMirror {
-  width: max-content;
-  min-width: 8px;
-}
-
-.overlay-text-shape.auto-size .ProseMirror {
-  white-space: pre;
-}
-
-.overlay-text-shape.auto-size.constrained,
-.overlay-text-shape.auto-size.constrained .ProseMirror {
-  width: 100%;
-  max-width: 100%;
-}
-
-.overlay-text-shape.auto-size.constrained .ProseMirror {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
-.overlay-text-shape .ProseMirror p {
+/* 図中テキストの組版は本文と別。本文の 1.78 行送りと段落マージンは、図の中の 1 語ラベルには
+   大きすぎる — 描画器は本文と同じものを使い、typography だけを図形スコープで上書きする。 */
+.overlay-text-shape .overlay-text-shape-content p,
+.overlay-text-shape .overlay-text-shape-content h1,
+.overlay-text-shape .overlay-text-shape-content h2,
+.overlay-text-shape .overlay-text-shape-content h3,
+.overlay-text-shape .overlay-text-shape-content ul,
+.overlay-text-shape .overlay-text-shape-content ol {
   margin: 0;
-  line-height: 1;
+}
+
+.overlay-text-shape .overlay-text-shape-content ul,
+.overlay-text-shape .overlay-text-shape-content ol {
+  padding-inline-start: 1.6em;
+}
+
+/* 引用・コード・区切り線。見た目の出典は本文の `.print-quote` / `.print-code` だが、余白だけは
+   図の寸法に合わせて詰める — 本文の 6px/10px マージンは、1 語のラベルの隣では大きすぎる。
+   図中テキストは `.text-flow-editor` の外なので `.print-*` は届かない: ここで作り直している
+   のはそのため。 */
+.overlay-text-shape .overlay-text-shape-content blockquote,
+.overlay-text-shape .overlay-text-shape-content pre,
+.overlay-text-shape .overlay-text-shape-content hr {
+  margin: 0;
+}
+
+.overlay-text-shape .overlay-text-shape-content blockquote {
+  padding: 0 0 0 0.6em;
+  border-left: 3px solid rgba(17, 17, 17, 0.28);
+  color: rgba(17, 17, 17, 0.78);
+}
+
+.overlay-text-shape .overlay-text-shape-content pre {
+  padding: 0.3em 0.5em;
+  border: 1px solid rgba(17, 17, 17, 0.09);
+  border-radius: 6px;
+  background: #f7f8fa;
+  color: #24292f;
+  font-family: "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.92em;
+  font-variant-ligatures: none;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+/* 暗いテーマのコードは図の中でも暗いまま。上の `pre` 規則は `.print-code` より詳細度が高いので、
+   ここで名指ししないと、本文から貼った暗いブロックが図の中でだけ明るくなる。 */
+.overlay-text-shape .overlay-text-shape-content pre[data-code-theme="dark"] {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: #171717;
+  color: #f5f5f5;
+}
+
+.overlay-text-shape .overlay-text-shape-content hr {
+  border: 0;
+  border-top: 1px solid rgba(17, 17, 17, 0.24);
 }
 
 .overlay-text-shape .inline-math-node {

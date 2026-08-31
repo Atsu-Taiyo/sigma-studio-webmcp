@@ -47,19 +47,15 @@ const DOCUMENT: SigmaDocument = {
             props: {
               w: 200,
               h: 40,
-              scale: 1,
-              autoSize: false,
               color: "#111111",
               size: "m",
-              richText: {
-                blocks: [{
-                  type: "paragraph",
+              blocks: [{
+                  type: "paragraph", id: "whiteboard_raster_quality_spec_44",
                   children: [
                     { type: "mathInline", id: "raster_m1", tex: "\\frac{x^2+1}{\\sqrt{y}}", display: "inline" },
                     { type: "text", text: " 微分積分学 abcdefg" },
                   ],
                 }],
-              },
             },
           },
           {

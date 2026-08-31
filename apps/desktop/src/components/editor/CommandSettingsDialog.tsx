@@ -1,11 +1,14 @@
 "use client";
 
 import { Keyboard, Plus, RotateCcw, Search, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
+import { ColorPalette } from "@/components/editor/ColorPalette";
+import { ToolbarPopover } from "@/components/editor/ToolbarPopover";
 import { Button, IconButton } from "@/components/ui/Button";
 import { ModalBody, ModalFrame, ModalHeader } from "@/components/ui/Modal";
+import { Select } from "@/components/ui/Select";
 import { normalizeLineHeight } from "@/features/document";
 import { useT } from "@/lib/i18n/react";
 
@@ -279,18 +282,19 @@ export function CommandSettingsDialog({
             </label>
             <label>
               <span>{t("commands.customKind")}</span>
-              <select
+              <Select
+                aria-label={t("commands.customKind")}
                 value={customActionKind}
-                onChange={(event) => {
-                  const nextKind = event.target.value as CustomActionKind;
+                options={CUSTOM_ACTION_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: t(`commands.action.${option.value}`),
+                }))}
+                onChange={(kind) => {
+                  const nextKind = kind as CustomActionKind;
                   setCustomActionKind(nextKind);
                   setCustomValue(defaultCustomActionValue(nextKind, fontFamilyOptions));
                 }}
-              >
-                {CUSTOM_ACTION_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{t(`commands.action.${option.value}`)}</option>
-                ))}
-              </select>
+              />
             </label>
             <div className="custom-command-value-field">
               <CustomCommandValueField
@@ -554,10 +558,15 @@ function CustomCommandValueField({
       <>
         <label>
           <span>{actionKind === "overlayStrokeColor" ? t("commands.field.stroke") : t("commands.field.fill")}</span>
-          <select value={value || "color"} onChange={(event) => onValueChange(event.target.value)}>
-            <option value="color">{t("commands.field.colorSpecify")}</option>
-            <option value="none">{t("commands.field.colorNone")}</option>
-          </select>
+          <Select
+            aria-label={actionKind === "overlayStrokeColor" ? t("commands.field.stroke") : t("commands.field.fill")}
+            value={value || "color"}
+            options={[
+              { value: "color", label: t("commands.field.colorSpecify") },
+              { value: "none", label: t("commands.field.colorNone") },
+            ]}
+            onChange={onValueChange}
+          />
         </label>
         {(value || "color") === "color" ? <ColorValueField color={color} onColorChange={onColorChange} /> : null}
       </>
@@ -642,6 +651,10 @@ function CustomCommandValueField({
   );
 }
 
+/**
+ * 色はOSのカラーパネルではなく、アプリ内の見本 + 色作成ダイアログから選ぶ
+ * (docs/design-rules.md > Controls > Selects And Pickers)。
+ */
 function ColorValueField({
   color,
   onColorChange,
@@ -650,10 +663,39 @@ function ColorValueField({
   onColorChange: (value: string) => void;
 }) {
   const t = useT("settings");
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
   return (
-    <label>
+    <label className="custom-command-color-field">
       <span>{t("commands.field.color")}</span>
-      <input type="color" value={color} onChange={(event) => onColorChange(event.target.value)} />
+      <button
+        ref={buttonRef}
+        type="button"
+        className="custom-command-color-button"
+        aria-label={t("commands.field.color")}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="custom-command-color-swatch" style={{ backgroundColor: color }} aria-hidden="true" />
+        <code>{color}</code>
+      </button>
+      <ToolbarPopover
+        open={open}
+        anchorRef={buttonRef}
+        onClose={() => setOpen(false)}
+        className="color-popover"
+        ariaLabel={t("commands.field.color")}
+        zIndex="var(--z-modal-nested)"
+      >
+        <ColorPalette
+          value={color}
+          onChange={(next) => {
+            if (next) onColorChange(next);
+            setOpen(false);
+          }}
+        />
+      </ToolbarPopover>
     </label>
   );
 }
@@ -672,11 +714,7 @@ function SelectValueField({
   return (
     <label>
       <span>{label}</span>
-      <select value={value} onChange={(event) => onValueChange(event.target.value)}>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
+      <Select aria-label={label} value={value} options={options} onChange={onValueChange} />
     </label>
   );
 }

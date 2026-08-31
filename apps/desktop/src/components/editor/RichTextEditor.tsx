@@ -221,6 +221,7 @@ export function RichTextEditor({ block, placeholder, className, style, selected 
       focusCaretAtEdge: () => false,
       focusCaretAfterBlock: () => false,
       adjacentTextblockAddress: () => null,
+      docEdgeAddress: () => null,
       ensureCaretVisible: () => {},
       applyCaret: (selection) => {
         if (editor.isDestroyed || selection.head.blockId !== blockRef.current.id) {

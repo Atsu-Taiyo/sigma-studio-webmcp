@@ -1,10 +1,10 @@
-import type { Graph2DSpec, InlineNode } from "./model";
+import type { Graph2DSpec, InlineNode, ListItemContinuationNode } from "./model";
 import type {
   OverlayGraphAxisLabelKey,
   OverlayGraphShape,
-  OverlayRichTextDocument,
   OverlayShape,
   OverlayShapeId,
+  OverlayTextBlock,
 } from "./overlay-model";
 
 export const GRAPH_AXIS_LABEL_KEYS = [
@@ -31,7 +31,7 @@ export function getGraphAxisLabelTextsByKey(
     const labelId = labelIdsByKey[key];
     const labelShape = labelId ? textShapesById.get(labelId) : null;
     const labelText = labelShape
-      ? getOverlayRichTextLabelText(labelShape.props.richText)
+      ? getOverlayTextBlocksLabelText(labelShape.props.blocks)
       : getGraphAxisLabelSpecText(shape.props.spec, key);
     if (labelText !== undefined) {
       textsByKey[key] = labelText;
@@ -59,7 +59,7 @@ export function hydrateGraphSpecWithOwnedLabelTexts(
   );
   const readOwnedText = (shapeId: OverlayShapeId | undefined): string | undefined => {
     const textShape = shapeId ? textShapesById.get(shapeId) : undefined;
-    return textShape ? getOverlayRichTextLabelText(textShape.props.richText) : undefined;
+    return textShape ? getOverlayTextBlocksLabelText(textShape.props.blocks) : undefined;
   };
   const axisLabels = getGraphAxisLabelTextsByKey(shape, shapes);
   const curveLabelIdsByCurveId = { ...(shape.props.labelTextShapeIdsByCurveId ?? {}) };
@@ -181,16 +181,38 @@ export function getGraphAxisLabelSpecText(
   return spec.axes.originLabel?.trim() || undefined;
 }
 
-export function getOverlayRichTextLabelText(
-  document: OverlayRichTextDocument,
+/**
+ * Flat text of a label shape. Every block that holds prose contributes — including list items and
+ * the blocks that continue them — so a label the user turned into a list still reads back as its
+ * own text instead of an empty string.
+ */
+export function getOverlayTextBlocksLabelText(
+  blocks: readonly OverlayTextBlock[],
 ): string {
-  return document.blocks.map((block) => (
-    block.children.map(getOverlayRichTextInlineLabelText).join("")
-  )).join("");
+  return blocks.map(getBlockLabelText).join("");
+}
+
+function getBlockLabelText(
+  block: OverlayTextBlock | ListItemContinuationNode | undefined,
+): string {
+  if (!block || block.type === "divider") {
+    return "";
+  }
+  if (block.type === "list") {
+    return (block.items ?? []).map((item) => (
+      item.children.map(getOverlayRichTextInlineLabelText).join("") +
+      (item.continuations ?? []).map(getBlockLabelText).join("") +
+      (item.nested ?? []).map(getBlockLabelText).join("")
+    )).join("");
+  }
+  if (block.type === "quote") {
+    return block.blocks.map(getBlockLabelText).join("");
+  }
+  return block.children.map(getOverlayRichTextInlineLabelText).join("");
 }
 
 /** Compatibility name for callers that predate the canonical overlay model. */
-export const getTiptapLabelText = getOverlayRichTextLabelText;
+export const getTiptapLabelText = getOverlayTextBlocksLabelText;
 
 export function getExistingGraphAxisLabelTextShapeIdsByKey(
   shape: OverlayGraphShape,

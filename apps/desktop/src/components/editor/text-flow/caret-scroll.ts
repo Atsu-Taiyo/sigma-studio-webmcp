@@ -11,6 +11,72 @@ export interface CaretBand {
 }
 
 /**
+ * まだ紙面上の位置が確定していない場所にキャレットが居る間、スクロールを保留した面。
+ *
+ * 段組みのブロック配置と未計測ユニットの座標は**次の計測が決める**。確定前に測った座標は
+ * 「潰れた編集面 root の原点 = 1 ページ目の上端」を指すので、そこへ追従すると挿入のたびに
+ * 紙面が文書先頭へ吹っ飛ぶ。保留し、配置が確定した commit で `flushDeferredCaretScroll` が
+ * 見せ直す。
+ */
+const deferredCaretScrollViews = new WeakSet<EditorView>();
+
+/**
+ * 保留していたスクロールを、配置が確定した後の座標でやり直す。
+ * 呼ぶのは配置を反映した側 (`TextFlowEditor` の同期 decoration refresh)。
+ */
+export function flushDeferredCaretScroll(view: EditorView): void {
+  if (!deferredCaretScrollViews.has(view)) {
+    return;
+  }
+  deferredCaretScrollViews.delete(view);
+  if (view.isDestroyed || !view.hasFocus()) {
+    return;
+  }
+  scrollCaretIntoView(view);
+}
+
+/**
+ * キャレットの座標がまだ意味を持たない = 次の計測待ちか。
+ *
+ * - 面ごと `visibility: hidden` (段組みの未計測ユニットなど): 配置前の仮置き。
+ * - 段組みのブロック単位配置を使う面で、キャレットのトップレベルブロックにまだ配置
+ *   (`text-flow-column-block`) が付いていない: 挿入直後のブロック。
+ *
+ * 断片の複製 (viewport 基準) と、ブロック単位配置を使わない面 (問題エリアの段組みなど) は
+ * 静的位置がそのまま正しいので対象にしない。
+ */
+function caretAwaitsColumnPlacement(view: EditorView): boolean {
+  const viewDom = view.dom as HTMLElement;
+  if (viewDom.closest(".editor-box-fragment-viewport")) {
+    return false;
+  }
+  if (getComputedStyle(viewDom).visibility === "hidden") {
+    return true;
+  }
+  const flow = viewDom.closest(".page-flow");
+  if (!flow || !flow.classList.contains("columns-active")) {
+    return false;
+  }
+  const block = caretTopLevelBlockElement(view);
+  if (!block || block.parentElement !== viewDom) {
+    return false;
+  }
+  if (block.classList.contains("text-flow-column-block")) {
+    return false;
+  }
+  return viewDom.querySelector(":scope > .text-flow-column-block") !== null;
+}
+
+function caretTopLevelBlockElement(view: EditorView): HTMLElement | null {
+  const { $head } = view.state.selection;
+  if ($head.depth === 0) {
+    return null;
+  }
+  const dom = view.nodeDOM($head.before(1));
+  return dom instanceof HTMLElement ? dom : null;
+}
+
+/**
  * キャレットを可視域へ入れるためにスクロールを動かす量 (client px の差分)。
  *
  * **client px の差分しか使わない**のがこの設計の要点で、ズーム係数を持ち込まない。
@@ -118,6 +184,10 @@ export function scrollCaretIntoView(
 ): boolean {
   // **どの経路でも `true` を返す。** `false` を返すと ProseMirror の既定 (`overflow` を見ずに
   // 全ての祖先へ `scrollTop += moveY`) が走り、まさに塞ぎたかった経路が復活する。
+  if (caretAwaitsColumnPlacement(view)) {
+    deferredCaretScrollViews.add(view);
+    return true;
+  }
   let caret: { bottom: number; top: number };
   try {
     const coords = view.coordsAtPos(view.state.selection.head);

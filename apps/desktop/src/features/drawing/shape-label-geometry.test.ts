@@ -8,7 +8,7 @@ import type {
 } from "@/features/document";
 
 import { getShapeLabelBounds, getShapeLabelPlacement } from "./shape-label-geometry";
-import { TEXT_ASCENT_EM, TEXT_DESCENT_EM } from "./overlay-text-measure";
+import { TEXT_ASCENT_EM, TEXT_DESCENT_EM } from "./svg-label-metrics";
 
 /** `overlayLabelFontSize("m")`, the default size the fixtures below use. */
 const LABEL_FONT_SIZE_M = 18;
@@ -152,6 +152,22 @@ describe("getShapeLabelBounds", () => {
 
     expect(broken.h).toBeCloseTo(spaced.h, 10);
     expect(broken.w).toBe(spaced.w);
+  });
+
+  /**
+   * Characterization: the caption box is exactly what the shared estimator used to return, now
+   * that the estimator lives in `svg-label-metrics.ts` instead of the rich-text measurement path.
+   * The expected widths are written out from the character-class table rather than computed by
+   * calling the estimator, so this pins the numbers instead of restating the implementation.
+   */
+  it.each([
+    ["latin glyphs", "AB", 0.58 * 2],
+    ["full-width glyphs", "あい", 1 * 2],
+    ["a space between words", "a b", 0.58 + 0.35 + 0.58],
+    ["operators and digits", "x=1", 0.58 + 0.45 + 0.58],
+    ["a line break, drawn as one line", "A\nB", 0.58 + 0.35 + 0.58],
+  ])("measures %s at the estimator's own width", (_name, label, widthEm) => {
+    expect(getShapeLabelBounds(line({ label }))!.w).toBe(Math.ceil(widthEm * LABEL_FONT_SIZE_M));
   });
 
   it("returns null wherever there is no anchor", () => {

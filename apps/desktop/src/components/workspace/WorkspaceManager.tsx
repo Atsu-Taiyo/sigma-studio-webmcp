@@ -13,6 +13,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent as ReactMouseEvent } from "react";
 
+import { Select } from "@/components/ui/Select";
+
 import {
   createDocumentFromTemplateInWorkspace,
   createDocumentInWorkspace,
@@ -1153,18 +1155,17 @@ export function WorkspaceManager() {
                   value={folderNameDraft}
                   onChange={(event) => setFolderNameDraft(event.target.value)}
                 />
-                <select
+                <Select
                   aria-label={t("label.parentFolder")}
                   value={folderParentDraft}
-                  onChange={(event) => setFolderParentDraft(event.target.value)}
-                >
-                  <option value="">{t("label.folderRoot")}</option>
-                  {folders
-                    .filter((folder) => folder.id !== selectedFolder.id)
-                    .map((folder) => (
-                      <option value={folder.id} key={folder.id}>{folder.name}</option>
-                    ))}
-                </select>
+                  options={[
+                    { value: "", label: t("label.folderRoot") },
+                    ...folders
+                      .filter((folder) => folder.id !== selectedFolder.id)
+                      .map((folder) => ({ value: folder.id, label: folder.name })),
+                  ]}
+                  onChange={setFolderParentDraft}
+                />
                 <button type="button" className="button primary" onClick={() => void saveFolder(selectedFolder)}>
                   {t("action.save")}
                 </button>

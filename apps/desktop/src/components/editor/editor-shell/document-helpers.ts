@@ -1,8 +1,10 @@
-import type { SelectedOverlayGraph } from "@/components/editor/EditorSettings";
+import type { SelectedOverlayChart, SelectedOverlayGraph } from "@/components/editor/EditorSettings";
 import type { SharedFillState } from "@/components/editor/overlay-canvas/style-patch";
+import type { OverlayShape } from "@/components/editor/overlay-canvas/types";
 import type { OverlaySelectionSummary } from "@/components/editor/page-overlay-types";
 import type { Graph2DSpec } from "@/features/document";
 import type { SigmaDocument } from "@/features/document";
+import { chartDataEquals } from "@/features/document";
 import { collectBlocksById } from "@/lib/document-tree";
 import type { DocumentMetadata } from "@/lib/runtime/types";
 
@@ -42,8 +44,45 @@ export function sameOverlaySelectionSummary(a: OverlaySelectionSummary, b: Overl
     a.arrowheadEnd === b.arrowheadEnd &&
     sameSharedFill(a.fill, b.fill) &&
     sameStringItems(a.selectedShapeIds, b.selectedShapeIds) &&
-    sameReferenceItems(a.selectedShapes, b.selectedShapes) &&
+    sameSelectedShapes(a.selectedShapes, b.selectedShapes) &&
     sameRecordReferences(a.selectedAssets, b.selectedAssets);
+}
+
+/**
+ * グラフの中身だけが変わった選択は、シェルにとって「同じ選択」。
+ *
+ * グラフ設定パネルはスライダー1目盛りごとに spec を差し替える。その差し替えを選択の変化と
+ * みなすと、リボンを含むシェル全体が毎フレーム作り直される (計測ではパラメータ操作の 64% が
+ * リボンの再レンダーだった)。spec と派生プレビューはシェル側の誰も読まない — グラフ設定
+ * パネルが図形から直接受け取る — ので、ここでは差分として数えない。
+ *
+ * 最新の図形そのものが要るのは素材化 (`getSelectedMaterialContent`) だけで、そちらは
+ * state ではなく常に最新の ref を読む。
+ */
+const SHAPE_FIELDS_THE_CHROME_IGNORES = new Set(["spec", "previewAssetId", "previewSourceHash"]);
+
+function sameSelectedShapes(a: readonly OverlayShape[], b: readonly OverlayShape[]): boolean {
+  return a.length === b.length && a.every((shape, index) => sameSelectedShape(shape, b[index]));
+}
+
+function sameSelectedShape(a: OverlayShape, b: OverlayShape): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a.type !== b.type || (a.type !== "graph2dShape" && a.type !== "graph3dShape")) {
+    return false;
+  }
+  if (a.id !== b.id || a.x !== b.x || a.y !== b.y || a.rotation !== b.rotation || a.parentId !== b.parentId) {
+    return false;
+  }
+  const aProps = a.props as Record<string, unknown>;
+  const bProps = b.props as Record<string, unknown>;
+  const keys = new Set([...Object.keys(aProps), ...Object.keys(bProps)]);
+  for (const key of keys) {
+    if (SHAPE_FIELDS_THE_CHROME_IGNORES.has(key)) continue;
+    if (aProps[key] !== bProps[key]) return false;
+  }
+  return true;
 }
 
 /**
@@ -62,10 +101,6 @@ function sameSharedFill(a: SharedFillState, b: SharedFillState): boolean {
 }
 
 function sameStringItems(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((item, index) => item === b[index]);
-}
-
-function sameReferenceItems<T>(a: readonly T[], b: readonly T[]): boolean {
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
@@ -94,6 +129,35 @@ export function areSelectedOverlayGraphsEqual(a: SelectedOverlayGraph | null, b:
     a.pickingOrigin === b.pickingOrigin &&
     a.pickingFill === b.pickingFill
   );
+}
+
+/**
+ * Equality for the chart panel's payload.
+ *
+ * The canvas re-dispatches its selection on every commit, so without this the shell would `setState`
+ * each time and the two would re-render each other without end — the same loop the graph panel has
+ * this guard for.
+ */
+export function areSelectedOverlayChartsEqual(
+  a: SelectedOverlayChart | null,
+  b: SelectedOverlayChart | null,
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+  return a.shapeId === b.shapeId &&
+    a.linked === b.linked &&
+    a.spec.kind === b.spec.kind &&
+    a.spec.orientation === b.spec.orientation &&
+    a.spec.headerRow === b.spec.headerRow &&
+    a.spec.labelColumn === b.spec.labelColumn &&
+    a.spec.legend === b.spec.legend &&
+    a.spec.title === b.spec.title &&
+    areStringRecordsEqual(a.spec.seriesColors, b.spec.seriesColors) &&
+    chartDataEquals(a.data, b.data);
 }
 
 function areStringArraysEqual(a: string[], b: string[]): boolean {

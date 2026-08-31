@@ -185,7 +185,6 @@ export function applyStylePatchToShape(shape: OverlayShape, style: OverlaySelect
         ...shape.props,
         color: style.color ?? shape.props.color,
         size: style.size ?? shape.props.size,
-        scale: style.size === undefined ? shape.props.scale : 1,
       },
     };
   }

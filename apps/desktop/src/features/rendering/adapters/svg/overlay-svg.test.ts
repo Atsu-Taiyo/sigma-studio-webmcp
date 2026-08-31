@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import type { OverlayShape } from "@/features/document";
+import { createGraph3DSpecPreset } from "@/features/drawing";
+import { buildGraph3DPresetNames } from "@/lib/graph3d-preset-names";
+import { createTranslator } from "@/lib/i18n";
 
 import {
   serializeOverlayPreviewSvg,
@@ -11,7 +14,9 @@ import {
 const renderers: OverlaySvgRenderers = {
   renderGraphHtml: (_spec, idSeed) => `<svg data-graph="${idSeed}"></svg>`,
   renderMathHtml: (tex) => `<span data-math="${tex}"></span>`,
+  renderOverlayTextHtml: (blocks) => `<div data-overlay-text="${blocks.length}"></div>`,
   renderTableHtml: (_table, width, height) => `<div data-table="${width}x${height}"></div>`,
+  renderChartSvg: (_data, spec, width, height) => `<g data-chart="${spec.kind}:${width}x${height}"></g>`,
 };
 
 interface ForeignObjectRect {
@@ -42,6 +47,48 @@ function getForeignObjectRects(svg: string | undefined): ForeignObjectRect[] {
 }
 
 describe("headless overlay SVG serializer", () => {
+  it("exports a 3D teaching material through its derived static preview", () => {
+    const shape: OverlayShape = {
+      id: "shape_graph3d",
+      type: "graph3dShape",
+      x: 18,
+      y: 26,
+      rotation: Math.PI / 6,
+      props: {
+        w: 320,
+        h: 220,
+        spec: createGraph3DSpecPreset("revolution", buildGraph3DPresetNames(createTranslator("ja", "shape"))),
+        previewAssetId: "asset_graph3d",
+        previewSourceHash: "fnv1a32:test",
+      },
+    };
+    const svg = serializeOverlaySvg(
+      [shape],
+      {
+        asset_graph3d: {
+          id: "asset_graph3d",
+          type: "image",
+          props: {
+            w: 640,
+            h: 440,
+            name: "3D preview.png",
+            isAnimated: false,
+            mimeType: "image/png",
+            src: "data:image/png;base64,AA==",
+            fileSize: 1,
+          },
+        },
+      },
+      { width: 500, height: 400 },
+      renderers,
+    );
+
+    expect(svg).toContain('<image x="18" y="26" width="320" height="220" href="data:image/png;base64,AA=="');
+    expect(svg).toContain('data-graph3d-label="dimension_upper"');
+    expect(svg).toContain('data-math="\\sqrt{3}"');
+    expect(svg).toContain("transform=\"rotate(30 178 136)\"");
+  });
+
   it("keeps geometry, label, and viewport output independent from React", () => {
     const rectangle: OverlayShape = {
       id: "shape_rect",
@@ -88,12 +135,10 @@ describe("headless overlay SVG serializer", () => {
       props: {
         w: 80,
         h: 20,
-        autoSize: false,
         color: "#111827",
         size: "m",
-        richText: {
-          blocks: [{
-            type: "paragraph",
+        blocks: [{
+            type: "paragraph", id: "overlay_svg_test_20",
             children: [{
               type: "mathInline",
               id: "math_1",
@@ -101,7 +146,6 @@ describe("headless overlay SVG serializer", () => {
               display: "inline",
             }],
           }],
-        },
       },
     };
 
@@ -120,8 +164,13 @@ describe("headless overlay SVG serializer", () => {
     // outside a foreignObject rather than clipping them at paint time, so ink past the bleed
     // would be absent from the PDF entirely. Do not remove without replacing the mechanism.
     expect(svg).toContain('height="40" overflow="visible"');
-    expect(svg).toContain('data-sigma-doc-math-inline=""');
-    expect(svg).toContain('<span data-math="x^2"></span>');
+    // The serializer owns the box — width, height, colour and font size — and delegates the text
+    // itself to the renderer port, the same split the table already uses. What that port actually
+    // emits (the body's static blocks, with the stylesheet inlined) is pinned where it is built,
+    // in `OverlayTextBlocksView.test.tsx` and `rich-text-self-contained.test.ts`.
+    expect(svg).toContain("width:80px;min-height:20px");
+    expect(svg).toContain("font-size:12pt");
+    expect(svg).toContain('<div data-overlay-text="1"></div>');
   });
 
   it("grows a text shape's foreignObject past a stale one-line stored height when richText has more lines", () => {
@@ -136,15 +185,12 @@ describe("headless overlay SVG serializer", () => {
         // the six hard breaks alone should drive the effective height.
         w: 200,
         h: 16,
-        autoSize: false,
         color: "#111827",
         size: "m",
-        richText: {
-          blocks: [{
-            type: "paragraph",
+        blocks: [{
+            type: "paragraph", id: "overlay_svg_test_21",
             children: [{ type: "text", text: "line 1\nline 2\nline 3\nline 4\nline 5\nline 6" }],
           }],
-        },
       },
     };
 

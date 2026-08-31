@@ -6,6 +6,7 @@ import {
   blockSpaceAfterStyleVars,
   normalizeCodeBlockTheme,
   type CodeBlockNode,
+  type TextAlign,
   type DividerNode,
   type InlineNode,
   type MathFractionSizing,
@@ -23,6 +24,7 @@ import {
   useBoxedInlineRunAlignment,
 } from "@/features/rendering/adapters/react";
 import { stripWrappingMarkdownCodeFence } from "@/features/rendering/core";
+import { useHeadingNumber } from "./HeadingNumberingContext";
 
 type TextResolver = (text: string) => string;
 
@@ -44,6 +46,17 @@ export interface TextFlowStaticBlockClassNames {
 }
 
 /**
+ * Inline styles the host wants on each block element, keyed like `classNames`.
+ *
+ * Only for output that is serialized away from the stylesheet — the SVG export's `<foreignObject>`,
+ * where a UA `p { margin: 1em 0 }` would otherwise reflow the whole box. Surfaces that keep the
+ * stylesheet pass class names instead.
+ */
+export type TextFlowStaticBlockStyles = {
+  [K in keyof TextFlowStaticBlockClassNames]?: CSSProperties;
+};
+
+/**
  * 静的描画が受け付けるブロック。`RichBlock` に引用・コード・区切り線を足しただけで、
  * 問題エリア・段組・囲み枠の中身はすべてこの集合で描ける (ヘッダー/フッターは `RichBlock` のみ)。
  */
@@ -53,11 +66,52 @@ interface TextFlowStaticBlockProps {
   block: TextFlowStaticBlockNode;
   classNames?: TextFlowStaticBlockClassNames;
   mathFractionSizing?: MathFractionSizing | null;
+  /**
+   * Leave `data-sigma-doc-id` off every element this renders.
+   *
+   * That attribute is how the page surface finds a *body* block: `MEASURABLE_BLOCK_SELECTOR`
+   * (`overlay-canvas/anchor.ts`, `page-canvas/layout-measure.ts`) and the page-window index both
+   * select on it. Text drawn inside a shape is not a body block, so emitting it there would put a
+   * figure's paragraphs into the anchor candidates and into the pagination measurement.
+   */
+  omitBlockIds?: boolean;
+  /**
+   * The alignment to write when a block has none of its own.
+   *
+   * The body needs `"left"`: its blocks are drawn inside containers that set an alignment of their
+   * own (problem areas, running regions), so an unaligned paragraph has to say so rather than
+   * inherit. A shape sets no alignment on its box and its editing surface (ProseMirror) writes
+   * nothing for an unaligned block, so passing `null` there is what keeps the two projections
+   * identical — see `inline-dom-parity.test.tsx`.
+   */
+  defaultTextAlign?: TextAlign | null;
   resolveText?: TextResolver;
+  /**
+   * Inline the styling `document-surface.css` would supply, for output serialized without it.
+   * Passed straight through to `renderInlineContent`; block-level values come from `styles`.
+   */
+  selfContained?: boolean;
+  styles?: TextFlowStaticBlockStyles;
+}
+
+interface TextFlowStaticSharedProps {
+  classNames: TextFlowStaticBlockClassNames;
+  defaultTextAlign: TextAlign | null;
+  mathFractionSizing?: MathFractionSizing | null;
+  omitBlockIds: boolean;
+  resolveText: TextResolver;
+  selfContained: boolean;
+  styles: TextFlowStaticBlockStyles;
 }
 
 const identityTextResolver: TextResolver = (text) => text;
 const NO_CLASS_NAMES: TextFlowStaticBlockClassNames = {};
+const NO_STYLES: TextFlowStaticBlockStyles = {};
+
+/** `undefined` rather than the id, so the attribute is absent instead of empty. */
+function blockIdAttr(id: string, omitBlockIds: boolean): string | undefined {
+  return omitBlockIds ? undefined : id;
+}
 
 /**
  * Read-only rendering of one body block.
@@ -73,84 +127,75 @@ const NO_CLASS_NAMES: TextFlowStaticBlockClassNames = {};
 export function TextFlowStaticBlock({
   block,
   classNames = NO_CLASS_NAMES,
+  defaultTextAlign = "left",
   mathFractionSizing,
+  omitBlockIds = false,
   resolveText = identityTextResolver,
+  selfContained = false,
+  styles = NO_STYLES,
 }: TextFlowStaticBlockProps) {
+  const shared: TextFlowStaticSharedProps = {
+    classNames,
+    defaultTextAlign,
+    mathFractionSizing,
+    omitBlockIds,
+    resolveText,
+    selfContained,
+    styles,
+  };
+
   if (block.type === "heading") {
-    return (
-      <TextFlowStaticHeading
-        block={block}
-        className={classNames.heading}
-        mathFractionSizing={mathFractionSizing}
-        resolveText={resolveText}
-      />
-    );
+    return <TextFlowStaticHeading block={block} shared={shared} />;
   }
 
   if (block.type === "list") {
-    return (
-      <TextFlowStaticList
-        block={block}
-        classNames={classNames}
-        mathFractionSizing={mathFractionSizing}
-        resolveText={resolveText}
-      />
-    );
+    return <TextFlowStaticList block={block} shared={shared} />;
   }
 
   if (block.type === "quote") {
     // 縦棒はこの `blockquote` に 1 本だけ引く。中身が何ブロックでも繋ぎ目は生まれない。
     return (
-      <blockquote data-sigma-doc-id={block.id} className={classNames.quote}>
+      <blockquote
+        data-sigma-doc-id={blockIdAttr(block.id, omitBlockIds)}
+        className={classNames.quote}
+        style={styles.quote}
+      >
         {block.blocks.map((child) => (
-          <TextFlowStaticBlock
-            key={child.id}
-            block={child}
-            classNames={classNames}
-            mathFractionSizing={mathFractionSizing}
-            resolveText={resolveText}
-          />
+          <TextFlowStaticBlock key={child.id} block={child} {...shared} />
         ))}
       </blockquote>
     );
   }
 
   if (block.type === "codeBlock") {
-    return <TextFlowStaticCodeBlock block={block} className={classNames.code} resolveText={resolveText} />;
+    return <TextFlowStaticCodeBlock block={block} shared={shared} />;
   }
 
   if (block.type === "divider") {
     return (
       <hr
-        data-sigma-doc-id={block.id}
+        data-sigma-doc-id={blockIdAttr(block.id, omitBlockIds)}
         className={classNames.divider}
-        style={blockSpaceAfterStyleVars(block) as CSSProperties | undefined}
+        style={{
+          ...blockSpaceAfterStyleVars(block),
+          ...styles.divider,
+        } as CSSProperties}
       />
     );
   }
 
-  return (
-    <TextFlowStaticParagraph
-      block={block}
-      className={classNames.paragraph}
-      mathFractionSizing={mathFractionSizing}
-      resolveText={resolveText}
-    />
-  );
+  return <TextFlowStaticParagraph block={block} shared={shared} />;
 }
 
 function TextFlowStaticHeading({
   block,
-  className,
-  mathFractionSizing,
-  resolveText,
+  shared,
 }: {
   block: Extract<RichBlock, { type: "heading" }>;
-  className?: string;
-  mathFractionSizing?: MathFractionSizing | null;
-  resolveText: TextResolver;
+  shared: TextFlowStaticSharedProps;
 }) {
   const HeadingTag = `h${block.level}` as "h1" | "h2" | "h3";
+  const headingNumber = useHeadingNumber(block.id);
   const dependencyKey = useInlineAlignmentDependencyKey(block.children);
   const { aligned, alignmentStyles, ref } = useBoxedInlineRunAlignment<HTMLHeadingElement>(dependencyKey);
 
@@ -158,29 +203,33 @@ function TextFlowStaticHeading({
     <HeadingTag
       ref={ref}
       data-boxed-run-aligned={aligned ? "true" : undefined}
-      data-sigma-doc-id={block.id}
-      className={className}
+      data-sigma-doc-id={blockIdAttr(block.id, shared.omitBlockIds)}
+      className={shared.classNames.heading}
       style={{
-        textAlign: block.align ?? "left",
+        textAlign: block.align ?? shared.defaultTextAlign ?? undefined,
         lineHeight: block.lineHeight,
         ...blockSpaceAfterStyleVars(block),
+        ...shared.styles.heading,
       } as CSSProperties}
     >
-      {renderInlineContent(block.children, { alignmentStyles, keyPrefix: block.id, mathFractionSizing, resolveText })}
+      {headingNumber ? <span className="heading-number-prefix">{headingNumber} </span> : null}
+      {renderInlineContent(block.children, {
+        alignmentStyles,
+        keyPrefix: block.id,
+        mathFractionSizing: shared.mathFractionSizing,
+        resolveText: shared.resolveText,
+        selfContained: shared.selfContained,
+      })}
     </HeadingTag>
   );
 }
 
 function TextFlowStaticParagraph({
   block,
-  className,
-  mathFractionSizing,
-  resolveText,
+  shared,
 }: {
   block: Extract<RichBlock, { type: "paragraph" }>;
-  className?: string;
-  mathFractionSizing?: MathFractionSizing | null;
-  resolveText: TextResolver;
+  shared: TextFlowStaticSharedProps;
 }) {
   const dependencyKey = useInlineAlignmentDependencyKey(block.children);
   const { aligned, alignmentStyles, ref } = useBoxedInlineRunAlignment<HTMLParagraphElement>(dependencyKey);
@@ -189,15 +238,22 @@ function TextFlowStaticParagraph({
     <p
       ref={ref}
       data-boxed-run-aligned={aligned ? "true" : undefined}
-      data-sigma-doc-id={block.id}
-      className={className}
+      data-sigma-doc-id={blockIdAttr(block.id, shared.omitBlockIds)}
+      className={shared.classNames.paragraph}
       style={{
-        textAlign: block.align ?? "left",
+        textAlign: block.align ?? shared.defaultTextAlign ?? undefined,
         lineHeight: block.lineHeight,
         ...blockSpaceAfterStyleVars(block),
+        ...shared.styles.paragraph,
       } as CSSProperties}
     >
-      {renderInlineContent(block.children, { alignmentStyles, keyPrefix: block.id, mathFractionSizing, resolveText })}
+      {renderInlineContent(block.children, {
+        alignmentStyles,
+        keyPrefix: block.id,
+        mathFractionSizing: shared.mathFractionSizing,
+        resolveText: shared.resolveText,
+        selfContained: shared.selfContained,
+      })}
       {!paragraphHasVisibleContent(block.children) && <br key="trailing-break" />}
     </p>
   );
@@ -212,13 +268,12 @@ function TextFlowStaticParagraph({
  */
 function TextFlowStaticCodeBlock({
   block,
-  className,
-  resolveText,
+  shared,
 }: {
   block: CodeBlockNode;
-  className?: string;
-  resolveText: TextResolver;
+  shared: TextFlowStaticSharedProps;
 }) {
+  const { classNames, resolveText } = shared;
   const language = normalizeCodeLanguage(block.language);
   const theme = normalizeCodeBlockTheme(block.theme) ?? "light";
   const segments = useMemo(
@@ -228,10 +283,11 @@ function TextFlowStaticCodeBlock({
 
   return (
     <pre
-      data-sigma-doc-id={block.id}
+      data-sigma-doc-id={blockIdAttr(block.id, shared.omitBlockIds)}
       data-code-language={language}
       data-code-theme={theme}
-      className={className}
+      className={classNames.code}
+      style={shared.styles.code}
     >
       {segments.map((segment, index) => (
         <span
@@ -346,15 +402,12 @@ function inlineCodeRunStyle(child: Extract<InlineNode, { type: "text" }>): CSSPr
 
 function TextFlowStaticList({
   block,
-  classNames,
-  mathFractionSizing,
-  resolveText,
+  shared,
 }: {
   block: Extract<RichBlock, { type: "list" }>;
-  classNames: TextFlowStaticBlockClassNames;
-  mathFractionSizing?: MathFractionSizing | null;
-  resolveText: TextResolver;
+  shared: TextFlowStaticSharedProps;
 }) {
+  const { classNames, omitBlockIds, styles } = shared;
   const items = block.items.map((item) => {
     // The marker inherits the `li` font, so the typography of the item's first run has to be
     // handed to `::marker` from here — the run's own span is inside the `li` and cannot reach it.
@@ -364,28 +417,16 @@ function TextFlowStaticList({
     return (
       <li
         key={item.id}
-        data-sigma-doc-id={item.id}
+        data-sigma-doc-id={blockIdAttr(item.id, omitBlockIds)}
         {...markerTypography?.attrs}
         style={markerTypography?.style as CSSProperties | undefined}
       >
-        <TextFlowStaticListItemContent item={item} mathFractionSizing={mathFractionSizing} resolveText={resolveText} />
+        <TextFlowStaticListItemContent item={item} shared={shared} />
         {(item.continuations ?? []).map((continuation) => (
-          <TextFlowStaticBlock
-            key={continuation.id}
-            block={continuation}
-            classNames={classNames}
-            mathFractionSizing={mathFractionSizing}
-            resolveText={resolveText}
-          />
+          <TextFlowStaticBlock key={continuation.id} block={continuation} {...shared} />
         ))}
         {(item.nested ?? []).map((nested) => (
-          <TextFlowStaticList
-            key={nested.id}
-            block={nested}
-            classNames={classNames}
-            mathFractionSizing={mathFractionSizing}
-            resolveText={resolveText}
-          />
+          <TextFlowStaticList key={nested.id} block={nested} shared={shared} />
         ))}
       </li>
     );
@@ -394,22 +435,22 @@ function TextFlowStaticList({
   return block.listType === "ordered"
     ? (
       <ol
-        data-sigma-doc-id={block.id}
+        data-sigma-doc-id={blockIdAttr(block.id, omitBlockIds)}
         // `document-surface.css` swaps the counter style on this attribute, matching what the
         // editor's `orderedList` node renders. No marker style means the UA default decimal.
         data-list-marker={block.markerStyle === "paren" ? "paren" : undefined}
         className={classNames.list}
         start={block.start}
-        style={blockSpaceAfterStyleVars(block) as CSSProperties | undefined}
+        style={{ ...blockSpaceAfterStyleVars(block), ...styles.list } as CSSProperties}
       >
         {items}
       </ol>
     )
     : (
       <ul
-        data-sigma-doc-id={block.id}
+        data-sigma-doc-id={blockIdAttr(block.id, omitBlockIds)}
         className={classNames.list}
-        style={blockSpaceAfterStyleVars(block) as CSSProperties | undefined}
+        style={{ ...blockSpaceAfterStyleVars(block), ...styles.list } as CSSProperties}
       >
         {items}
       </ul>
@@ -418,12 +459,10 @@ function TextFlowStaticList({
 
 function TextFlowStaticListItemContent({
   item,
-  mathFractionSizing,
-  resolveText,
+  shared,
 }: {
   item: Extract<RichBlock, { type: "list" }>["items"][number];
-  mathFractionSizing?: MathFractionSizing | null;
-  resolveText: TextResolver;
+  shared: TextFlowStaticSharedProps;
 }) {
   const dependencyKey = useInlineAlignmentDependencyKey(item.children);
   const { aligned, alignmentStyles, ref } = useBoxedInlineRunAlignment<HTMLSpanElement>(dependencyKey);
@@ -432,9 +471,15 @@ function TextFlowStaticListItemContent({
     <span
       ref={ref}
       data-boxed-run-aligned={aligned ? "true" : undefined}
-      style={{ display: "block", textAlign: item.align ?? "left" }}
+      style={{ display: "block", textAlign: item.align ?? shared.defaultTextAlign ?? undefined }}
     >
-      {renderInlineContent(item.children, { alignmentStyles, keyPrefix: item.id, mathFractionSizing, resolveText })}
+      {renderInlineContent(item.children, {
+        alignmentStyles,
+        keyPrefix: item.id,
+        mathFractionSizing: shared.mathFractionSizing,
+        resolveText: shared.resolveText,
+        selfContained: shared.selfContained,
+      })}
     </span>
   );
 }

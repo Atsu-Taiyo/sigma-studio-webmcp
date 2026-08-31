@@ -1,11 +1,14 @@
 import type {
   BoxedVariant,
+  HeadingNode,
   InlineNode,
+  ListItemContinuationNode,
+  ListNode,
+  ParagraphNode,
   TextMark,
 } from "./model";
 import type {
-  OverlayRichTextBlock,
-  OverlayRichTextDocument,
+  OverlayTextBlock,
   OverlayTextSize,
 } from "./overlay-model";
 
@@ -24,14 +27,12 @@ export type OverlayTextCommand =
   | "lineHeight"
   | "textAlign";
 
-export function formatRichTextDocument(
-  richText: OverlayRichTextDocument,
+export function formatOverlayTextBlocks(
+  blocks: readonly OverlayTextBlock[],
   command: OverlayTextCommand,
   value?: string,
-): OverlayRichTextDocument {
-  return {
-    blocks: richText.blocks.map((block) => formatBlock(block, command, value)),
-  };
+): OverlayTextBlock[] {
+  return blocks.map((block) => formatBlock(block, command, value));
 }
 
 export function fontSizeToOverlaySize(fontSize: number): OverlayTextSize {
@@ -61,10 +62,60 @@ export function overlayTextSizeToPx(size: OverlayTextSize): number {
 }
 
 function formatBlock(
-  block: OverlayRichTextBlock,
+  block: OverlayTextBlock,
   command: OverlayTextCommand,
   value?: string,
-): OverlayRichTextBlock {
+): OverlayTextBlock {
+  // A divider has no runs to style. A quote is styled through the blocks inside it, so selecting a
+  // shape and pressing bold reaches the quoted words too — leaving them out would style everything
+  // the reader can see except the part that is visibly quoted.
+  if (block.type === "divider") {
+    return block;
+  }
+  if (block.type === "quote") {
+    return {
+      ...block,
+      blocks: block.blocks.map((child) => formatBlock(child as OverlayTextBlock, command, value) as typeof child),
+    };
+  }
+  if (block.type === "codeBlock") {
+    return { ...block, children: block.children.map((child) => formatInline(child, command, value)) };
+  }
+  return block.type === "list"
+    ? formatListBlock(block, command, value)
+    : formatProseBlock(block, command, value);
+}
+
+function formatListBlock(
+  block: ListNode,
+  command: OverlayTextCommand,
+  value?: string,
+): ListNode {
+  return {
+    ...block,
+    items: block.items.map((item) => ({
+      ...item,
+      children: item.children.map((child) => formatInline(child, command, value)),
+      ...(command === "textAlign" ? { align: normalizeTextAlign(value) } : {}),
+      ...(item.continuations === undefined
+        ? {}
+        : {
+            continuations: item.continuations.map((child) => (
+              child.type === "divider" ? child : formatProseBlock(child, command, value)
+            )),
+          }),
+      ...(item.nested === undefined
+        ? {}
+        : { nested: item.nested.map((child) => formatListBlock(child, command, value)) }),
+    })),
+  };
+}
+
+function formatProseBlock<T extends HeadingNode | ParagraphNode>(
+  block: T,
+  command: OverlayTextCommand,
+  value?: string,
+): T {
   const children = block.children.map((child) => formatInline(child, command, value));
   if (command === "lineHeight") {
     return { ...block, children, lineHeight: value };
@@ -180,22 +231,45 @@ function normalizeTextAlign(value: unknown): "left" | "center" | "right" | "just
 }
 
 /**
- * Lines a rich-text document occupies: one per block, plus one per hard break inside it.
+ * Lines a shape's blocks occupy: one per block (one per list *item*), plus one per hard break
+ * inside it. Width-driven wrapping is not counted — this is the pure lower bound a shape can never
+ * be shorter than, used while the measured height is missing or stale.
  *
  * This feature's copy. `features/rendering/core` has an identical one (drawing and rendering cannot
- * import this feature at runtime, only for types), and `overlay-text-line-model.test.ts` pins the
- * two against each other over a corpus — the count feeds the *stored* geometry of auto-sized text
- * shapes, so a rule that drifted would move figures in saved documents.
+ * import this feature at runtime, only for types), and `overlay-text-line-count.test.ts` pins the
+ * two against each other over a corpus — the count feeds the *stored* geometry of text shapes, so
+ * a rule that drifted would move figures in saved documents.
  */
-export function getOverlayRichTextLineCount(document: OverlayRichTextDocument): number {
-  const blocks = Array.isArray(document.blocks) ? document.blocks : [];
-  if (blocks.length === 0) {
+export function getOverlayTextBlocksLineCount(blocks: readonly OverlayTextBlock[]): number {
+  const list = Array.isArray(blocks) ? blocks : [];
+  if (list.length === 0) {
     return 1;
   }
-  return Math.max(1, blocks.reduce((sum, block) => sum + getBlockLineCount(block?.children ?? []), 0));
+  return Math.max(1, list.reduce((sum, block) => sum + getBlockLineCount(block), 0));
 }
 
-function getBlockLineCount(content: readonly InlineNode[]): number {
+function getBlockLineCount(block: OverlayTextBlock | ListItemContinuationNode | undefined): number {
+  if (!block) {
+    return 0;
+  }
+  if (block.type === "divider") {
+    return 1;
+  }
+  if (block.type === "list") {
+    return (block.items ?? []).reduce((sum, item) => (
+      sum +
+      getInlineLineCount(item?.children ?? []) +
+      (item?.continuations ?? []).reduce((inner, child) => inner + getBlockLineCount(child), 0) +
+      (item?.nested ?? []).reduce((inner, nested) => inner + getBlockLineCount(nested), 0)
+    ), 0);
+  }
+  if (block.type === "quote") {
+    return (block.blocks ?? []).reduce((sum, child) => sum + getBlockLineCount(child), 0);
+  }
+  return getInlineLineCount(block.children ?? []);
+}
+
+function getInlineLineCount(content: readonly InlineNode[]): number {
   return 1 + content.reduce((sum, inline) => (
     inline?.type === "text" ? sum + Math.max(0, (inline.text ?? "").split("\n").length - 1) : sum
   ), 0);

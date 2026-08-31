@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { ChartColumn, ChartLine } from "lucide-react";
+
 import { Button, IconButton } from "./Button";
+import { ChoiceGroup } from "./ChoiceGroup";
 import { Disclosure } from "./Disclosure";
 import { ModalBody, ModalFrame, ModalHeader } from "./Modal";
 
@@ -21,6 +24,27 @@ describe("design system controls", () => {
     expect(html).toContain('aria-label="削除"');
     expect(html).toContain('data-tooltip-trigger=""');
     expect(html).toContain('aria-label="元に戻す"');
+  });
+
+  it("marks an exclusive icon choice as a radiogroup and flags its selection in the markup", () => {
+    const html = renderToStaticMarkup(
+      <ChoiceGroup
+        aria-label="種類"
+        onChange={() => {}}
+        options={[
+          { value: "bar", label: "棒グラフ", icon: ChartColumn },
+          { value: "line", label: "折れ線グラフ", icon: ChartLine },
+        ]}
+        value="line"
+      />,
+    );
+
+    expect(html).toContain('role="radiogroup"');
+    expect(html).toContain('role="radio"');
+    expect(html).toContain('data-selected="true"');
+    expect(html).toContain('aria-checked="true"');
+    // The label travels with the icon, so the choice is not an unnamed pictogram.
+    expect(html).toContain("折れ線グラフ");
   });
 
   it("defers portalled dialogs during SSR and keeps embedded content renderable", () => {

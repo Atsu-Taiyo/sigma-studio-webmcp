@@ -489,7 +489,8 @@ type BoxDecorationSpec =
   | { type: "cornerSquares"; sizePx: number; color: string }
   | { type: "doubleRule"; offsetPx: number; widthPx?: number; color?: string }
   | { type: "titleDoubleRule"; ruleWidthPx?: number; ruleColor?: string; guideColor?: string }
-  | { type: "titleBand"; heightPx?: number; backgroundColor?: string }
+  | { type: "titleBand"; heightPx?: number; backgroundColor?: string; ruleWidthPx?: number; ruleColor?: string }
+  | { type: "titleTab"; heightPx?: number; radiusPx?: number; offsetXPx?: number; paddingPx?: BoxSpacingPx; backgroundColor?: string }
   | { type: "titlePlate"; borderColor?: string; radiusPx?: number; paddingPx?: BoxSpacingPx }
   | { type: "leftBar"; widthPx: number; color: string }
   | { type: "shadow"; offsetXPx: number; offsetYPx: number; blurPx?: number; spreadPx?: number; color: string }
@@ -498,6 +499,8 @@ type BoxDecorationSpec =
 ```
 
 `notebookRules` はノート罫、左綴じ罫、リングなどのCSSで安全に再現できるパラメータを持ちます。詳細なフィールドは `src/types/sigma-doc.ts` を正とします。
+
+タイトルに地色を敷く装飾は2種類あります。`titleBand` は枠幅いっぱいの帯で、`ruleWidthPx` を持たせると帯と本文のあいだに罫を引きます。`titleTab` は枠の左上へ差し込む見出しタブで、**枠の内側**に収めます (上へはみ出させると、ブロックを絶対配置で積む印刷経路が出っ張りを勘定できず、前のブロックへ重なるため)。
 
 ### Problem
 
@@ -993,39 +996,22 @@ type OverlayLineShape = OverlayBaseShape<"line", {
 ```ts
 type OverlayTextShape = OverlayBaseShape<"text", {
   w: number;
-  h?: number;
-  scale?: number;
-  richText: OverlayRichTextDocument;
-  autoSize: boolean;
+  h: number;
+  blocks: OverlayTextBlock[];
   color: string;
+  fontSize?: number;
   size: "s" | "m" | "l" | "xl";
 }>;
 ```
 
 `text` shapeは自由配置の注釈用です。通常の説明文、問題文、解答、見出しをoverlay textに逃がさないでください。それらは本文の `heading` / `paragraph` / `problem` に保存します。
-`h` は内部テキストの実測高さを保持するための値です。`scale` は図中テキストを図形リサイズに合わせて拡大縮小するための倍率で、省略時は `1` として扱います。
+`w` は著者が決める幅で、テキストはこの幅で折り返します。図形をリサイズしても変わるのは `w` だけで、フォントサイズは変わりません。`h` は折り返した内容の実測高さを保持する派生キャッシュで、直接編集しません。
 
 ```ts
-interface OverlayRichTextDocument {
-  blocks: Array<
-    | {
-        type: "paragraph";
-        children: InlineNode[];
-        align?: "left" | "center" | "right" | "justify";
-        lineHeight?: string;
-      }
-    | {
-        type: "heading";
-        level: 1 | 2 | 3;
-        children: InlineNode[];
-        align?: "left" | "center" | "right" | "justify";
-        lineHeight?: string;
-      }
-  >;
-}
+type OverlayTextBlock = RichBlock; // 本文と同じ heading | paragraph | list
 ```
 
-`OverlayRichTextDocument` はSigmaDocのsemantic rich textです。文字・インライン数式・装飾は本文と同じ `InlineNode` で保持します。Tiptapの `doc` / `content` / `attrs` / object形式の`marks` / `hardBreak` は編集時にadapterが生成する派生表現であり、overlay snapshotには保存しません。文字列内の改行は `TextInlineNode.text` の `\n` で保持します。
+図中テキストの中身は本文のブロックそのものです (`heading` / `paragraph` / `list`)。文字・インライン数式・装飾は本文と同じ `InlineNode` で保持し、ブロックは本文と同じく `id` 必須です。Tiptapの `doc` / `content` / `attrs` / object形式の`marks` / `hardBreak` は編集時にadapterが生成する派生表現であり、overlay snapshotには保存しません。文字列内の改行は `TextInlineNode.text` の `\n` で保持します。
 
 ### Image Shape
 
@@ -1055,7 +1041,7 @@ type OverlayCalloutShape = OverlayBaseShape<"callout", {
     baseEnd: { x: number; y: number };
     tip: { x: number; y: number };
   };
-  richText: OverlayRichTextDocument;
+  blocks: OverlayTextBlock[];
   color: string;
   fontSize?: number;
   size: "s" | "m" | "l" | "xl";

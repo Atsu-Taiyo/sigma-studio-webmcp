@@ -8,6 +8,7 @@ import {
   Bold,
   ChartSpline,
   Circle,
+  Cuboid,
   FileQuestion,
   Italic,
   ListPlus,
@@ -68,6 +69,7 @@ import type { MaterialContent } from "@/types/material";
 import type { OverlayPoint, OverlayShape, OverlayTool } from "@/components/editor/overlay-canvas/types";
 import { useT } from "@/lib/i18n/react";
 import type { Translate } from "@/lib/i18n/translator";
+import { applyRememberedBoxFrame } from "@/lib/remembered-box-style";
 
 const INSERT_INLINE_MATH_EVENT = "sigma-studio:insert-inline-math";
 const FORMAT_TEXT_EVENT = "sigma-studio:format-text";
@@ -110,6 +112,7 @@ const MATERIAL_OVERLAY_TOOLS: Array<{
   { command: "arrow", labelKey: "tool.arrow", icon: ArrowRight },
   { command: "text", labelKey: "tool.text", icon: Type },
   { command: "graph", labelKey: "tool.graph", icon: ChartSpline },
+  { command: "graph3d", labelKey: "tool.graph3d", icon: Cuboid },
   { command: "table", labelKey: "tool.table", icon: Rows3 },
 ];
 
@@ -214,7 +217,8 @@ export function MaterialEditSurface({
   }, []);
 
   const addBlock = useCallback((type: SigmaBlock["type"]) => {
-    const block = createBlock(type, tEditor);
+    // 箱は「前に決めた見た目」で入る (設定ダイアログで変えた色や罫がそのまま次にも効く)。
+    const block = applyRememberedBoxFrame(createBlock(type, tEditor));
     onContentChange({
       ...content,
       blocks: [...content.blocks, block],
@@ -817,7 +821,9 @@ function getMaterialShapeLabel(shape: OverlayShape, tShape: Translate<"shape">):
   if (shape.type === "image") return tShape("shapeKind.image");
   if (shape.type === "callout") return tShape("shapeKind.callout");
   if (shape.type === "graph2dShape") return tShape("shapeKind.graphPlain");
+  if (shape.type === "graph3dShape") return tShape("shapeKind.graph3dPlain");
   if (shape.type === "tableShape") return tShape("shapeKind.tablePlain");
+  if (shape.type === "chartShape") return tShape("shapeKind.chartPlain");
   if (shape.type === "group") return shape.props.name || tShape("shapeKind.group");
   return tShape("shapeKind.generic");
 }

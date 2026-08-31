@@ -72,7 +72,7 @@ interface RenderInlineContentOptions {
  * AI previews, page previews, and print previews agree with the body.
  */
 
-export function boxedInlineRunAlignmentSignature(nodes: InlineNode[]): string {
+export function boxedInlineRunAlignmentSignature(nodes: readonly InlineNode[]): string {
   return boxedInlineRunSignature(nodes);
 }
 
@@ -183,7 +183,10 @@ export function useBoxedInlineRunAlignment<TElement extends HTMLElement>(
   };
 }
 
-export function renderInlineContent(children: InlineNode[], options: RenderInlineContentOptions = {}): ReactNode[] {
+export function renderInlineContent(
+  children: readonly InlineNode[],
+  options: RenderInlineContentOptions = {},
+): ReactNode[] {
   const keyPrefix = options.keyPrefix ?? "inline";
   return renderRichTextDom(
     buildInlineRichTextDom(children, {
@@ -406,7 +409,7 @@ function roundCssPx(value: number): number {
 }
 
 interface InlineContentProps {
-  nodes: InlineNode[];
+  nodes: readonly InlineNode[];
   className?: string;
   keyPrefix?: string;
   mathFractionSizing?: MathFractionSizing | null;

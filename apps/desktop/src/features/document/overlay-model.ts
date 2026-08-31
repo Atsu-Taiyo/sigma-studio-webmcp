@@ -1,9 +1,8 @@
-import type {
-  InlineNode,
-  LineHeight,
-  TextAlign,
-} from "./model/rich-text";
+import type { InlineNode, TextAlign } from "./model/rich-text";
+import type { CodeBlockNode, DividerNode, QuoteBlockNode, RichBlock } from "./model/blocks";
 import type { Graph2DSpec } from "./model/graph";
+import type { Graph3DSpec } from "./model/graph3d";
+import type { SigmaChartData, SigmaChartSpec } from "./model/chart";
 
 export type OverlayShapeId = string;
 export type OverlayAssetId = string;
@@ -38,31 +37,40 @@ export const OVERLAY_ARROWHEADS = [
   "diamond",
   "dot",
   "bar",
+  // The same seven shapes drawn small. A head is measured in stroke widths, so before these the
+  // only way to get a discreet arrow on a normal line was to thin the line.
+  "arrowSmall",
+  "triangleSmall",
+  "openArrowSmall",
+  "thinArrowSmall",
+  "diamondSmall",
+  "dotSmall",
+  "barSmall",
 ] as const;
 export type OverlayArrowhead = (typeof OVERLAY_ARROWHEADS)[number];
 export type OverlayLineKind = "polyline" | "curve" | "freehand";
 
-/** Persisted, editor-agnostic rich text used by overlay text shapes. */
-export interface OverlayRichTextDocument {
-  blocks: OverlayRichTextBlock[];
-}
-
-export type OverlayRichTextBlock = OverlayRichTextParagraph | OverlayRichTextHeading;
-
-export interface OverlayRichTextParagraph {
-  type: "paragraph";
-  children: InlineNode[];
-  align?: TextAlign;
-  lineHeight?: LineHeight;
-}
-
-export interface OverlayRichTextHeading {
-  type: "heading";
-  level: 1 | 2 | 3;
-  children: InlineNode[];
-  align?: TextAlign;
-  lineHeight?: LineHeight;
-}
+/**
+ * Content of an overlay text shape: the same blocks the body is made of.
+ *
+ * Text shapes used to carry their own paragraph/heading pair (`OverlayRichTextDocument`), so the
+ * viewer package had to hand-mirror a second block model that could drift from the body's.
+ * `RichBlock` — the body's "blocks that hold prose and no pagination of their own" type, already
+ * used by headers/footers — has exactly the properties a shape needs, and reusing it is what lets
+ * a shape hold a list.
+ *
+ * Quote, code and divider are added on top of it rather than added *to* it. `RichBlock` leaves
+ * `divider` out on purpose because headers and footers are built from it, and a block with no
+ * children in a region that is duplicated and measured per page makes every `children`-assuming
+ * path there grow a branch (see its note in `model/blocks.ts`). A shape is not that region: it is
+ * one box, measured once, so the three blocks cost it nothing — and widening `RichBlock` to reach
+ * them would change what a header accepts, which nobody asked for.
+ *
+ * What is deliberately still out: `boxBlock`, `layoutSection`, `problem` and `section`. Those are
+ * page-level furniture — a box that paginates, a column band, a numbered problem — and a shape is
+ * a box drawn on top of the page, not a place that owns page structure.
+ */
+export type OverlayTextBlock = RichBlock | QuoteBlockNode | CodeBlockNode | DividerNode;
 
 export interface OverlaySnapshot {
   version: 1;
@@ -88,7 +96,7 @@ export interface OverlayAsset {
     w: number;
     h: number;
     name: string;
-    isAnimated: false;
+    isAnimated: boolean;
     mimeType: string | null;
     src: string;
     fileSize: number;
@@ -106,7 +114,9 @@ export type OverlayShape =
   | OverlayImageShape
   | OverlayCalloutShape
   | OverlayGraphShape
-  | OverlayTableShape;
+  | OverlayGraph3DShape
+  | OverlayTableShape
+  | OverlayChartShape;
 
 export type OverlayAnchor =
   | { type: "block"; blockId: string; dy: number; dx?: number; line?: OverlayLineAnchor; reserveSpace?: boolean }
@@ -236,13 +246,11 @@ export type OverlayLineShape = OverlayBaseShape<"line", {
 }>;
 
 export type OverlayTextShape = OverlayBaseShape<"text", {
+  /** User-chosen width. Text wraps at this width; changing it never changes the font size. */
   w: number;
-  h?: number;
-  /** Auto-sized text wraps to this width while its height continues to be measured. */
-  maxWidth?: number;
-  scale?: number;
-  richText: OverlayRichTextDocument;
-  autoSize: boolean;
+  /** Derived height cache written back from the measured DOM. Never edited directly. */
+  h: number;
+  blocks: OverlayTextBlock[];
   color: string;
   /** Font size in points. Shape bounds and positions remain CSS pixels. */
   fontSize?: number;
@@ -273,8 +281,8 @@ export type OverlayCalloutShape = OverlayBaseShape<"callout", {
     baseEnd: OverlayPoint;
     tip: OverlayPoint;
   };
-  /** 本文・図中数式と同じ永続化用リッチテキスト。 */
-  richText: OverlayRichTextDocument;
+  /** 本文・図中数式と同じ永続化用ブロック列。 */
+  blocks: OverlayTextBlock[];
   color: string;
   /** Font size in points. Shape bounds and positions remain CSS pixels. */
   fontSize?: number;
@@ -301,10 +309,36 @@ export type OverlayGraphShape = OverlayBaseShape<"graph2dShape", {
   labelTextShapeIdsByCurveId?: Record<string, OverlayShapeId>;
 }>;
 
+export type OverlayGraph3DShape = OverlayBaseShape<"graph3dShape", {
+  w: number;
+  h: number;
+  spec: Graph3DSpec;
+  /** Derived image used by the page, print, and viewer renderers. */
+  previewAssetId?: OverlayAssetId;
+  /** Hash of the spec/camera state used to detect a stale derived preview. */
+  previewSourceHash?: string;
+}>;
+
 export type OverlayTableShape = OverlayBaseShape<"tableShape", {
   w: number;
   h: number;
   table: SigmaTableSpec;
+}>;
+
+export type OverlayChartShape = OverlayBaseShape<"chartShape", {
+  w: number;
+  h: number;
+  spec: SigmaChartSpec;
+  /**
+   * The table shape this chart reads. Renderers resolve it against the whole snapshot every draw,
+   * which is what makes editing the table move the chart.
+   */
+  sourceTableShapeId?: OverlayShapeId;
+  /**
+   * The last data derived from that table, drawn when the reference no longer resolves (the table
+   * was deleted, the chart was pasted alone, or it lives in a running region the body cannot reach).
+   */
+  dataSnapshot: SigmaChartData;
 }>;
 
 export type SigmaTableKind = "plain" | "variation";

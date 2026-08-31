@@ -45,15 +45,49 @@ describe("overlay selection model", () => {
     expect(getOnlySelectedTextShape(shapes, ["shape"], null)).toBeNull();
   });
 
-  it("collects only assets referenced by selected image shapes", () => {
+  it("collects assets referenced by selected images and derived 3D previews", () => {
     const first = imageShape("first_image", "asset_1");
+    const graph3d: OverlayShape = {
+      id: "graph3d",
+      type: "graph3dShape",
+      x: 0,
+      y: 0,
+      props: {
+        w: 200,
+        h: 140,
+        previewAssetId: "asset_2",
+        spec: {
+          version: 1,
+          parameters: [],
+          objects: [],
+          cuts: [],
+          regions: [],
+          annotations: [],
+          camera: {
+            projection: "perspective",
+            position: { x: 5, y: -6, z: 4 },
+            target: { x: 0, y: 0, z: 0 },
+            up: { x: 0, y: 0, z: 1 },
+          },
+          view: {
+            coordinateSystem: "zUp",
+            showAxes: true,
+            showGrid: true,
+            showAxisLabels: true,
+            backgroundColor: "#ffffff",
+          },
+        },
+      },
+    };
     const assets = {
       asset_1: imageAsset("asset_1"),
       asset_2: imageAsset("asset_2"),
+      asset_3: imageAsset("asset_3"),
     };
 
-    expect(collectSelectedOverlayAssets([first, rectangle("shape")], assets)).toEqual({
+    expect(collectSelectedOverlayAssets([first, graph3d, rectangle("shape")], assets)).toEqual({
       asset_1: assets.asset_1,
+      asset_2: assets.asset_2,
     });
   });
 
@@ -114,10 +148,8 @@ function textShape(id: string): Extract<OverlayShape, { type: "text" }> {
     y: 0,
     props: {
       w: 120,
-      richText: {
-        blocks: [{ type: "paragraph", children: [{ type: "text", text: id }] }],
-      },
-      autoSize: true,
+      h: 16,
+      blocks: [{ type: "paragraph", id: "selection_test_3", children: [{ type: "text", text: id }] }],
       color: "black",
       size: "m",
     },

@@ -102,6 +102,63 @@ describe("box frame render metadata", () => {
     expect(boxFrameClassName("print-box-block", { titlePosition: "r" })).toContain("box-frame--title-position-r");
   });
 
+  it("gives the title band a rule and a filled tab their own render classes and lengths", () => {
+    const titlebox = createBoxBlock("titlebox");
+    const bandbox = createBoxBlock("bandbox");
+    const tabbox = createBoxBlock("tabbox");
+    const theorembox = createBoxBlock("theorembox");
+
+    const bandFrame = resolveBoxFrame(titlebox);
+    expect(boxFrameClassName("sigma-doc-box-block", bandFrame, titlebox.styleId)).toContain("box-frame--title-band");
+    expect(boxFrameStyleVars(bandFrame)).toMatchObject({
+      "--sigma-doc-box-title-background": "#e5e7eb",
+      "--sigma-doc-box-title-band-rule-width": "1.2px",
+      "--sigma-doc-box-title-band-rule-color": "#111111",
+    });
+    // 帯の高さぶんだけ上のパディングを取っておく (負のマージンで帯を枠の上端へ寄せるので、
+    // ここがずれると帯と枠線のあいだに隙間が出る)。
+    const band = bandFrame.decorations?.find((decoration) => decoration.type === "titleBand");
+    expect(band?.type === "titleBand" && band.heightPx).toBe(bandFrame.paddingPx?.top);
+
+    // 罫を持たない既存の帯箱は 0px のまま = 線を引かない。
+    expect(boxFrameStyleVars(resolveBoxFrame(createBoxBlock("tcolorbox"))))
+      .toMatchObject({ "--sigma-doc-box-title-band-rule-width": "0px" });
+
+    expect(boxFrameStyleVars(resolveBoxFrame(bandbox))).toMatchObject({
+      "--sigma-doc-box-title-background": "#1f2937",
+      "--sigma-doc-box-title-color": "#ffffff",
+    });
+
+    const tabFrame = resolveBoxFrame(tabbox);
+    expect(boxFrameClassName("sigma-doc-box-block", tabFrame, tabbox.styleId)).toContain("box-frame--title-tab");
+    expect(boxFrameDecorationAttributes(tabFrame)).toMatchObject({ "data-box-title-tab": "true" });
+    expect(boxFrameStyleVars(tabFrame)).toMatchObject({
+      "--sigma-doc-box-title-tab-height": "26px",
+      "--sigma-doc-box-title-tab-radius": "4px",
+      "--sigma-doc-box-title-tab-offset-x": "0px",
+      "--sigma-doc-box-title-tab-padding-left": "14px",
+      "--sigma-doc-box-title-background": "#1f3864",
+      "--sigma-doc-box-title-color": "#ffffff",
+    });
+
+    // 定理箱は枠線を持たず、左の太罫と地色だけで示す。
+    expect(boxFrameClassName("sigma-doc-box-block", resolveBoxFrame(theorembox), theorembox.styleId))
+      .toContain("box-frame--left-bar");
+    expect(boxFrameStyleVars(resolveBoxFrame(theorembox))).toMatchObject({
+      "--sigma-doc-box-border-style": "none",
+      "--sigma-doc-box-left-bar-width": "4px",
+      "--sigma-doc-box-left-bar-color": "#1f3864",
+      "--sigma-doc-box-title-color": "#1f3864",
+    });
+  });
+
+  it("falls back to the tab color for the title background when the frame sets none", () => {
+    expect(boxFrameStyleVars({
+      backgroundColor: "#ffffff",
+      decorations: [{ type: "titleTab", backgroundColor: "#123456" }],
+    })).toMatchObject({ "--sigma-doc-box-title-background": "#123456" });
+  });
+
   it("exposes the box background as the shared editor and print title-plate color", () => {
     expect(boxFrameStyleVars({ backgroundColor: "#fef3c7" })).toMatchObject({
       "--sigma-doc-box-background": "#fef3c7",

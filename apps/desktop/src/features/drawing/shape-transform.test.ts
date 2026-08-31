@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   patchShape,
   type OverlayBounds,
-  type OverlayRichTextDocument,
+  type OverlayTextBlock,
   type OverlayShape,
 } from "@/features/document";
 
@@ -15,9 +15,7 @@ import { resolveShapePosition, type MeasuredBlock } from "./anchor-position";
 import { getShapeBounds } from "./shape-bounds";
 import { getShapeRotationPivot } from "./shape-visual-bounds";
 
-const richText = (text: string): OverlayRichTextDocument => ({
-  blocks: [{ type: "paragraph", children: [{ type: "text", text }] }],
-});
+const blocksOf = (text: string): OverlayTextBlock[] => ([{ type: "paragraph", id: "shape_transform_test_65", children: [{ type: "text", text }] }]);
 
 function textShape(
   rotation: number,
@@ -32,11 +30,9 @@ function textShape(
     props: {
       w: bounds.w,
       h: bounds.h,
-      scale: 1,
       color: "#111827",
       size: "m",
-      autoSize: false,
-      richText: richText("one line"),
+      blocks: blocksOf("one line"),
     },
   };
 }
@@ -86,13 +82,12 @@ describe("preserveRotatedTextResizeTopLeft", () => {
       ...textShape(Math.PI / 4, { x: 40, y: 70, w: 200, h: 16 }),
       props: {
         ...textShape(0, { x: 0, y: 0, w: 200, h: 16 }).props,
-        autoSize: true,
       },
     };
     const patched = patchShape([previous], {
       id: previous.id,
       type: "text",
-      props: { richText: richText("first\nsecond") },
+      props: { blocks: blocksOf("first\nsecond") },
     })[0] as Extract<OverlayShape, { type: "text" }>;
 
     expect(getShapeBounds(patched).h).toBeGreaterThan(getShapeBounds(previous).h);

@@ -29,7 +29,7 @@ describe("calculateReserveSpaceGaps", () => {
           baseEnd: { x: 88, y: 68 },
           tip: { x: 64, y: 96 },
         },
-        richText: { blocks: [{ type: "paragraph", children: [] }] },
+        blocks: [{ type: "paragraph", id: "layout_measure_test_32", children: [] }],
         color: "#111111",
         size: "m",
         dash: "solid",

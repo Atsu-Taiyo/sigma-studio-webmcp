@@ -1,7 +1,7 @@
 "use client";
 
 import { MoreHorizontal } from "lucide-react";
-import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -18,6 +18,9 @@ import { IconButton } from "@/components/ui/Button";
 import styles from "./inline-math-tex-editor.module.css";
 import { getInlineMathTexHighlightSegments } from "./inline-math-tex-highlight";
 import { useT } from "@/lib/i18n/react";
+
+const TEX_FIELD_MIN_HEIGHT_PX = 68;
+const TEX_FIELD_VIEWPORT_CLEARANCE_PX = 48;
 
 type InlineMathTexTextareaProps = Omit<
   TextareaHTMLAttributes<HTMLTextAreaElement>,
@@ -68,6 +71,47 @@ export const InlineMathTexEditor = forwardRef<HTMLTextAreaElement, InlineMathTex
     const highlightRef = useRef<HTMLPreElement | null>(null);
     const highlightedSegments = useMemo(() => getInlineMathTexHighlightSegments(tex), [tex]);
     const { onScroll, ...restTextareaProps } = textareaProps;
+
+    const resizeTexField = useCallback((textarea = textareaRef.current) => {
+      if (!textarea) {
+        return;
+      }
+
+      // 内容が収まる間は浮動エディタ自体を伸ばす。画面高を使い切る長さになった場合だけ
+      // textarea 内をスクロールさせ、ポップオーバーの操作列を画面内に残す。
+      textarea.style.height = "auto";
+      const contentHeight = Math.ceil(textarea.scrollHeight);
+      const maxHeight = Math.max(
+        TEX_FIELD_MIN_HEIGHT_PX,
+        window.innerHeight - TEX_FIELD_VIEWPORT_CLEARANCE_PX,
+      );
+      textarea.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+      textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+
+      if (highlightRef.current) {
+        highlightRef.current.scrollTop = textarea.scrollTop;
+        highlightRef.current.scrollLeft = textarea.scrollLeft;
+      }
+    }, []);
+
+    const setTextareaElement = useCallback((element: HTMLTextAreaElement | null) => {
+      textareaRef.current = element;
+      if (element) {
+        // ToolbarPopover は portal host の確定後に子をマウントする。既存の長い TeX を
+        // 開いた初回にも、入力イベントを待たず DOM 接続時点で実寸へ合わせる。
+        resizeTexField(element);
+      }
+    }, [resizeTexField]);
+
+    useLayoutEffect(() => {
+      resizeTexField();
+    }, [resizeTexField, tex]);
+
+    useEffect(() => {
+      const handleWindowResize = () => resizeTexField();
+      window.addEventListener("resize", handleWindowResize);
+      return () => window.removeEventListener("resize", handleWindowResize);
+    }, [resizeTexField]);
 
     useImperativeHandle(forwardedRef, () => textareaRef.current as HTMLTextAreaElement);
 
@@ -132,7 +176,7 @@ export const InlineMathTexEditor = forwardRef<HTMLTextAreaElement, InlineMathTex
               </pre>
               <textarea
                 {...restTextareaProps}
-                ref={textareaRef}
+                ref={setTextareaElement}
                 aria-label={ariaLabel}
                 aria-describedby={ariaDescribedBy}
                 aria-invalid={invalid || undefined}

@@ -13,7 +13,7 @@ import {
   enablePageRunningRegion,
   getGraphAxisLabelSpecText,
   getGraphAxisLabelTextsByKey,
-  getOverlayRichTextLabelText,
+  getOverlayTextBlocksLabelText,
   getRunningRegionBoundsMm,
   insertTopLevelDocumentBlocks,
   insertTopLevelDocumentBlocksBefore,
@@ -59,10 +59,17 @@ import type {
   TextAlign as LegacyTextAlign,
 } from "@/types/sigma-doc";
 import type {
+  BoxBlockNode,
+  CodeBlockNode,
+  DividerNode,
   Graph2DSpec,
   InlineNode,
+  LayoutSectionNode,
   LineHeight,
   MathFractionSizing,
+  ProblemNode,
+  QuoteBlockNode,
+  RichBlock,
   SigmaBlockCommentAnchor,
   SigmaCommentAnchor,
   SigmaCommentMessage,
@@ -76,8 +83,8 @@ import type {
   TextAlign,
 } from "./model";
 import type {
-  OverlayRichTextBlock,
-  OverlayRichTextDocument,
+  OverlayTextBlock,
+  OverlayCalloutShape,
   OverlayTextShape,
 } from "./overlay-model";
 
@@ -427,7 +434,7 @@ describe("document feature dependency boundary", () => {
   it("owns graph label read models behind the public document feature boundary", () => {
     expectTypeOf(getGraphAxisLabelSpecText).toBeFunction();
     expectTypeOf(getGraphAxisLabelTextsByKey).toBeFunction();
-    expectTypeOf(getOverlayRichTextLabelText).toBeFunction();
+    expectTypeOf(getOverlayTextBlocksLabelText).toBeFunction();
   });
 
   it("owns snapshot operations behind the public document feature boundary", () => {
@@ -444,11 +451,34 @@ describe("document feature dependency boundary", () => {
     expect(legacyStoreSource).not.toMatch(/\b(?:function|const|let|class)\b/u);
   });
 
-  it("keeps overlay rich text narrower than the Tiptap adapter JSON type", () => {
-    expectTypeOf<OverlayTextShape["props"]["richText"]>().toEqualTypeOf<OverlayRichTextDocument>();
-    expectTypeOf<TiptapDoc>().not.toMatchTypeOf<OverlayRichTextDocument>();
-    expectTypeOf<OverlayRichTextBlock["type"]>().toEqualTypeOf<"paragraph" | "heading">();
-    expectTypeOf<OverlayRichTextBlock["children"]>().toEqualTypeOf<InlineNode[]>();
+  /**
+   * A shape's content is built from the body's own block types, not from a second model that
+   * mirrors them. The pin is a mutual assignment against those types: an alias that merely
+   * *looked* like them (a hand-written copy, or one that drifted by a field) is what this replaced.
+   *
+   * The membership itself is pinned too, in both directions. A shape holds prose, quotes, code and
+   * rules; it does not hold the page furniture that owns pagination — a box that breaks across
+   * pages, a column band, a numbered problem — because a shape is drawn on top of the page rather
+   * than being part of its structure.
+   */
+  it("stores the body's blocks in text shapes and stays narrower than the Tiptap adapter JSON", () => {
+    // Written out rather than restated through the alias: naming the alias on both sides would
+    // pin the type against itself and pass whatever the alias became.
+    expectTypeOf<OverlayTextShape["props"]["blocks"]>()
+      .toEqualTypeOf<(RichBlock | QuoteBlockNode | CodeBlockNode | DividerNode)[]>();
+    // The callout holds the same blocks and shares the same editor, so it moves with the text
+    // shape or not at all.
+    expectTypeOf<OverlayCalloutShape["props"]["blocks"]>()
+      .toEqualTypeOf<OverlayTextShape["props"]["blocks"]>();
+    expectTypeOf<OverlayTextBlock>()
+      .toEqualTypeOf<RichBlock | QuoteBlockNode | CodeBlockNode | DividerNode>();
+    expectTypeOf<RichBlock>().toMatchTypeOf<OverlayTextBlock>();
+    expectTypeOf<TiptapDoc>().not.toMatchTypeOf<OverlayTextBlock>();
+    expectTypeOf<OverlayTextBlock["type"]>()
+      .toEqualTypeOf<"heading" | "paragraph" | "list" | "quote" | "codeBlock" | "divider">();
+    expectTypeOf<BoxBlockNode>().not.toMatchTypeOf<OverlayTextBlock>();
+    expectTypeOf<LayoutSectionNode>().not.toMatchTypeOf<OverlayTextBlock>();
+    expectTypeOf<ProblemNode>().not.toMatchTypeOf<OverlayTextBlock>();
   });
 
   it("keeps the legacy SigmaDoc facade type-identical to canonical semantic primitives", () => {

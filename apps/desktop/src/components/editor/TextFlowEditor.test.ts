@@ -186,6 +186,44 @@ describe("SigmaDoc text identity", () => {
       '"Yu Mincho", serif',
     ]);
   });
+
+  it("assigns ids to quote, code, and divider blocks created by editor commands", () => {
+    // PM のコマンド (`toggleQuoteBlock` 等) が作るノードは sigmaDocId を持たない。
+    // 段組みのブロック配置は id で引くので、ここで配られないと配置されないまま
+    // 「潰れた編集面 root の原点 = 1 ページ目上端」に取り残される。
+    const schema = getSchema([
+      ...createRichTextEngineExtensions({ bodyBlocks: true }),
+      SigmaDocTextAttrs,
+    ]);
+    const doc = schema.nodes.doc.create(null, [
+      schema.nodes.paragraph.create(
+        { sigmaDocId: "p_lead", sigmaDocType: "paragraph" },
+        schema.text("前"),
+      ),
+      schema.nodes.quote.create(null, [
+        schema.nodes.paragraph.create(null, schema.text("引用")),
+      ]),
+      schema.nodes.codeBlock.create(null, schema.text("code")),
+      schema.nodes.divider.create(null),
+    ]);
+    const oldState = EditorState.create({ schema, doc });
+    const editTransaction = oldState.tr.insertText("あ", 1);
+    const editedState = oldState.apply(editTransaction);
+
+    const identityTransaction = appendSigmaDocTextIdentityTransaction(
+      [editTransaction],
+      oldState,
+      editedState,
+    );
+    expect(identityTransaction).not.toBeNull();
+
+    const nextState = editedState.apply(identityTransaction!);
+    expect(nextState.doc.child(0).attrs.sigmaDocId).toBe("p_lead");
+    expect(nextState.doc.child(1).attrs.sigmaDocId).toMatch(/^quote_/);
+    expect(nextState.doc.child(1).firstChild!.attrs.sigmaDocId).toMatch(/^p_/);
+    expect(nextState.doc.child(2).attrs.sigmaDocId).toMatch(/^code_/);
+    expect(nextState.doc.child(3).attrs.sigmaDocId).toMatch(/^divider_/);
+  });
 });
 
 describe("resolveManualTextPageBreakBlocks", () => {

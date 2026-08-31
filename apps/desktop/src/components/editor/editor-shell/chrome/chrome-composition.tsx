@@ -48,6 +48,7 @@ export function renderDocsComposition(parts: EditorChromeParts, t: Translate<"ch
       </EditorToolbar>
 
       {parts.importInput}
+      {parts.otherImportInput}
       {parts.imageInput}
     </header>
   );
@@ -97,6 +98,7 @@ export function renderRibbonComposition(parts: EditorChromeParts) {
         {parts.ribbonBody}
 
         {parts.importInput}
+        {parts.otherImportInput}
         {parts.imageInput}
       </header>
 

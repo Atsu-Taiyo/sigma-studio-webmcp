@@ -129,6 +129,28 @@ function listEntry(): Extract<AiEditInlinePreviewEntry, { kind: "operation" }> {
 }
 
 describe("AiEditInlinePreviewCard", () => {
+  it("renders a section number with the same prefix as heading previews", () => {
+    const entry: Extract<AiEditInlinePreviewEntry, { kind: "operation" }> = {
+      kind: "operation",
+      draft: {
+        operation: "replace",
+        summary: "章を更新",
+        targetId: "section-1",
+        replacementBlock: { type: "section", id: "section-1", title: "序章" },
+      },
+      operationIndex: 0,
+      operationCount: 1,
+      sessionSummary: "章を更新します",
+      headingNumber: "第1章",
+      headingNumbers: new Map([["section-1", "第1章"]]),
+    };
+    const html = renderToStaticMarkup(
+      <AiEditInlinePreviewCard entries={[entry]} providers={["claude"]} applying={false} />,
+    );
+
+    expect(html).toContain('<span class="heading-number-prefix">第1章 </span>序章');
+  });
+
   it("draws list markers with the same typography the applied document will use", () => {
     // 提案プレビューと適用結果でマーカーが食い違うと「提案 ≠ 適用」に戻る。
     const html = renderToStaticMarkup(
@@ -137,6 +159,7 @@ describe("AiEditInlinePreviewCard", () => {
 
     expect(html).toContain("--sigma-doc-list-marker-font-family:&quot;Yu Mincho&quot;, serif");
     expect(html).toContain("--sigma-doc-list-marker-font-size:18pt");
+    expect(html).toContain('class="print-list"');
     // 無印の項目は既定のまま (隣の項目の書体が漏れない)。
     expect(html.match(/data-list-marker-typography/g)).toHaveLength(1);
   });
@@ -430,7 +453,7 @@ describe("AiEditInlinePreviewCard", () => {
     expect(html).toContain("書き換え後のテキスト");
   });
 
-  it("renders a whole problem proposal as separate prompt and solution areas", () => {
+  it("renders a framed whole-problem proposal with the applied number and print-area structure", () => {
     const entry: AiEditInlinePreviewEntry = {
       kind: "operation",
       draft: {
@@ -446,6 +469,7 @@ describe("AiEditInlinePreviewCard", () => {
           hints: [],
           solution: [{ id: "next_solution", type: "paragraph", children: [{ type: "text", text: "新しい解答" }] }],
           answer: { type: "math", expected: "" },
+          frame: { enabled: true },
         },
       },
       operationIndex: 0,
@@ -457,12 +481,44 @@ describe("AiEditInlinePreviewCard", () => {
       <AiEditInlinePreviewCard entries={[entry]} providers={["chatgpt"]} applying={false} />,
     );
 
-    expect(html).toContain("ai-inline-preview-problem-layout");
+    expect(html).toContain("ai-inline-preview-paper");
+    expect(html).toContain("print-problem-area with-frame");
+    expect(html).toContain('class="print-problem-number"');
+    expect(html).toContain('class="print-problem-number" style="font-size:12pt">4</span>');
     expect(html).toContain('data-problem-area="prompt"');
     expect(html).toContain('data-problem-area="solution"');
-    expect(html).toContain("問4 問題文");
+    expect(html).not.toContain("ai-inline-preview-problem-area-label");
     expect(html).toContain("新しい問題文");
     expect(html).toContain("新しい解答");
+  });
+
+  it("renders a box proposal through the shared print renderer", () => {
+    const entry: AiEditInlinePreviewEntry = {
+      kind: "operation",
+      draft: {
+        operation: "replace",
+        summary: "囲みを追加",
+        targetId: "box_1",
+        replacementBlock: {
+          id: "box_1",
+          type: "boxBlock",
+          styleId: "itembox",
+          title: [{ type: "text", text: "要点" }],
+          blocks: [{ id: "box_body", type: "paragraph", children: [{ type: "text", text: "囲みの本文" }] }],
+        },
+      },
+      operationIndex: 0,
+      operationCount: 1,
+      sessionSummary: "囲みを追加します",
+    };
+
+    const html = renderToStaticMarkup(
+      <AiEditInlinePreviewCard entries={[entry]} providers={["chatgpt"]} applying={false} />,
+    );
+
+    expect(html).toContain("print-box-block");
+    expect(html).toContain('class="print-box-title"');
+    expect(html).toContain('class="print-paragraph"');
   });
 
   it("never renders an overlay update mutation inside a body-flow card", () => {
@@ -610,8 +666,9 @@ describe("groupAiEditPreviewEntries", () => {
     const html = renderToStaticMarkup(
       <AiEditInlinePreviewCard entries={entry ? [entry] : []} providers={["chatgpt"]} applying={false} />,
     );
-    expect(html).toContain(">問題文<");
-    expect(html).not.toContain("問12 問題文");
+    expect(html).toContain('data-problem-area="prompt"');
+    expect(html).toContain("元の問題文");
+    expect(html).not.toContain("print-problem-number");
   });
 
   it("keeps two different runs proposing edits at the same anchor as two separate cards", () => {

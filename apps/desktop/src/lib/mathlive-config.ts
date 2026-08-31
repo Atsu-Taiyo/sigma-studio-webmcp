@@ -23,6 +23,7 @@ export type InlineMathLiveFieldElement = HTMLElement & {
   mathVirtualKeyboardPolicy?: "auto" | "manual" | "sandboxed";
   menuItems?: readonly unknown[];
   popoverPolicy?: "auto" | "off";
+  smartFence?: boolean;
 };
 
 const SIGMA_MATHLIVE_MACRO_STYLE_ATTRIBUTE = "data-sigma-math-macro-styles";
@@ -57,6 +58,10 @@ export function configureInlineMathLiveField(
     ...environment.macroSet.mathLiveMacros,
   };
   mathField.popoverPolicy = "auto";
+  // 開き括弧を打った時点で閉じ括弧も入る MathLive 標準の挙動 (`\left(\right)` を作る)。
+  // 既定値に頼らず明示しておく。閉じ括弧が薄く出ないようにする CSS は
+  // `.inline-math-field { --smart-fence-opacity: 1 }` 側にある。
+  mathField.smartFence = true;
   try {
     mathField.menuItems = [];
     mathField.executeCommand?.("hideVirtualKeyboard");

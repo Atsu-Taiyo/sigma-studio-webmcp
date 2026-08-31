@@ -86,7 +86,7 @@ describe("descriptors the shape namespace has to answer for", () => {
   it("names every overlay mode status", () => {
     // `getModeStatus` は文言ではなく `labelId` を返す。id を足して辞書を忘れると
     // 画面に生キーが出るので、**宣言の全件**を回す (runtime 配列にしてあるのはこのため)。
-    expect(OVERLAY_MODE_STATUS_LABEL_IDS.length).toBe(20);
+    expect(OVERLAY_MODE_STATUS_LABEL_IDS.length).toBe(21);
     for (const locale of LOCALES) {
       const t = createTranslator(locale, "shape");
       for (const id of OVERLAY_MODE_STATUS_LABEL_IDS) {

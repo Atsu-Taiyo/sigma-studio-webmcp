@@ -1,6 +1,8 @@
 import type { Editor } from "@tiptap/core";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
+import { posAtClientPoint } from "@/components/editor/text-flow/pos-at-client-point";
+
 const CONTENT_EDITABLE_SELECTOR = "[contenteditable='true']";
 const DIRECT_CONTROL_SELECTOR = "input, textarea, select, button, math-field";
 const DRAG_SELECTION_THRESHOLD_PX = 2;
@@ -122,24 +124,9 @@ function getSideEdgePosition(editor: Editor, side: "left" | "right" | null, clie
 }
 
 function getPosAtClientPoint(editor: Editor, clientX: number, clientY: number): number | null {
-  const rect = editor.view.dom.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) {
-    return null;
-  }
-
-  const left = clamp(clientX, rect.left + 1, rect.right - 1);
-  const top = clamp(clientY, rect.top + 1, rect.bottom - 1);
-  return editor.view.posAtCoords({ left, top })?.pos ?? null;
+  return posAtClientPoint(editor.view, clientX, clientY);
 }
 
 function isPointInsideRect(point: ClientPoint, rect: DOMRect): boolean {
   return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (max < min) {
-    return min;
-  }
-
-  return Math.min(Math.max(value, min), max);
 }

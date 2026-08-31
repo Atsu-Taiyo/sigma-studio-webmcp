@@ -1,3 +1,4 @@
+import { overlayTextBlocksToInlineNodes } from "@/features/document";
 import { describe, expect, it } from "vitest";
 
 import type { OverlayGraphShape, OverlayShape } from "@/features/document";
@@ -30,6 +31,7 @@ describe("graph label layout", () => {
         return value;
       },
       createInlineMathId: () => `math_${inlineMathIndex += 1}`,
+      createBlockId: () => `p_${inlineMathIndex}`,
     };
     const graph = createTestGraph();
 
@@ -48,7 +50,7 @@ describe("graph label layout", () => {
     expect(annotation).toMatchObject({ annotationId: "annotation_a", shape: { id: "annotation_a", type: "text" } });
     expect(formula).toMatchObject({ curveId: "curve_f", shape: { id: "formula_f", type: "text" } });
     expect([axis, point, annotation, formula].map((entry) => (
-      entry.shape.props.richText.blocks[0]?.children.find((node) => node.type === "mathInline")?.id
+      overlayTextBlocksToInlineNodes(entry.shape.props.blocks).find((node) => node.type === "mathInline")?.id
     ))).toEqual(["math_1", "math_2", "math_3", "math_4"]);
     expect(measured).toEqual(expect.arrayContaining([
       { tex: "x", fontSizePt: 10 },

@@ -5,9 +5,6 @@ import {
   renderInlineContent as legacyRenderInlineContent,
 } from "@/components/editor/InlineContent";
 import {
-  OverlayRichTextPreview as LegacyOverlayRichTextPreview,
-} from "@/components/editor/OverlayRichTextPreview";
-import {
   InlineMathPreview as LegacyInlineMathPreview,
   MathPreview as LegacyMathPreview,
 } from "@/components/math/MathPreview";
@@ -18,7 +15,6 @@ import {
   InlineContent,
   InlineMathPreview,
   MathPreview,
-  OverlayRichTextPreview,
   renderInlineContent,
 } from ".";
 
@@ -28,7 +24,6 @@ describe("React rendering compatibility facades", () => {
     expect(legacyRenderInlineContent).toBe(renderInlineContent);
     expect(LegacyInlineMathPreview).toBe(InlineMathPreview);
     expect(LegacyMathPreview).toBe(MathPreview);
-    expect(LegacyOverlayRichTextPreview).toBe(OverlayRichTextPreview);
     expect(LegacyGraph2DPreview).toBe(Graph2DPreview);
   });
 });

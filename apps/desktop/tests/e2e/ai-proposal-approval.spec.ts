@@ -215,6 +215,18 @@ test("problem and solution proposals keep their page-area layout in the preview"
   await expect(previewDialog.locator(".ai-inline-preview-problem-area-label")).toHaveText("解答");
 });
 
+test("問題挿入プレビューが問題番号と枠線付きで描かれる", async ({ page }) => {
+  await setup(page, createDocument());
+
+  await startInlineRun(page, "para_a", "PROPOSAL PROBLEM 問題を追加して");
+  await closeInlineSurface(page);
+
+  const previewDialog = page.locator(".ai-inline-preview-dialog");
+  await expect(previewDialog).toBeVisible({ timeout: 20_000 });
+  await expect(previewDialog.locator(".print-problem-area.with-frame")).toBeVisible();
+  await expect(previewDialog.locator(".print-problem-number")).toHaveText("1");
+});
+
 test("問題文へのAI依頼中は、問題エリアにもロックのshimmerと停止ボタンが出る", async ({ page }) => {
   // 回帰: 問題ブロックは textFlow ユニットではないため BlockEditor 経路で描かれるが、
   // そこへ TextFlowEditPolicy が渡されていなかった。guard が無いと

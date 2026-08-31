@@ -1,17 +1,27 @@
 /** Controls whether inline fractions keep TeX sizing or use display-style fractions. */
 export type MathFractionSizing = "uniform" | "texDefault";
 
+export type HeadingNumberingStyle = "decimal" | "sectionSign" | "chapterJa";
+
+export interface HeadingNumberingConfig {
+  enabled: boolean;
+  style?: HeadingNumberingStyle;
+  depth?: 1 | 2 | 3;
+}
+
 export interface SigmaMetadata {
   title: string;
   source?: SigmaDocumentSourceMetadata;
   styleUnits?: SigmaDocumentStyleUnits;
   mathFractionSizing?: MathFractionSizing;
+  /** Display-only hierarchical numbering derived from document-order headings. */
+  headingNumbering?: HeadingNumberingConfig;
   /** File-scoped TeX macro declarations used by MathLive, KaTeX, and print output. */
   texPreamble?: string;
 }
 
 export interface SigmaDocumentSourceMetadata {
-  format?: "external-document" | "presentation";
+  format?: "classic-format" | "presentation";
   layoutMode?: "fixedOverlay";
   printFlowContent?: boolean;
   /** Import provenance. Descriptive only - never an input to layout or rendering. */

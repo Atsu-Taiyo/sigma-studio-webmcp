@@ -110,6 +110,24 @@ describe("rendering feature dependency boundary", () => {
     expect(drawingImports).toEqual([]);
   });
 
+  /**
+   * A shape's text is drawn by the body's own static block renderer, which lives in `components/`
+   * — so the file that mounts React components for the SVG export reaches into that layer, and it
+   * is the only one that may. Stated as an exhaustive list rather than a ban, so a second such
+   * import has to be argued for here instead of appearing quietly.
+   */
+  it("keeps the one components import in the export's React binding", () => {
+    const files = productionSourceFiles(new URL("./", import.meta.url));
+    const componentImporters = files.filter((file) => (
+      importSpecifiers(readFileSync(file, "utf8"))
+        .some((specifier) => pointsToProjectPath(specifier, "components"))
+    ));
+
+    expect(componentImporters.map((file) => file.split("/features/rendering/")[1])).toEqual([
+      "adapters/svg/react-static-renderers.tsx",
+    ]);
+  });
+
   it("keeps adapters on the rendering-core public entrypoint", () => {
     const files = productionSourceFiles(new URL("./adapters/", import.meta.url));
     const deepCoreImports = files.flatMap((file) => (
@@ -179,6 +197,10 @@ describe("rendering feature dependency boundary", () => {
       "@/features/rendering/adapters",
       "@/features/rendering/adapters/react",
       "@/features/rendering/adapters/svg",
+      // three は react/svg と並ぶ描画アダプタ。3D教材の動画書き出しがここから入る。
+      // 束ねる index を経由させるのは、three を引く経路をこの1つに保つため
+      // (`@/features/rendering/adapters` に載せると全消費者が three を抱える)。
+      "@/features/rendering/adapters/three",
       "@/features/rendering/core",
     ]);
     const renderingRoot = fileURLToPath(new URL("./", import.meta.url));
@@ -817,7 +839,7 @@ describe("rendering feature dependency boundary", () => {
     });
 
     it("keeps every HTML sink in a shape whose injected value can be read", () => {
-      // `{{ __html: x, ...spread }}` や計算プロパティは、DOM に入る値を構文木から
+      // `{{ __html: x, ...archiveead }}` や計算プロパティは、DOM に入る値を構文木から
       // 特定できない = 出所を検査できない。形の時点で落とす。
       const opaque = injectionSiteFiles().flatMap((file) => collectHtmlSinks(parseSource(file))
         .filter((sink) => sink.expression === null)

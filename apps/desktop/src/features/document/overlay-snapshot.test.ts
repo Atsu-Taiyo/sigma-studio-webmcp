@@ -1,3 +1,5 @@
+import { overlayTextBlocksToInlineNodes } from "./overlay-inline-projection";
+import { isOverlayShape } from "./overlay-validation";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -43,14 +45,10 @@ function textShape(id: string): OverlayTextShape {
     props: {
       w: 120,
       h: 24,
-      maxWidth: 180,
-      richText: {
-        blocks: [{
-          type: "paragraph",
+      blocks: [{
+          type: "paragraph", id: "overlay_snapshot_test_13",
           children: [{ type: "text", text: "式" }],
         }],
-      },
-      autoSize: false,
       color: "black",
       size: "m",
     },
@@ -272,7 +270,7 @@ describe("overlay CSS scalar sanitization", () => {
     }).shapes[0] as OverlayTextShape;
 
     expect(shape.props.color).toBe("black");
-    expect(shape.props.richText.blocks[0].children[0]).toMatchObject({ type: "text", text: "式" });
+    expect(overlayTextBlocksToInlineNodes(shape.props.blocks)[0]).toMatchObject({ type: "text", text: "式" });
   });
 
   it("replaces an injected callout color", () => {
@@ -288,7 +286,7 @@ describe("overlay CSS scalar sanitization", () => {
           h: 60,
           radius: 8,
           tail: { baseStart: { x: 0, y: 0 }, baseEnd: { x: 10, y: 0 }, tip: { x: 5, y: 20 } },
-          richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "注" }] }] },
+          blocks: [{ type: "paragraph", id: "overlay_snapshot_test_14", children: [{ type: "text", text: "注" }] }],
           color: INJECTED,
           size: "m",
           dash: "solid",
@@ -304,24 +302,23 @@ describe("overlay CSS scalar sanitization", () => {
 
   it("deletes injected inline node styling instead of inheriting it", () => {
     const input = textShape("shape_text");
-    input.props.richText = {
-      blocks: [{
-        type: "paragraph",
-        children: [{
-          type: "text",
-          text: "式",
-          color: INJECTED,
-          backgroundColor: INJECTED,
-          fontFamily: "serif;}html{display:none",
-        }],
+    input.props.blocks = [{
+      type: "paragraph",
+      id: "p_injected",
+      children: [{
+        type: "text",
+        text: "式",
+        color: INJECTED,
+        backgroundColor: INJECTED,
+        fontFamily: "serif;}html{display:none",
       }],
-    };
+    }];
 
-    const child = (normalizeOverlaySnapshot({
+    const child = overlayTextBlocksToInlineNodes((normalizeOverlaySnapshot({
       version: 1,
       shapes: [input],
       assets: {},
-    }).shapes[0] as OverlayTextShape).props.richText.blocks[0].children[0] as unknown as Record<string, unknown>;
+    }).shapes[0] as OverlayTextShape).props.blocks)[0] as unknown as Record<string, unknown>;
 
     expect(child).toMatchObject({ type: "text", text: "式" });
     expect("color" in child).toBe(false);
@@ -331,24 +328,23 @@ describe("overlay CSS scalar sanitization", () => {
 
   it("keeps inline styling the settings UI produces", () => {
     const input = textShape("shape_text");
-    input.props.richText = {
-      blocks: [{
-        type: "paragraph",
-        children: [{
-          type: "text",
-          text: "式",
-          color: "#1f2937",
-          backgroundColor: "rgb(255, 255, 0)",
-          fontFamily: "KaTeX_Main, \"M PLUS 1p\", serif",
-        }],
+    input.props.blocks = [{
+      type: "paragraph",
+      id: "p_settings",
+      children: [{
+        type: "text",
+        text: "式",
+        color: "#1f2937",
+        backgroundColor: "rgb(255, 255, 0)",
+        fontFamily: "KaTeX_Main, \"M PLUS 1p\", serif",
       }],
-    };
+    }];
 
-    expect((normalizeOverlaySnapshot({
+    expect(overlayTextBlocksToInlineNodes((normalizeOverlaySnapshot({
       version: 1,
       shapes: [input],
       assets: {},
-    }).shapes[0] as OverlayTextShape).props.richText.blocks[0].children[0]).toMatchObject({
+    }).shapes[0] as OverlayTextShape).props.blocks)[0]).toMatchObject({
       color: "#1f2937",
       backgroundColor: "rgb(255, 255, 0)",
       fontFamily: "KaTeX_Main, \"M PLUS 1p\", serif",
@@ -635,7 +631,23 @@ describe("overlay shape collection operations", () => {
     expect(appended[0]).toBe(first);
   });
 
-  it("patches props shallowly, removes text maxWidth with null, and strips undefined fields", () => {
+  it("takes any number for a block's bottom spacing and stores the normalized one", () => {
+    // The body's own schema normalizes rather than refuses, and a shape block is a body block: a
+    // paragraph copied out of the body must not be able to make the whole document unopenable.
+    const input = textShape("shape_text");
+    input.props.blocks = [{
+      type: "paragraph",
+      id: "p_space",
+      spaceAfterPx: 12.5,
+      children: [{ type: "text", text: "式" }],
+    }];
+
+    expect(isOverlayShape(input)).toBe(true);
+    const normalized = normalizeOverlaySnapshot({ version: 1, shapes: [input], assets: {} });
+    expect((normalized.shapes[0] as OverlayTextShape).props.blocks[0]).toMatchObject({ spaceAfterPx: 13 });
+  });
+
+  it("patches props shallowly and strips undefined fields", () => {
     const shape = textShape("shape_text");
 
     const [patched] = patchShape([shape], {
@@ -644,7 +656,6 @@ describe("overlay shape collection operations", () => {
       x: 30,
       parentId: undefined,
       props: {
-        maxWidth: null,
         color: "#2563eb",
       },
     });
@@ -655,12 +666,10 @@ describe("overlay shape collection operations", () => {
       props: {
         w: 120,
         h: 24,
-        autoSize: false,
         color: "#2563eb",
         size: "m",
       },
     });
-    expect(patched.type === "text" ? patched.props.maxWidth : "wrong-shape").toBeUndefined();
     expect(Object.hasOwn(patched, "parentId")).toBe(false);
   });
 
@@ -693,5 +702,63 @@ describe("overlay shape collection operations", () => {
 
     expect(next).toEqual([survivor]);
     expect(next[0]).toBe(survivor);
+  });
+});
+
+function chartShape(seriesColors: Record<string, string>): OverlayShape {
+  return {
+    id: "shape_chart",
+    type: "chartShape",
+    x: 20,
+    y: 40,
+    props: {
+      w: 360,
+      h: 220,
+      spec: {
+        version: 1,
+        kind: "bar",
+        orientation: "columns",
+        headerRow: true,
+        labelColumn: true,
+        title: "Scores",
+        legend: true,
+        seriesColors,
+      },
+      sourceTableShapeId: "shape_table",
+      dataSnapshot: {
+        labels: ["Class A"],
+        series: [{ id: "c2", name: "Math", values: [80] }],
+      },
+    },
+  };
+}
+
+describe("chart snapshot normalization", () => {
+  it("keeps every chart prop through normalization", () => {
+    const shape = chartShape({ c2: "#0083d5" });
+
+    expect(normalizeOverlaySnapshot({ version: 1, shapes: [shape], assets: {} }).shapes)
+      .toEqual([shape]);
+  });
+
+  it("drops only the series colour that is not a safe CSS colour", () => {
+    const normalized = normalizeOverlaySnapshot({
+      version: 1,
+      shapes: [chartShape({ c2: "#0083d5", c3: "url(javascript:alert(1))" })],
+      assets: {},
+    });
+    const spec = (normalized.shapes[0] as Extract<OverlayShape, { type: "chartShape" }>).props.spec;
+
+    expect(spec.seriesColors).toEqual({ c2: "#0083d5" });
+  });
+
+  it("keeps the chart itself when a series colour is rejected", () => {
+    const normalized = normalizeOverlaySnapshot({
+      version: 1,
+      shapes: [chartShape({ c2: "url(javascript:alert(1))" })],
+      assets: {},
+    });
+
+    expect(normalized.shapes).toHaveLength(1);
   });
 });

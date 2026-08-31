@@ -120,7 +120,7 @@ AI編集で渡す選択ブロックは位置と文脈の手掛かりであり、
 - アプリ実行時のみのapp-context読み取り: 選択ブロック・参照コンテキスト・挿入候補・前後ブロック・添付画像・メンション教材(fileId指定不要)
 - 書き込み提案: 本文/問題/表/グラフ/図形の挿入・型付き更新、素材挿入、および図形専用のvisual edit session系(begin/insert/replace/remove/render/inspect/review/propose/discard)
 
-図形、表、グラフはoverlayへ挿入します。通常の図形、補助線、矢印、模式図、注記は `insert_shape` を使います。図形内ラベルとテキスト注記は自動採寸します。円・楕円・矩形・三角形など標準kindで表せる図形はそのkindを使い、`polyline` で近似しないでください。`polyline` は折れ曲がった線、開いた経路、区分線、標準kindにない閉じた多角形など、線分列であること自体が意味を持つ場合だけ使います。閉じた多角形は `closed: true` を指定できます。問題内へ置く場合は `area: "lead" | "prompt" | "hints" | "solution"` を指定し、ツール側が対象rich blockへの `block` anchorを張ります。空のエリアへ挿入する場合は、空paragraphを作ってからanchorします。
+図形、表、グラフはoverlayへ挿入します。通常の図形、補助線、矢印、模式図、注記は `insert_shape` を使います。図形内ラベルの寸法はツール側で決めます。テキスト注記 (`kind:"text"`) は幅だけを指定し、高さは内容から導出されます。円・楕円・矩形・三角形など標準kindで表せる図形はそのkindを使い、`polyline` で近似しないでください。`polyline` は折れ曲がった線、開いた経路、区分線、標準kindにない閉じた多角形など、線分列であること自体が意味を持つ場合だけ使います。閉じた多角形は `closed: true` を指定できます。問題内へ置く場合は `area: "lead" | "prompt" | "hints" | "solution"` を指定し、ツール側が対象rich blockへの `block` anchorを張ります。空のエリアへ挿入する場合は、空paragraphを作ってからanchorします。
 
 図形の品質を確認しながら作る場合は、`begin_visual_edit_session` でscratch sessionを作り、`visual_insert_shape`、`render_visual_edit_session`、`inspect_visual_edit_session`、`review_visual_edit_session` を繰り返してから `propose_visual_edit_session` でpending proposalを作ります。`render_visual_edit_session` はアンカーブロック周辺のページコンテキストを含むPNG previewを返します(アプリのrender bridge経由、失敗時はresvgによるsvg-fallback)。元画像や参照図を再構成する場合は、previewを元画像と見比べ、足りない要素・位置ずれ・ラベル違い・余分な図形があれば `visual_replace_shape` / `visual_remove_shape` / `visual_insert_shape` で修正してから再度render/inspect/reviewします。円・楕円・円弧は標準kindで作り、多数点の折れ線で近似しません。`propose_visual_edit_session` は最後の変更後のrender、inspection合格、review合格がない場合に拒否されます。試行錯誤中はproposalを作らないため、不要な承認待ち提案が増えません。
 

@@ -1,11 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
 import { PDFDocument } from "pdf-lib";
 
+import webMcpChallengeDocument from "../../public/demo/webmcp-challenge.sigmadoc.json";
+import { getArrowheadTrimInStrokes } from "@/features/rendering/core";
 import { createBoxBlock } from "@/lib/box-blocks";
 import type { SigmaDocument } from "@/types/sigma-doc";
 
 import { installDesktopRuntimeMock } from "./desktop-runtime-mock";
 import { waitForPagedSurfaceSettled } from "./paged-surface";
+import { selectUiOptionInPage } from "./ui-select";
 
 /**
  * The contract from docs/pdf-parity-architecture.md: the PDF is the editor screen cut
@@ -242,19 +245,12 @@ async function openEditor(page: Page, document: SigmaDocument) {
 }
 
 /**
- * Drives the zoom select through the DOM rather than `selectOption`: the editor toolbar
- * re-renders continuously, so Playwright's actionability check never sees it hold still.
+ * Drives the zoom control through the DOM rather than Playwright clicks: the editor toolbar
+ * re-renders continuously, so the actionability check never sees it hold still. The control is the
+ * app's own `Select`, so the value is applied by opening it and clicking the option element.
  */
 async function setEditorZoom(page: Page, zoom: number) {
-  await page.evaluate((value) => {
-    const select = document.querySelector<HTMLSelectElement>('select[aria-label="ズーム"]');
-    if (!select) {
-      throw new Error("ズームのselectが見つかりません");
-    }
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-    setter?.call(select, String(value));
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  }, zoom);
+  await selectUiOptionInPage(page, "ズーム", String(zoom));
   await waitForStableLayout(page, ".page-canvas");
 }
 
@@ -362,6 +358,20 @@ async function runParity(page: Page, document: SigmaDocument, ids: string[]) {
   expect(Object.keys(editor).length).toBeGreaterThan(0);
   expectParity(editor, paged, ids);
 }
+
+test("WebMCP Challenge fixture matches the desktop PDF surface", async ({ page }) => {
+  test.setTimeout(120_000);
+  await runParity(page, webMcpChallengeDocument as SigmaDocument, [
+    "challenge_heading",
+    "challenge_intro",
+    "challenge_math",
+    "challenge_explanation",
+    "challenge_task",
+    "challenge_shape_note",
+    "challenge_graph",
+    "challenge_table",
+  ]);
+});
 
 test("本文が複数ページに渡っても、全ブロックが同じページの同じ位置に出る", async ({ page }) => {
   test.setTimeout(120_000);
@@ -807,17 +817,19 @@ test("新しい端点装飾が、編集画面と PDF 面で同じマーカーと
   const pagedMarkers = await readArrowheadMarkers(page);
   const pagedSpan = await readDrawnLineSpans(page);
 
-  // `refX` is 1.5 for both heads rather than their own tip (9 and 7): the line stops half a marker
-  // unit inside each head, and the marker moves back by the same amount so its point lands on the
-  // stored endpoint. A stale 9/7 here would mean the paper still draws the line past the tip.
+  // `refX` sits behind each head's own tip (9 and 7) by exactly what the line gave up, so the head's
+  // point lands on the stored endpoint. A stale 9/7 here would mean the paper still draws the line
+  // past the tip.
+  const diamondTrim = getArrowheadTrimInStrokes("diamond");
+  const triangleTrim = getArrowheadTrimInStrokes("triangle");
   expect(editorMarkers).toEqual([
-    "diamond-shape_heads-start|10|8|1.5|4|auto-start-reverse|M 1 4 L 5 1 L 9 4 L 5 7 Z|rgb(17, 24, 39)|none|3px|none",
-    "triangle-shape_heads-end|8|8|1.5|4|auto|M 1 1 L 7 4 L 1 7 Z|rgb(17, 24, 39)|none|3px|none",
+    `diamond-shape_heads-start|10|8|${9 - diamondTrim}|4|auto-start-reverse|M 1 4 L 5 1 L 9 4 L 5 7 Z|rgb(17, 24, 39)|none|3px|none`,
+    `triangle-shape_heads-end|8|8|${7 - triangleTrim}|4|auto|M 1 1 L 7 4 L 1 7 Z|rgb(17, 24, 39)|none|3px|none`,
   ]);
   expect(pagedMarkers).toEqual(editorMarkers);
 
-  // The ink itself: 7.5 + 5.5 marker units of a 3px stroke come off a 160px line.
-  expect(editorSpan).toEqual(["shape_heads|160|121"]);
+  // The ink itself: both heads' marker units of a 3px stroke come off a 160px line.
+  expect(editorSpan).toEqual([`shape_heads|160|${Math.round(160 - (diamondTrim + triangleTrim) * 3)}`]);
   expect(pagedSpan).toEqual(editorSpan);
 });
 
@@ -930,7 +942,9 @@ test("ズーム倍率を変えても紙面が動かない", async ({ page }) => 
   await openEditor(page, document);
   const at100 = await editorGeometrySnapshot(page);
 
-  for (const zoom of [50, 80, 150, 200]) {
+  // 80% は倍率の選択肢に無い。ネイティブ select に流し込んでいた頃は値が "" になり、
+  // 実際には下限の 10% が適用されていた。意図 (整数倍でない倍率) を保つ 75% に置き換える。
+  for (const zoom of [50, 75, 150, 200]) {
     await setEditorZoom(page, zoom);
     // Reading a box through a non-integer transform and dividing back out leaves a
     // sub-pixel remainder in the reported *size* — 150% reports widths ~0.6px off while

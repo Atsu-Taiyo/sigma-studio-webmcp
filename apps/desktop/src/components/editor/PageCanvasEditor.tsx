@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { ChevronRight, ClipboardPaste, Columns3, Copy, CornerDownRight, GripVertical, Maximize, MessageSquarePlus, Minus, MoreHorizontal, PackagePlus, Plus, Settings2, Trash2 } from "lucide-react";
+import { ChevronRight, ClipboardPaste, Columns3, Copy, CornerDownRight, GripVertical, Heading, Maximize, MessageSquarePlus, Minus, MoreHorizontal, PackagePlus, Plus, Settings2, Trash2 } from "lucide-react";
 import {
   Fragment,
   memo,
@@ -63,8 +63,11 @@ import {
   type TextFlowBoundaryDeleteRequest,
   type TextFlowBoxFragmentSourceLayout,
   type TextFlowChangeContext,
+  type TextFlowHeadingCommandRequest,
   type TextFlowMaterialInsertRequest,
+  type TextFlowBodyBlockCommandRequest,
   type TextFlowProblemCommandRequest,
+  type TextFlowReplaceOptions,
   type TextPageBreakRequestDetail,
 } from "@/components/editor/TextFlowEditor";
 import { scrollElementIntoCanvasView } from "@/components/editor/text-flow/caret-scroll";
@@ -86,6 +89,7 @@ import { TextRunSelectionOverlay } from "@/components/editor/text-flow/TextRunSe
 import type { TextFlowChangeDecorationState } from "@/components/tiptap/change-decoration";
 import {
   computeProblemAreaColumnFlow,
+  EDITOR_ZOOM_CHANGE_EVENT,
   getVisibleOverlayShapes,
   hasManualBreakInside,
   type OverlayPreviewStackLayer,
@@ -116,6 +120,7 @@ import {
   type ProblemAreaKind,
   type ProblemNode,
   type RichBlock,
+  type SigmaTableSpec,
   enablePageRunningRegion,
   getRunningRegionBoundsMm,
   getRunningRegionOverlaySize,
@@ -521,6 +526,7 @@ export interface PageCanvasEditorProps {
     previousIds: string[],
     nextBlocks: TextFlowBlock[],
     context?: TextFlowChangeContext,
+    options?: TextFlowReplaceOptions,
   ) => void;
   onPageLayoutChange: (layout: PageLayout, options?: PageLayoutChangeOptions) => void;
   onOverlayChange: (overlay: PageOverlay, options?: OverlayChangeOptions) => void;
@@ -530,6 +536,8 @@ export interface PageCanvasEditorProps {
   onMaterialSaveRequest?: (targetBlockId?: string | null) => void;
   onSelectionMaterialSaveRequest?: (blockIds: string[]) => void;
   onProblemCommand?: (request: TextFlowProblemCommandRequest) => boolean;
+  onBodyBlockCommand?: (request: TextFlowBodyBlockCommandRequest) => boolean;
+  onHeadingCommand?: (request: TextFlowHeadingCommandRequest) => boolean;
   /** Signals a content deletion so figures anchored to removed blocks can re-anchor and move up. */
   pendingDeletion: { revision: number; deletedIds: string[] } | null;
   /** Persists an automatic re-anchor without adding a separate undo entry (folds into the deletion). */
@@ -606,6 +614,8 @@ function PageCanvasEditorImpl({
   onMaterialSaveRequest,
   onSelectionMaterialSaveRequest,
   onProblemCommand,
+  onBodyBlockCommand,
+  onHeadingCommand,
   pendingDeletion,
   onReanchorOverlay,
   overlayCommandRequest,
@@ -667,10 +677,11 @@ function PageCanvasEditorImpl({
         // compositionstart で他ユニットの担当分だけ先に削除するため、前のチャンクが min を
         // 割った併合が合成中のエディタの key を消し、unmount で IME セッションごと落ちる。
         getFocusedTextRunUnitIds(),
+        pageDocument.metadata.headingNumbering,
       ),
     ),
     /* eslint-enable react-hooks/refs */
-    [pageDocument.content, pageDocument.docId],
+    [pageDocument.content, pageDocument.docId, pageDocument.metadata.headingNumbering],
   );
   const textRunGroupByUnitId = useMemo(
     () => assignTextRunGroupIds(units, textRunDocumentId),
@@ -788,6 +799,11 @@ function PageCanvasEditorImpl({
   const requestBoxSettings = useCallback((boxId: string) => {
     window.dispatchEvent(new CustomEvent(REQUEST_BOX_SETTINGS_EVENT, {
       detail: { boxId },
+    }));
+  }, []);
+  const requestBoxTitleEdit = useCallback((boxId: string) => {
+    window.dispatchEvent(new CustomEvent(REQUEST_BOX_SETTINGS_EVENT, {
+      detail: { boxId, focusTitle: true },
     }));
   }, []);
   const deleteBoxFromContextMenu = useCallback((boxId: string) => {
@@ -1112,6 +1128,45 @@ function PageCanvasEditorImpl({
   useLayoutEffect(() => {
     setFragmentTables(boxFragmentSourceLayouts, boxBlockFragmentLayouts);
   }, [boxBlockFragmentLayouts, boxFragmentSourceLayouts]);
+  /**
+   * 今この瞬間、断片へ分割されて描かれているブロックの id。
+   *
+   * 分割されたブロックの見た目 (正本のクリップ・続きの位置と高さ・その下の本文の位置) は
+   * **ページ割りの答えそのもの**なので、内容の変化だけを先に描くと「新しい内容 × 古い
+   * ページ割り」というどちらでもない状態がそのまま 1〜2 フレーム描かれる。打鍵経路が
+   * この集合に触るときだけ、描く前にページ割りを取り直す (`paginateBeforePaintRef`)。
+   */
+  const fragmentedBlockIdsRef = useRef<ReadonlySet<string>>(new Set());
+  useLayoutEffect(() => {
+    fragmentedBlockIdsRef.current = new Set(Object.keys(boxFragmentSourceLayouts));
+  }, [boxFragmentSourceLayouts]);
+  /** 次のレイアウトフェーズで、遅延ではなく同期でページ割りを取り直す予約。 */
+  const paginateBeforePaintRef = useRef(false);
+  /**
+   * この編集が「ページを跨ぎうるブロック」に触るか。
+   *
+   * - 既に分割されているブロックを含むユニットの編集: どこを打っても分割位置が動く。
+   * - 箱の中の編集: まだ分割されていなくても、この打鍵が分割の始まりになりうる。
+   *
+   * 箱の外の普通の段落はここに入らない (伸びた分だけ下へ動いて終わり、往復が無い)。
+   */
+  const editTouchesPageSplitBlock = useCallback((
+    previousIds: readonly string[],
+    nextBlocks: readonly TextFlowBlock[],
+    activeBlockId?: string | null,
+  ) => {
+    const fragmented = fragmentedBlockIdsRef.current;
+    if (previousIds.some((id) => fragmented.has(id))) {
+      return true;
+    }
+    if (!activeBlockId) {
+      return false;
+    }
+    return nextBlocks.some((block) => (
+      block.type === "boxBlock"
+      && (block.id === activeBlockId || bodyTextFlowBlockContainsId(block, activeBlockId))
+    ));
+  }, []);
 
   const layoutViewStateRef = useRef(layoutViewState);
   const [scrollVisiblePageRange, setVisiblePageRange] = useState<VisiblePageRange>(
@@ -2007,6 +2062,13 @@ function PageCanvasEditorImpl({
     scroller.scrollTop = Math.max(0, scroller.scrollTop + dTop * zoomScale);
   }, [bleed]);
 
+  // `--editor-zoom` scales the page stack with a transform, so nothing downstream is re-laid out
+  // and `ResizeObserver` stays silent. Canvases that must match the painted resolution (the live
+  // 3D view) learn about the new scale here.
+  useEffect(() => {
+    globalThis.dispatchEvent?.(new CustomEvent(EDITOR_ZOOM_CHANGE_EVENT, { detail: { zoom } }));
+  }, [zoom]);
+
   // When true, the next scheduled (deferred) recompute also refreshes
   // prevMeasureRef after it runs — used for the typing path so the pre-deletion
   // baseline stays current even though recompute happened after paint. The
@@ -2241,6 +2303,9 @@ function PageCanvasEditorImpl({
   } | null>(null);
 
   useLayoutEffect(() => {
+    // 予約はこのフェーズで必ず使い切る。持ち越すと、無関係な次のレンダーが同期計測を背負う。
+    const paginateBeforePaint = paginateBeforePaintRef.current;
+    paginateBeforePaintRef.current = false;
     const previous = structuralRecomputeDepsRef.current;
     const structuralChanged =
       !previous ||
@@ -2302,6 +2367,18 @@ function PageCanvasEditorImpl({
       // 印を立てるのは **実際に採用できたときだけ**。上の early return (採用しなかった場合)
       // では ResizeObserver が復旧経路として働くことを当てにしているので、そこは塞がない。
       flowWidthMeasuredBySyncRef.current = true;
+    } else if (paginateBeforePaint && recompute() === "measured") {
+      // 分割されたブロックに触った打鍵。ここだけは描く前にページ割りを取り直す。
+      //
+      // 遅延させると「新しい内容 × 古いページ割り」が 1〜2 フレーム描かれる: 箱がページ
+      // 下端をはみ出し、その下の本文が 1 行ぶん下がってから戻り、キャレットも 1 行だけ
+      // 跳ねる。普通のブロックにはこの往復が無い (伸びた分だけ下へ動いて終わる) ので、
+      // 「箱の外と同じ挙動」にするにはここを揃えるしかない。undo/redo の同期計測
+      // (上の structural 分岐) と同じ手で、同じ理由。
+      //
+      // 計測が採用されなかったときは従来どおり遅延パスへ落ちる (下の else と同じ)。
+      countPerformanceEvent("PageCanvasEditor.fragmentSyncRecompute");
+      prevMeasureRef.current = latestMeasureRef.current;
     } else {
       // Pure content edit (typing): let the keystroke paint immediately and bring
       // pagination up to date just after, coalescing rapid keystrokes into one
@@ -2416,7 +2493,16 @@ function PageCanvasEditorImpl({
     }
   }, []);
 
-  useEffect(() => {
+  /**
+   * 描く紙の窓。**レイアウトフェーズで**決める。
+   *
+   * ページ数が増えた瞬間 (箱や段落がページ境界を越えた打鍵) に、増えたページを rAF まで
+   * 待って描いていたので、「本文は次のページの位置へ動いたのに、その紙がまだ無い」
+   * フレームが 1 枚描かれていた — 本文が台紙の灰色の上に浮いて見える。ページ数は
+   * `layoutViewState` と同じコミットで決まっているので、窓もそこで揃える。
+   * スクロール・リサイズは従来どおり rAF で間引く。
+   */
+  useLayoutEffect(() => {
     const canvas = canvasRef.current;
     const scroller = canvas?.closest<HTMLElement>(".editor-canvas");
     if (!canvas || !scroller) {
@@ -2470,7 +2556,8 @@ function PageCanvasEditorImpl({
       frameId = window.requestAnimationFrame(updateRange);
     };
 
-    scheduleUpdate();
+    // 初回 (= ページ数・ページ高さ・ズームが変わった直後) だけは間引かずに解く。
+    updateRange();
     scroller.addEventListener("scroll", scheduleUpdate, { passive: true });
     window.addEventListener("resize", scheduleUpdate);
     return () => {
@@ -2692,6 +2779,9 @@ function PageCanvasEditorImpl({
     // ページを跨いで分割された箱の続き。分割位置が動くと箱の枠 (上流) まで動くので、
     // ユニット単位では言い切れない。全体を測り直す。
     markFullMeasureDirty();
+    // 続きを打っている間も分割位置は動く。描く前に取り直さないと、正本が伸びた 1 フレーム
+    // だけ下の本文が 1 行ぶん下がって戻る。
+    paginateBeforePaintRef.current = true;
     const selection = context?.selection;
     if (selection) {
       requestCaret(selection);
@@ -3355,8 +3445,19 @@ function PageCanvasEditorImpl({
     if (selection && shouldRestoreTextFlowSelectionAfterChange(previousIds, nextBlocks, selection, context)) {
       requestCaret(selection);
     }
-    onReplaceTextFlow(previousIds, nextBlocks, context);
-  }, [markUnitMeasureDirty, onReplaceTextFlow]);
+    // 段組みでは新しいブロックの位置を decoration (次の計測の答え) が決める。遅延計測に
+    // 載せると「配置の無いブロック」が 1〜2 フレーム描かれ、その間の打鍵でブラウザ自身の
+    // キャレット追従が紙面を 1 ページ目の原点 (潰れた編集面 root) へ飛ばす。新しいブロック
+    // が生まれる編集だけ、分割ブロックと同じく描く前にページ割りを取り直す。
+    const beforePaint = editTouchesPageSplitBlock(previousIds, nextBlocks, activeBlockId)
+      || (isColumnFlow && hasNewTopLevelBlockIds(previousIds, nextBlocks));
+    if (beforePaint) {
+      paginateBeforePaintRef.current = true;
+    }
+    // 同期でページ割りを取り直す打鍵は、描画も遅らせない。transition に載せると
+    // ProseMirror が書いた DOM だけが先に 1 フレーム描かれ、同期計測の意味が消える。
+    onReplaceTextFlow(previousIds, nextBlocks, context, beforePaint ? { immediateRender: true } : undefined);
+  }, [editTouchesPageSplitBlock, isColumnFlow, markUnitMeasureDirty, onReplaceTextFlow]);
 
   const updateProblemAreaBlocks = useCallback((
     problemId: string,
@@ -5023,6 +5124,7 @@ function PageCanvasEditorImpl({
                 >
                   <TextFlowWithInlineContent
                     blocks={unit.blocks}
+                    headingNumbers={unit.headingNumbers}
                     selectedId={selectedId}
                     textRunGroupId={textRunGroupByUnitId.get(unit.id)?.groupId}
                     textRunOrder={textRunGroupByUnitId.get(unit.id)?.order}
@@ -5053,6 +5155,9 @@ function PageCanvasEditorImpl({
                     enableSelectionFormatMenu={false}
                     enableProblemCommands
                     onProblemCommand={onProblemCommand}
+                    onBodyBlockCommand={onBodyBlockCommand}
+                    enableHeadingCommands
+                    onHeadingCommand={onHeadingCommand}
                     inlineContentByTargetId={flowInlineContentByTargetId}
                     changeDecorationState={textFlowChangeDecorationState}
                   />
@@ -5082,6 +5187,7 @@ function PageCanvasEditorImpl({
                   onCommentThreadSelect={onCommentThreadSelect}
                   materials={materials}
                   onMaterialInsert={handleMaterialInsert}
+                  onHeadingCommand={onHeadingCommand}
                   inlineContentByTargetId={flowInlineContentByTargetId}
                   changeDecorationState={textFlowChangeDecorationState}
                 />
@@ -5545,6 +5651,7 @@ function PageCanvasEditorImpl({
               onMaterialSaveRequest={onMaterialSaveRequest}
               onSelectionMaterialSaveRequest={onSelectionMaterialSaveRequest}
               boxId={problemContextMenuBox?.id}
+              onBoxTitleEditRequest={requestBoxTitleEdit}
               onBoxSettingsRequest={requestBoxSettings}
               onBoxCopy={onCopyBlock}
               onBoxDelete={deleteBoxFromContextMenu}
@@ -5633,6 +5740,7 @@ function PageCanvasEditorImpl({
             onMaterialSaveRequest={onMaterialSaveRequest}
             onSelectionMaterialSaveRequest={onSelectionMaterialSaveRequest}
             boxId={contextMenuBox?.id}
+            onBoxTitleEditRequest={requestBoxTitleEdit}
             onBoxSettingsRequest={requestBoxSettings}
             onBoxCopy={onCopyBlock}
             onBoxDelete={deleteBoxFromContextMenu}
@@ -5669,6 +5777,12 @@ function PageCanvasEditorImpl({
   );
 }
 
+/** 前回に無かったトップレベルブロック id を含むか (= 段組みで配置がまだ無いブロックが生まれる編集か)。 */
+function hasNewTopLevelBlockIds(previousIds: readonly string[], nextBlocks: readonly TextFlowBlock[]): boolean {
+  const known = new Set(previousIds);
+  return nextBlocks.some((block) => !known.has(block.id));
+}
+
 function TextFlowWithInlineContent({
   blocks,
   selectedId,
@@ -5684,6 +5798,7 @@ function TextFlowWithInlineContent({
   paginationMarkerLayouts,
   columnFlowBlockLayouts,
   boxFragmentSourceLayouts,
+  headingNumbers = {},
   syncFocusedContent = false,
   commentThreads,
   activeCommentThreadId,
@@ -5699,6 +5814,9 @@ function TextFlowWithInlineContent({
   enableBoxCommands = true,
   enableProblemCommands = false,
   onProblemCommand,
+  onBodyBlockCommand,
+  onHeadingCommand,
+  enableHeadingCommands = false,
   inlineContentByTargetId,
   changeDecorationState,
   textRunGroupId,
@@ -5722,6 +5840,7 @@ function TextFlowWithInlineContent({
   paginationMarkerLayouts?: Record<string, TextFlowColumnBlockLayout>;
   columnFlowBlockLayouts?: Record<string, TextFlowColumnBlockLayout>;
   boxFragmentSourceLayouts?: Record<string, TextFlowBoxFragmentSourceLayout>;
+  headingNumbers?: Readonly<Record<string, string>>;
   syncFocusedContent?: boolean;
   commentThreads: SigmaCommentThread[];
   activeCommentThreadId: string | null;
@@ -5747,6 +5866,9 @@ function TextFlowWithInlineContent({
   enableBoxCommands?: boolean;
   enableProblemCommands?: boolean;
   onProblemCommand?: (request: TextFlowProblemCommandRequest) => boolean;
+  onBodyBlockCommand?: (request: TextFlowBodyBlockCommandRequest) => boolean;
+  onHeadingCommand?: (request: TextFlowHeadingCommandRequest) => boolean;
+  enableHeadingCommands?: boolean;
   inlineContentByTargetId: ReadonlyMap<string, readonly PageCanvasInlineContent[]>;
   changeDecorationState?: TextFlowChangeDecorationState;
   textRunGroupId?: string;
@@ -5805,6 +5927,7 @@ function TextFlowWithInlineContent({
         paginationMarkerLayouts={stablePaginationMarkerLayouts}
         columnFlowBlockLayouts={stableColumnFlowBlockLayouts}
         boxFragmentSourceLayouts={stableBoxFragmentSourceLayouts}
+        headingNumbers={headingNumbers}
         syncFocusedContent={syncFocusedContent}
         commentThreads={stableCommentThreads}
         activeCommentThreadId={activeCommentThreadId}
@@ -5820,6 +5943,9 @@ function TextFlowWithInlineContent({
         enableBoxCommands={enableBoxCommands}
         enableProblemCommands={enableProblemCommands}
         onProblemCommand={onProblemCommand}
+        onBodyBlockCommand={onBodyBlockCommand}
+        enableHeadingCommands={enableHeadingCommands}
+        onHeadingCommand={onHeadingCommand}
         changeDecorationState={changeDecorationState}
         editPolicy={textFlowEditPolicy}
         textRunGroupId={textRunGroupId}
@@ -5852,6 +5978,7 @@ function TextFlowWithInlineContent({
             paginationMarkerLayouts={pickTextFlowColumnBlockLayouts(part.blocks, paginationMarkerLayouts)}
             columnFlowBlockLayouts={pickTextFlowColumnBlockLayouts(part.blocks, columnFlowBlockLayouts)}
             boxFragmentSourceLayouts={pickTextFlowBoxFragmentSourceLayouts(part.blocks, boxFragmentSourceLayouts)}
+            headingNumbers={headingNumbers}
             syncFocusedContent={syncFocusedContent}
             commentThreads={stableCommentThreads}
             activeCommentThreadId={activeCommentThreadId}
@@ -5867,6 +5994,9 @@ function TextFlowWithInlineContent({
             enableBoxCommands={enableBoxCommands}
             enableProblemCommands={enableProblemCommands}
             onProblemCommand={onProblemCommand}
+            onBodyBlockCommand={onBodyBlockCommand}
+            enableHeadingCommands={enableHeadingCommands}
+            onHeadingCommand={onHeadingCommand}
             changeDecorationState={changeDecorationState}
             editPolicy={textFlowEditPolicy}
             textRunGroupId={textRunGroupId}
@@ -6284,6 +6414,7 @@ function LayoutSectionFlowUnit({
   onCommentThreadSelect,
   materials,
   onMaterialInsert,
+  onHeadingCommand,
   inlineContentByTargetId,
   changeDecorationState,
 }: {
@@ -6316,6 +6447,7 @@ function LayoutSectionFlowUnit({
   onCommentThreadSelect?: (threadId: string) => void;
   materials: MaterialItem[];
   onMaterialInsert?: (request: TextFlowMaterialInsertRequest) => void;
+  onHeadingCommand?: (request: TextFlowHeadingCommandRequest) => boolean;
   inlineContentByTargetId: ReadonlyMap<string, readonly PageCanvasInlineContent[]>;
   changeDecorationState?: TextFlowChangeDecorationState;
 }) {
@@ -6404,6 +6536,7 @@ function LayoutSectionFlowUnit({
       >
         <TextFlowWithInlineContent
           blocks={unit.blocks}
+          headingNumbers={unit.headingNumbers}
           selectedId={selectedId}
           mathFractionSizing={mathFractionSizing}
           historyRevision={historyRevision}
@@ -6429,6 +6562,8 @@ function LayoutSectionFlowUnit({
           onMaterialInsert={onMaterialInsert}
           enableSelectionFormatMenu={false}
           enableBoxCommands
+          enableHeadingCommands={!isProblemAreaSection}
+          onHeadingCommand={onHeadingCommand}
           inlineContentByTargetId={inlineContentByTargetId}
           changeDecorationState={changeDecorationState}
           textRunGroupId={textRunAssignment?.groupId}
@@ -6815,6 +6950,7 @@ function BlockContextMenuItems({
   onMaterialSaveRequest,
   onSelectionMaterialSaveRequest,
   boxId,
+  onBoxTitleEditRequest,
   onBoxSettingsRequest,
   onBoxCopy,
   onBoxDelete,
@@ -6841,6 +6977,7 @@ function BlockContextMenuItems({
   onMaterialSaveRequest?: (targetBlockId?: string | null) => void;
   onSelectionMaterialSaveRequest?: (blockIds: string[]) => void;
   boxId?: string | null;
+  onBoxTitleEditRequest?: (boxId: string) => void;
   onBoxSettingsRequest?: (boxId: string) => void;
   onBoxCopy?: (boxId: string) => void;
   onBoxDelete?: (boxId: string) => void;
@@ -6934,6 +7071,19 @@ function BlockContextMenuItems({
             </button>
           )}
         </>
+      )}
+      {boxId && onBoxTitleEditRequest && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onBoxTitleEditRequest(boxId);
+            onClose();
+          }}
+        >
+          <Heading size={15} />
+          <span>{tEditor("pageMenu.boxEditTitle")}</span>
+        </button>
       )}
       {boxId && onBoxSettingsRequest && (
         <button
@@ -7932,6 +8082,28 @@ function OverlayPreview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pinnedKey, resolvedView, stackLayer, visiblePageRange],
   );
+  /**
+   * The table each chart reads. Built from `resolvedView.shapes` — every shape, not the visible
+   * window — because a chart on one page routinely references a table on another.
+   *
+   * This is the ordinary reading view (it mounts whenever overlay editing is off), so omitting it
+   * would leave the on-screen chart frozen on its snapshot while print, PDF and the SVG export drew
+   * the live table: exactly the screen-vs-print divergence this feature exists to avoid.
+   */
+  const chartSourceTables = useMemo(() => {
+    const byChart = new Map<string, SigmaTableSpec>();
+    for (const shape of resolvedView.shapes) {
+      if (shape.type !== "chartShape" || !shape.props.sourceTableShapeId) {
+        continue;
+      }
+      const table = resolvedView.shapeById.get(shape.props.sourceTableShapeId);
+      if (table?.type === "tableShape") {
+        byChart.set(shape.id, table.props.table);
+      }
+    }
+    return byChart;
+  }, [resolvedView]);
+
   // Ghosts are a separate, non-interactive presentation layer and remain
   // visible while the interactive canvas owns the persisted shapes.
   const visibleGhostShapes = ghostShapes ?? [];
@@ -7952,6 +8124,7 @@ function OverlayPreview({
           key={shape.id}
           shape={shape}
           assets={resolvedView.assets}
+          chartSourceTable={chartSourceTables.get(shape.id) ?? null}
           diffClassName={diffShapeClassNames?.get(shape.id)}
           decoration={shapeDecorations?.get(shape.id) ?? null}
         />
@@ -7969,6 +8142,7 @@ function OverlayPreview({
           key={key}
           shape={shape}
           assets={assets}
+          chartSourceTable={chartSourceTables.get(shape.id) ?? null}
           diffClassName={className}
         />
       ))}

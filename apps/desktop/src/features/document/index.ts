@@ -5,7 +5,9 @@ export {
   resolveDocumentFontFamily,
 } from "./body-font";
 export * from "./application";
+export * from "./chart-data";
 export * from "./graph-fill-style";
+export * from "./graph3d-validation";
 export * from "./validation-error";
 export * from "./graph-label-read-model";
 export {
@@ -14,12 +16,26 @@ export {
   normalizeOrderedListMarkerStyle,
   PROBLEM_AREA_ORDER,
 } from "./model/blocks";
+export {
+  DEFAULT_GRAPH3D_AXIS_COLORS,
+  GRAPH3D_AXIS_END_STYLES,
+  getGraph3DAxisColors,
+  resolveGraph3DDimensionEndStyle,
+} from "./model/graph3d";
+export { CHART_SERIES_FALLBACK_COLOR, CHART_SERIES_PALETTE } from "./model/chart";
+export {
+  evaluateTableFormulas,
+  getTableCellDisplayNodes,
+  getTableCellFormulaResult,
+  getTableCellFormulaSource,
+  TABLE_FORMULA_ERROR_COLOR,
+} from "./model/table-formula";
+export { getTableCellMatrix } from "./model/table-grid";
 export { getCommentAnchorCandidateKey, getCommentAnchorKey } from "./model/comments";
 export { inlineNodesToPlainText } from "./model/rich-text";
 export * from "./overlay-graph-migration";
 export * from "./overlay-group-normalization";
 export * from "./overlay-inline-projection";
-export * from "./overlay-migrations";
 export * from "./overlay-rich-text";
 export * from "./overlay-rich-text-format";
 export * from "./overlay-snapshot";
@@ -27,8 +43,8 @@ export {
   isBaseOverlaySnapshot,
   isOverlayAsset,
   isOverlayExtensions,
-  isOverlayRichTextBlock,
-  isOverlayRichTextDocument,
+  isOverlayTextBlock,
+  isOverlayTextBlocks,
   isOverlayShape,
   isValidOverlaySnapshot,
 } from "./overlay-validation";

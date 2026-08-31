@@ -2,28 +2,33 @@
 
 import { Extension, Node as TiptapNodeExtension, type Editor as TiptapEditor } from "@tiptap/core";
 import { Fragment, Slice, type Mark as ProseMirrorMark, type Node as ProseMirrorModelNode } from "@tiptap/pm/model";
-import { NodeSelection, Plugin, PluginKey, TextSelection, type EditorState, type Selection as ProseMirrorSelection, type Transaction } from "@tiptap/pm/state";
+import { NodeSelection, Plugin, PluginKey, Selection, TextSelection, type EditorState, type Selection as ProseMirrorSelection, type Transaction } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import Placeholder from "@tiptap/extension-placeholder";
-import { Copy, ListChevronsUpDown, Minus, Moon, Plus, Settings2, Sun, Trash2, Type, X } from "lucide-react";
+import { Copy, Heading, ListChevronsUpDown, Minus, Moon, Plus, Settings2, Sun, Trash2, Type, X } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 
 import {
+  flushDeferredCaretScroll,
   getCaretSurfaceBand,
   getCaretZoomScale,
   scrollCaretIntoView,
 } from "@/components/editor/text-flow/caret-scroll";
 import {
+  caretAtTextblockEdgeLine,
   focusCaretAddress,
+  moveCaretHorizontally,
   moveCaretVertically,
   registerCaretSurface,
   updateCaretSurfaceFacets,
   type CaretSurfaceFacets,
 } from "@/components/editor/text-flow/caret-router";
+import { posAtClientPoint } from "@/components/editor/text-flow/pos-at-client-point";
 import { BoxSettingsDialog } from "@/components/editor/BoxSettingsDialog";
 import { MaterialContentPreview } from "@/components/editor/MaterialPreview";
+import { Select } from "@/components/ui/Select";
 import type { TextFlowChangeDecorationState } from "@/components/tiptap/change-decoration";
 import {
   EditGuardExtension,
@@ -43,6 +48,7 @@ import {
 // `refreshPageBreakGaps` (個別 dispatch) は使わない: 装飾の更新は 1 本の transaction に
 // まとめてあるので、meta キー (`paginationGapKey`) だけを取る。
 import { PageBreakGapExtension, paginationGapKey, type PageBreakMarkerLayout } from "@/components/tiptap/page-break-gap-extension";
+import { HeadingNumberingExtension, headingNumberingKey } from "@/components/tiptap/heading-numbering-extension";
 import { createRichTextEngineExtensions } from "@/components/tiptap/rich-text-engine";
 import { CodeBlockActionExtension } from "@/components/tiptap/code-block-action-extension";
 import { useMathEnvironment } from "@/features/rendering/adapters/react";
@@ -83,6 +89,11 @@ import {
   subscribeBlockSpaceAfterPreview,
 } from "@/components/editor/text-flow/block-space-after-preview";
 import { createSpaceAfterPreviewDecorations } from "@/components/editor/text-flow/space-after-preview-decorations";
+import {
+  applyRememberedBoxFrame,
+  forgetRememberedBoxFrame,
+  rememberBoxFramePatch,
+} from "@/lib/remembered-box-style";
 import { createId } from "@/lib/id";
 import {
   BLOCK_SPACE_AFTER_CSS_VARIABLE,
@@ -97,6 +108,7 @@ import {
   type BoxBlockNode,
   type BoxFrameSpec,
   type CodeBlockTheme,
+  type InlineNode,
   type LineHeight,
   type SigmaCommentThread,
 } from "@/features/document";
@@ -105,7 +117,10 @@ import { materialMatchesQuery } from "@/lib/materials";
 import { countDecorationBlockWalk } from "@/components/tiptap/decoration-walk-metrics";
 import { countPerformanceEvent, measurePerformance } from "@/lib/performance";
 import {
+  inlineNodesToTiptapNodes,
+  tiptapNodesToInlineNodes,
   type TiptapDoc,
+  type TiptapNode,
 } from "@/lib/tiptap-adapter";
 import {
   cloneTextFlowBlocksForPaste,
@@ -147,6 +162,7 @@ import {
   shouldUseDocumentNextBlockForPageBreak,
   textFlowBlockAttributeSignature,
   textFlowBlocksContainId,
+  textFlowCommandNameMatchRank,
   type ManualTextPageBreakSelection,
   type TextFlowBlock,
   type TextFlowBlockKind,
@@ -233,6 +249,7 @@ export type {
   ManualTextPageBreakResult,
   ManualTextPageBreakSelection,
   TextFlowBlock,
+  TextFlowBodyBlockCommandRequest,
   TextFlowBoundaryDeleteRequest,
   TextFlowBoxCommandRequest,
   TextFlowBoxFragmentSourceLayout,
@@ -241,6 +258,8 @@ export type {
   TextFlowEditorProps,
   TextFlowMaterialInsertRequest,
   TextFlowProblemCommandRequest,
+  TextFlowHeadingCommandRequest,
+  TextFlowReplaceOptions,
   TextPageBreakRequestDetail,
 } from "./text-flow/types";
 
@@ -276,6 +295,8 @@ function boxActionLabel(): string {
 }
 
 const MAX_BOX_COMMAND_CANDIDATES = 6;
+/** 本文ブロック候補が無いときに渡す不変配列 (毎回新しい `[]` を作ると useMemo が毎回外れる)。 */
+const EMPTY_BLOCK_COMMAND_IDS: readonly string[] = [];
 const BOX_ACTION_DIALOG_WIDTH = 188;
 const BOX_ACTION_DIALOG_HEIGHT = 180;
 const BOX_ACTION_DIALOG_MARGIN = 12;
@@ -297,6 +318,54 @@ function buildBoxCommandDefinitions(t: Translate<"editor">): TextFlowCommandDefi
   }));
 }
 
+/**
+ * 本文ブロック (引用・コード・区切り線) の `/` コマンド。囲み枠と同じ一覧に並べる。
+ *
+ * `id` は**そのままブロック種別**として扱う ({@link insertBodyBlockCommandFromQuery})。
+ * 打つ文字列 (`commandName`) は言語ごとに変わるので、分岐に使えるのは id だけ。
+ */
+const BODY_BLOCK_COMMAND_KINDS = ["quote", "codeBlock", "divider"] as const;
+
+type BodyBlockCommandKind = (typeof BODY_BLOCK_COMMAND_KINDS)[number];
+
+function bodyBlockCommandId(kind: BodyBlockCommandKind): string {
+  return `insert.${kind}`;
+}
+
+function bodyBlockCommandKindFromId(id: string): BodyBlockCommandKind | null {
+  return BODY_BLOCK_COMMAND_KINDS.find((kind) => bodyBlockCommandId(kind) === id) ?? null;
+}
+
+function buildBodyBlockCommandDefinitions(t: Translate<"editor">): TextFlowCommandDefinition[] {
+  return BODY_BLOCK_COMMAND_KINDS.map((kind) => ({
+    id: bodyBlockCommandId(kind),
+    // コマンド名は打つ文字列そのもの。英語 UI では英語で打てないと使えない。
+    commandName: t(`slash.block.${kind}.command` as never) as string,
+    displayName: t(`slash.block.${kind}.displayName` as never) as string,
+    description: t(`slash.block.${kind}.description` as never) as string,
+    aliases: (t(`slash.block.${kind}.aliases` as never) as string).split(" ").filter(Boolean),
+  }));
+}
+
+/**
+ * いま置ける本文ブロック。置けない物を一覧に出すと「選んでも何も起きない」候補になるので、
+ * キャレットの位置から先に絞る (引用の中の引用、コードの中のコードは作れない)。
+ */
+function getAvailableBodyBlockCommandIds(state: EditorState): string[] {
+  const { $from } = state.selection;
+  const ids: string[] = [];
+  if (state.schema.nodes.quote && findAncestorNodeDepth($from, "quote") < 0) {
+    ids.push(bodyBlockCommandId("quote"));
+  }
+  if (state.schema.nodes.codeBlock && $from.parent.type.name !== "codeBlock") {
+    ids.push(bodyBlockCommandId("codeBlock"));
+  }
+  if (state.schema.nodes.divider) {
+    ids.push(bodyBlockCommandId("divider"));
+  }
+  return ids;
+}
+
 function buildProblemCommandDefinition(t: Translate<"editor">): TextFlowCommandDefinition {
   return {
     id: "insert.problem",
@@ -308,12 +377,30 @@ function buildProblemCommandDefinition(t: Translate<"editor">): TextFlowCommandD
   };
 }
 
+function buildHeadingCommandDefinitions(t: Translate<"editor">): Array<TextFlowCommandDefinition & { level: 1 | 2 | 3 }> {
+  const headings = [
+    { level: 1, key: "heading1" },
+    { level: 2, key: "heading2" },
+    { level: 3, key: "heading3" },
+  ] as const;
+  return headings.map(({ level, key }) => ({
+    id: `insert.heading.${level}`,
+    level,
+    commandName: t(`slash.${key}.command`),
+    displayName: t(`slash.${key}.displayName`),
+    description: t(`slash.${key}.description`),
+    aliases: (t(`slash.${key}.aliases`) as string).split(" ").filter(Boolean),
+  }));
+}
+
 interface ActiveSlashCommandQuery {
   blockId: string;
   from: number;
   to: number;
   query: string;
   canInsertBox: boolean;
+  /** いまのキャレット位置で置ける本文ブロックの id。空なら本文ブロックは出さない。 */
+  availableBlockCommandIds: string[];
   rect: {
     bottom: number;
     left: number;
@@ -334,6 +421,9 @@ interface BoxSettingsDialogState {
   boxId: string;
   styleId: string;
   frame?: BoxFrameSpec;
+  title: InlineNode[];
+  /** ⋯メニューの「タイトルを編集…」から開いたときだけ true。 */
+  focusTitle: boolean;
 }
 
 interface CodeBlockSettingsPopoverState {
@@ -355,7 +445,9 @@ interface TextFormatContextMenuState {
 
 type SlashCommandCandidate =
   | { kind: "box"; box: TextFlowCommandDefinition }
+  | { kind: "block"; block: TextFlowCommandDefinition }
   | { kind: "problem"; problem: TextFlowCommandDefinition }
+  | { kind: "heading"; heading: TextFlowCommandDefinition & { level: 1 | 2 | 3 } }
   | { kind: "material"; material: MaterialItem };
 
 interface SelectedTextBlockOptions {
@@ -815,26 +907,35 @@ export function appendSigmaDocTextIdentityTransaction(
     nextType: string;
   }> = [];
 
-  // id を配るのは段落/見出しだけ。その中身 (テキスト・数式) に降りても用は無いので
-  // 降りない — 打鍵のたびに本文の全ノードを歩くのはここだった。
+  // id を配るのは本文のブロック (段落/見出し/引用/コード/区切り線) だけ。その中身
+  // (テキスト・数式) に降りても用は無いので降りない — 打鍵のたびに本文の全ノードを
+  // 歩くのはここだった。
+  //
+  // 引用・コード・区切り線を外すと、PM のコマンド (`toggleQuoteBlock` 等) が作った
+  // ノードが id 無しのまま残る。段組みのブロック配置は id で引くので、id が付くまで
+  // そのブロックだけ配置されず「潰れた編集面 root の原点 = 1 ページ目上端」に取り残される。
   countDecorationBlockWalk();
   newState.doc.descendants((node, pos, parent, index) => {
-    if (node.type.name !== "paragraph" && node.type.name !== "heading") {
+    const typeName = node.type.name;
+    const isIdentityTarget = typeName === "paragraph" || typeName === "heading"
+      || typeName === "quote" || typeName === "codeBlock" || typeName === "divider";
+    if (!isIdentityTarget) {
       // 入れ子のリスト項目や枠の中に段落があるので、構造には降り続ける。
       return !node.isTextblock && !node.isLeaf;
     }
 
     const currentType =
-      typeof node.attrs.sigmaDocType === "string" ? node.attrs.sigmaDocType : node.type.name;
+      typeof node.attrs.sigmaDocType === "string" ? node.attrs.sigmaDocType : typeName;
     const isListItemLead = parent?.type.name === "listItem" && index === 0;
     textNodes.push({
       node,
       pos,
       currentId: typeof node.attrs.sigmaDocId === "string" ? node.attrs.sigmaDocId : "",
       currentType,
-      nextType: isListItemLead ? "listItem" : currentType === "section" && node.type.name === "heading" ? "section" : node.type.name,
+      nextType: isListItemLead ? "listItem" : currentType === "section" && typeName === "heading" ? "section" : typeName,
     });
-    return false;
+    // 引用は中に段落を持つ入れ物なので、中の id も配るために降り続ける。
+    return typeName === "quote";
   });
 
   const textNodeCountById = new Map<string, number>();
@@ -1259,6 +1360,7 @@ function TextFlowEditorImpl({
   paginationMarkerLayouts,
   columnFlowBlockLayouts,
   boxFragmentSourceLayouts,
+  headingNumbers = {},
   boxFragmentReplicaId,
   boxFragmentReplicaIndex,
   syncFocusedContent = false,
@@ -1278,6 +1380,9 @@ function TextFlowEditorImpl({
   onBoxCommand,
   enableProblemCommands = false,
   onProblemCommand,
+  onBodyBlockCommand,
+  enableHeadingCommands = false,
+  onHeadingCommand,
   formatTarget = "document",
   changeDecorationState,
   editPolicy,
@@ -1326,9 +1431,16 @@ function TextFlowEditorImpl({
   const onMaterialInsertRef = useRef(onMaterialInsert);
   const onBoxCommandRef = useRef(onBoxCommand);
   const onProblemCommandRef = useRef(onProblemCommand);
+  const onBodyBlockCommandRef = useRef(onBodyBlockCommand);
+  const onHeadingCommandRef = useRef(onHeadingCommand);
   const openCodeBlockSettingsRef = useRef<(codeBlockId: string, button: HTMLButtonElement) => void>(() => {});
   const codeBlockActionLabelRef = useRef(t("codeBlock.settings"));
   const slashCommandQueryRef = useRef<ActiveSlashCommandQuery | null>(null);
+  /**
+   * `useEditor` の中 (editorProps.handleKeyDown) からは `editor` をまだ参照できないので、
+   * `/` から Tiptap のコマンドを呼ぶためにインスタンスを ref で持ち回る。
+   */
+  const tiptapEditorRef = useRef<TiptapEditor | null>(null);
   const editGuardsByBlockId = useMemo(() => {
     const guards = new Map<string, TextFlowEditGuard>();
     for (const guard of editPolicy?.guards ?? []) {
@@ -1423,6 +1535,7 @@ function TextFlowEditorImpl({
   }, [markerLabelOf]);
   const paginationMarkerLayoutsRef = useRef<Record<string, PageBreakMarkerLayout>>(paginationMarkerLayouts ?? {});
   const columnFlowBlockLayoutsRef = useRef<Record<string, TextFlowColumnBlockLayout>>(columnFlowBlockLayouts ?? {});
+  const headingNumbersRef = useRef<Readonly<Record<string, string>>>(headingNumbers);
   const boxFragmentSourceLayoutsRef = useRef<Record<string, TextFlowBoxFragmentSourceLayout>>(boxFragmentSourceLayouts ?? {});
   const commentThreadsRef = useRef(commentThreads);
   const activeCommentThreadIdRef = useRef(activeCommentThreadId);
@@ -1437,6 +1550,13 @@ function TextFlowEditorImpl({
   );
   const getPageBreakMarkerLayouts = useCallback(() => paginationMarkerLayoutsRef.current, []);
   const getColumnFlowBlockLayouts = useCallback(() => columnFlowBlockLayoutsRef.current, []);
+  const getHeadingNumbers = useCallback(() => headingNumbersRef.current, []);
+  const getHeadingNumberLayoutKey = useCallback((blockId: string) => {
+    const layout = columnFlowBlockLayoutsRef.current[blockId];
+    return layout
+      ? `${Math.round(layout.x)}:${Math.round(layout.y)}:${Math.round(layout.width)}`
+      : "flow";
+  }, []);
   const getBoxFragmentSourceLayouts = useCallback(() => boxFragmentSourceLayoutsRef.current, []);
   const [slashCommandQuery, setSlashCommandQuery] = useState<ActiveSlashCommandQuery | null>(null);
   const [slashCommandActiveIndex, setSlashCommandActiveIndex] = useState(0);
@@ -1452,6 +1572,7 @@ function TextFlowEditorImpl({
     && previousIds.includes(codeBlockSettingsPopover.codeBlockId)
     ? codeBlockSettingsPopover
     : null;
+  const slashCommandBlockIds = singleBlock ? EMPTY_BLOCK_COMMAND_IDS : slashCommandQuery?.availableBlockCommandIds ?? EMPTY_BLOCK_COMMAND_IDS;
   const slashCommandCandidates = useMemo(
     () => filterSlashCommandCandidates(
       materials,
@@ -1460,8 +1581,10 @@ function TextFlowEditorImpl({
       t,
       boxCommandStyleIds,
       enableProblemCommands,
+      slashCommandBlockIds,
+      enableHeadingCommands,
     ),
-    [boxCommandStyleIds, enableBoxCommands, enableProblemCommands, materials, slashCommandQuery?.canInsertBox, slashCommandQuery?.query, t],
+    [boxCommandStyleIds, enableBoxCommands, enableHeadingCommands, enableProblemCommands, materials, slashCommandBlockIds, slashCommandQuery?.canInsertBox, slashCommandQuery?.query, t],
   );
   const slashCommandMaxIndex = Math.max(0, slashCommandCandidates.length - 1);
   const clampedSlashCommandActiveIndex = Math.min(slashCommandActiveIndex, slashCommandMaxIndex);
@@ -1540,7 +1663,12 @@ function TextFlowEditorImpl({
 
   useEffect(() => {
     onProblemCommandRef.current = onProblemCommand;
-  }, [onProblemCommand]);
+    onHeadingCommandRef.current = onHeadingCommand;
+  }, [onHeadingCommand, onProblemCommand]);
+
+  useEffect(() => {
+    onBodyBlockCommandRef.current = onBodyBlockCommand;
+  }, [onBodyBlockCommand]);
 
   useEffect(() => {
     onEditGuardBlockedAttemptRef.current = handleEditGuardBlockedAttempt;
@@ -1640,6 +1768,15 @@ function TextFlowEditorImpl({
         isReplicaSurface: () => isBoxFragmentReplicaRef.current,
       }),
       // These stable callbacks are read by the decoration plugin when it runs,
+      // not during React render. Heading labels stay outside editable content.
+      // eslint-disable-next-line react-hooks/refs
+      HeadingNumberingExtension.configure({
+        getNumbers: getHeadingNumbers,
+        // The key includes the current column placement so ProseMirror cannot reuse a widget from
+        // another segment when a multi-column layout is recalculated.
+        getLayoutKey: getHeadingNumberLayoutKey,
+      }),
+      // These stable callbacks are read by the decoration plugin when it runs,
       // not during React render.
       // eslint-disable-next-line react-hooks/refs
       CommentDecorationExtension.configure({
@@ -1699,6 +1836,9 @@ function TextFlowEditorImpl({
           onMaterialInsertRef,
           onBoxCommandRef,
           onProblemCommandRef,
+          onBodyBlockCommandRef,
+          tiptapEditorRef,
+          onHeadingCommandRef,
           setSlashCommandQuery,
         )) {
           return true;
@@ -1724,16 +1864,48 @@ function TextFlowEditorImpl({
           // 行き先を**先回りして**決める。1 rAF 後に「位置が変わらなかったら隣へ」では、
           // 断片の複製はブロック全体の doc を持つのでネイティブ移動が必ず成功してしまい、
           // 見えない行へ入ったまま隣の面へ移らない。
-          if (moveCaretVertically(
-            view.dom,
-            event.key === "ArrowUp" ? "up" : "down",
-            preferredX,
-          )) {
+          const direction = event.key === "ArrowUp" ? "up" : "down";
+          if (moveCaretVertically(view.dom, direction, preferredX)) {
+            event.preventDefault();
+            return true;
+          }
+          // 段組みセクション (CSS multicol) の中では、テキストブロックの端を越える上下の
+          // ネイティブ移動が信用できない (段を跨ぐ移動で DOM 選択だけ動いて ProseMirror の
+          // 選択が古いまま残ることがある)。論理的な隣のテキストブロックへ自前で置き、行の中の
+          // 横位置だけ preferredX で選び直す。
+          const verticalJump = resolveLayoutSectionArrowJump(view, direction);
+          if (verticalJump) {
+            applyLayoutSectionArrowJump(view, verticalJump, preferredX);
             event.preventDefault();
             return true;
           }
         } else if (event.key !== "Shift") {
           verticalNavigationXRef.current = null;
+        }
+
+        if (
+          (event.key === "ArrowLeft" || event.key === "ArrowRight")
+          && !event.altKey
+          && !event.ctrlKey
+          && !event.metaKey
+          && !event.shiftKey
+          && !event.isComposing
+          && view.state.selection.empty
+        ) {
+          const direction = event.key === "ArrowRight" ? "forward" : "backward";
+          // 段組みセクション (CSS multicol) の外→中・中→外は、Chromium のネイティブ移動が
+          // 渡れずキャレットが動かない。論理的な隣のテキストブロックへ自前で置く。
+          const sectionJump = resolveLayoutSectionArrowJump(view, direction);
+          if (sectionJump) {
+            view.dispatch(view.state.tr.setSelection(sectionJump).scrollIntoView());
+            event.preventDefault();
+            return true;
+          }
+          // 断片境界・doc の端 (ユニット境界・複製の端) は面をまたぐのでルーターが解決する。
+          if (moveCaretHorizontally(view.dom, direction)) {
+            event.preventDefault();
+            return true;
+          }
         }
 
         const manualBreakNavigation = resolveManualBreakBoundaryNavigation(
@@ -2040,6 +2212,15 @@ function TextFlowEditorImpl({
     }, 0);
   }, [editor]);
 
+  // `/` から Tiptap のコマンドを呼ぶための ref。`useEditor` の設定の中では `editor` を
+  // まだ参照できないので、作られた後にここで持ち回りへ渡す。
+  useEffect(() => {
+    tiptapEditorRef.current = editor ?? null;
+    return () => {
+      tiptapEditorRef.current = null;
+    };
+  }, [editor]);
+
   const requestSyncDecorationRefresh = useCallback((kind: TextFlowDecorationRefreshKind) => {
     pendingSyncRefreshRef.current.add(kind);
   }, []);
@@ -2191,6 +2372,47 @@ function TextFlowEditorImpl({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blocksSyncKey, editor, historyRevision]);
 
+  /** この面はページを跨いで分割されたブロック (正本のクリップ、または続きの複製) を描くか。 */
+  const drawsPageSplitBlock = boxFragmentReplicaId !== undefined
+    || Object.keys(boxFragmentSourceLayouts ?? {}).length > 0;
+
+  /**
+   * 分割されたブロックを描いている面への外からの内容更新も、**レイアウトフェーズで**入れる。
+   *
+   * 続きの複製に打つと、正本 (ページ 1 側) の内容はこの同期でしか変わらない。それが下の
+   * パッシブ経路 (`setTimeout(0)`) に乗っていると、順番がこうなる:
+   *
+   *   複製の打鍵 → 描画 → 正本の内容が伸びる → 描画 (下の本文が 1 行ぶん下がる)
+   *   → 親がページ割りを取り直す → 描画 (下の本文が戻る)
+   *
+   * つまり「新しい内容 × 古いページ割り」が必ず 1 フレーム描かれる。ここで入れておけば、
+   * 親 (`PageCanvasEditor`) のレイアウトエフェクト (React はレイアウトエフェクトを子から
+   * 先に走らせる) が新しい DOM を測れるので、描画は 1 回で済む。
+   *
+   * フォーカスのある面は自分の ProseMirror が正本なので触らない。IME 合成中も触らない
+   * (合成セッションが切れる) — どちらも従来どおり下のパッシブ経路が面倒を見る。
+   */
+  useLayoutEffect(() => {
+    if (!editor || editor.isDestroyed || !drawsPageSplitBlock) {
+      return;
+    }
+    if (editor.isFocused || editor.view.composing || crossEditorSyncRef.current) {
+      return;
+    }
+    if (!shouldSyncExternalTextFlowContent(
+      syncedContentKeyRef.current,
+      mountContentKeyRef.current,
+      blocksSyncKey,
+    )) {
+      return;
+    }
+    setTextFlowContentPreservingSelection(editor, blocks);
+    syncedContentKeyRef.current = blocksSyncKey;
+    // `blocks` はこのレンダーが渡されたものを使う (`blocksRef` はパッシブ効果で更新されるので
+    // この時点ではまだ前のレンダーの値)。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocksSyncKey, drawsPageSplitBlock, editor]);
+
   useEffect(() => {
     if (!editor) {
       return;
@@ -2319,14 +2541,20 @@ function TextFlowEditorImpl({
 
   const columnFlowBlockLayoutsKey = useMemo(() => getTextFlowColumnLayoutsSyncKey(columnFlowBlockLayouts), [columnFlowBlockLayouts]);
   const boxFragmentSourceLayoutsKey = useMemo(() => getTextFlowFragmentLayoutsSyncKey(boxFragmentSourceLayouts), [boxFragmentSourceLayouts]);
+  const headingNumbersKey = useMemo(
+    () => Object.entries(headingNumbers).sort(([a], [b]) => a.localeCompare(b)).map(([id, number]) => `${id}:${number}`).join("\u0000"),
+    [headingNumbers],
+  );
   useEffect(() => {
     columnFlowBlockLayoutsRef.current = columnFlowBlockLayouts ?? {};
     boxFragmentSourceLayoutsRef.current = boxFragmentSourceLayouts ?? {};
+    headingNumbersRef.current = headingNumbers;
     if (editor && !editor.isDestroyed) {
       requestSyncDecorationRefresh("columnFlow");
+      requestSyncDecorationRefresh("headingNumbers");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, columnFlowBlockLayoutsKey, boxFragmentSourceLayoutsKey, requestSyncDecorationRefresh]);
+  }, [editor, columnFlowBlockLayoutsKey, boxFragmentSourceLayoutsKey, headingNumbersKey, requestSyncDecorationRefresh]);
 
   // ドラッグ中の下余白プレビュー。`requestSyncDecorationRefresh` は「この commit の最後に打つ」
   // 予約なので、React の外 (pointerdown / pointerup) から来るこの合図はその場で打つ。
@@ -2362,6 +2590,9 @@ function TextFlowEditorImpl({
     }
     pendingSyncRefreshRef.current = new Set();
     dispatchTextFlowDecorationRefresh(editor.view, kinds);
+    // 段組みの配置が今この dispatch で付いた。配置待ちで保留していたキャレット追従を
+    // ここでやり直す (確定前の座標で動くと紙面が文書先頭へ飛ぶ — 保留の理由はそちら)。
+    flushDeferredCaretScroll(editor.view);
   });
 
   useLayoutEffect(() => {
@@ -2537,10 +2768,17 @@ function TextFlowEditorImpl({
         // 当たってしまう。
         const placed = focusTextFlowCaretAfterBlock(editor, containerBlockId, direction, preferredX);
         if (placed) {
-          verticalNavigationXRef.current = preferredX;
+          if (preferredX !== null) {
+            verticalNavigationXRef.current = preferredX;
+          }
           publishCaretMove(editor, preferredX);
         }
         return placed;
+      },
+      docEdgeAddress: (edge) => {
+        const doc = editor.state.doc;
+        const selection = edge === "start" ? Selection.atStart(doc) : Selection.atEnd(doc);
+        return getTextFlowCaretAddress(doc, selection.head, DEFAULT_CARET_AFFINITY);
       },
       adjacentTextblockAddress: (direction) => {
         try {
@@ -2798,6 +3036,9 @@ function TextFlowEditorImpl({
       onMaterialInsertRef,
       onBoxCommandRef,
       onProblemCommandRef,
+      onBodyBlockCommandRef,
+      tiptapEditorRef,
+      onHeadingCommandRef,
       setSlashCommandQuery,
     );
   }, [editor, setSlashCommandQuery]);
@@ -2856,31 +3097,46 @@ function TextFlowEditorImpl({
     setBoxActionDialog(null);
   }, [editor, setBoxActionDialog]);
 
-  const openBoxSettingsDialog = useCallback((boxId: string) => {
+  const openBoxSettingsDialog = useCallback((boxId: string, options: { focusTitle?: boolean } = {}) => {
     if (!editor || editor.isDestroyed) {
+      return;
+    }
+    setBoxActionDialog(null);
+    // ページを跨いだ箱は複数の面に描かれるが、設定を持てるのは元の面だけ。複製面でも開くと
+    // 同じ箱のダイアログが面の数だけ積み上がり、下の層は「開いた時点のタイトル」を抱えたまま
+    // 残る (閉じると空欄のダイアログが顔を出す)。ここでは所有者へ回すだけにする。
+    if (readOnlyBoxTitle) {
+      window.dispatchEvent(new CustomEvent(REQUEST_BOX_SETTINGS_EVENT, {
+        detail: { boxId, focusTitle: options.focusTitle === true },
+      }));
       return;
     }
     const target = findBoxBlockNodeInDoc(editor.state.doc, boxId);
     const boxBlock = target ? boxSettingsBlockFromNode(target.node) : null;
-    setBoxActionDialog(null);
-    setBoxSettingsDialog(boxBlock ? {
+    setBoxSettingsDialog(boxBlock && target ? {
       boxId: boxBlock.id,
       styleId: boxBlock.styleId,
       frame: boxBlock.frame,
+      title: boxTitleFromNode(target.node),
+      focusTitle: options.focusTitle === true,
     } : null);
-  }, [editor, setBoxActionDialog, setBoxSettingsDialog]);
+  }, [editor, readOnlyBoxTitle, setBoxActionDialog, setBoxSettingsDialog]);
 
   useEffect(() => {
     const openSettings = (event: Event) => {
+      // 複製面は所有者ではないので受け取らない (受け取ると上の再送と往復する)。
+      if (readOnlyBoxTitle) {
+        return;
+      }
       const detail = event instanceof CustomEvent ? event.detail : null;
       const boxId = typeof detail?.boxId === "string" ? detail.boxId : null;
       if (boxId) {
-        openBoxSettingsDialog(boxId);
+        openBoxSettingsDialog(boxId, { focusTitle: detail?.focusTitle === true });
       }
     };
     window.addEventListener(REQUEST_BOX_SETTINGS_EVENT, openSettings);
     return () => window.removeEventListener(REQUEST_BOX_SETTINGS_EVENT, openSettings);
-  }, [openBoxSettingsDialog]);
+  }, [openBoxSettingsDialog, readOnlyBoxTitle]);
 
   const applyBoxSettings = useCallback((
     boxId: string,
@@ -2903,11 +3159,61 @@ function TextFlowEditorImpl({
       frame: nextBoxBlock.frame ?? null,
     });
     editor.view.dispatch(transaction);
-    setBoxSettingsDialog({
+    setBoxSettingsDialog((current) => ({
       boxId: nextBoxBlock.id,
       styleId: nextBoxBlock.styleId,
       frame: nextBoxBlock.frame,
-    });
+      title: current?.boxId === nextBoxBlock.id ? current.title : boxTitleFromNode(target.node),
+      focusTitle: false,
+    }));
+  }, [editor, setBoxSettingsDialog]);
+
+  /**
+   * 設定ダイアログを閉じたあと、キャレットをその箱へ戻す。
+   *
+   * これを置かないと ModalFrame の復帰先が「開いた時にフォーカスしていた要素」= 既に消えている
+   * ⋯ ダイアログのボタンになり、body 先頭の入力 (画面上端の教材タイトル) が全選択された状態で
+   * 残る。タイトルを付け終えた直後の 1 打鍵が教材名の書き換えになるので、必ず引き取る。
+   */
+  const focusBoxAfterSettings = useCallback((boxId: string) => {
+    if (!editor || editor.isDestroyed) {
+      return;
+    }
+    const target = findBoxBlockNodeInDoc(editor.state.doc, boxId);
+    const titleNode = target?.node.firstChild;
+    if (!target || titleNode?.type.name !== "boxBlockTitle") {
+      return;
+    }
+
+    const selection = TextSelection.near(editor.state.doc.resolve(target.pos + titleNode.nodeSize), -1);
+    editor.view.focus();
+    editor.view.dispatch(editor.state.tr.setSelection(selection).scrollIntoView());
+  }, [editor]);
+
+  /**
+   * ダイアログで打ったタイトルを箱へ書き戻す。
+   *
+   * 差し替えるのは `boxBlockTitle` の**中身だけ**で、ノード自体は残す。ノードごと入れ替えると
+   * 1 打鍵ごとにタイトル領域の DOM (と中の数式ノードビュー) が作り直されてしまう。
+   */
+  const applyBoxTitle = useCallback((boxId: string, title: InlineNode[]) => {
+    if (!editor || editor.isDestroyed) {
+      return;
+    }
+    const target = findBoxBlockNodeInDoc(editor.state.doc, boxId);
+    const titleNode = target?.node.firstChild;
+    if (!target || titleNode?.type.name !== "boxBlockTitle") {
+      return;
+    }
+
+    const titleStart = target.pos + 1;
+    const contentFrom = titleStart + 1;
+    const contentTo = titleStart + titleNode.nodeSize - 1;
+    const nextContent = Fragment.fromJSON(editor.state.schema, inlineNodesToTiptapNodes(title));
+    editor.view.dispatch(editor.state.tr.replaceWith(contentFrom, contentTo, nextContent));
+    setBoxSettingsDialog((current) => (
+      current && current.boxId === boxId ? { ...current, title, focusTitle: false } : current
+    ));
   }, [editor, setBoxSettingsDialog]);
 
   const applyCodeBlockSettings = useCallback((
@@ -3085,6 +3391,7 @@ function TextFlowEditorImpl({
       <BoxActionDialog
         state={boxActionDialog}
         onClose={() => setBoxActionDialog(null)}
+        onEditTitle={(boxId) => openBoxSettingsDialog(boxId, { focusTitle: true })}
         onSettings={openBoxSettingsDialog}
         onCopy={copyBoxBlock}
         onDelete={deleteBoxBlock}
@@ -3096,13 +3403,33 @@ function TextFlowEditorImpl({
             styleId: activeBoxSettingsDialog.styleId,
             frame: activeBoxSettingsDialog.frame,
           }}
+          title={activeBoxSettingsDialog.title}
+          mathFractionSizing={mathFractionSizing}
+          autoFocusTitle={activeBoxSettingsDialog.focusTitle}
           onStyleChange={(styleId) => {
-            applyBoxSettings(activeBoxSettingsDialog.boxId, (boxBlock) => setBoxStyle(boxBlock, styleId));
+            // スタイルを選び直すのも「そのスタイルを手に入れる」操作。覚えている見た目があれば
+            // 挿入と同じように載せる (でないと、記憶した色がスタイル切替のたびに剥がれる)。
+            applyBoxSettings(activeBoxSettingsDialog.boxId, (boxBlock) => (
+              applyRememberedBoxFrame(setBoxStyle(boxBlock, styleId))
+            ));
           }}
           onFrameChange={(patch) => {
             applyBoxSettings(activeBoxSettingsDialog.boxId, (boxBlock) => patchBoxFrame(boxBlock, patch));
+            rememberBoxFramePatch(activeBoxSettingsDialog.styleId, patch);
           }}
-          onClose={() => setBoxSettingsDialog(null)}
+          onResetStyle={() => {
+            forgetRememberedBoxFrame(activeBoxSettingsDialog.styleId);
+            applyBoxSettings(activeBoxSettingsDialog.boxId, (boxBlock) => (
+              setBoxStyle(boxBlock, activeBoxSettingsDialog.styleId)
+            ));
+          }}
+          onTitleChange={(title) => applyBoxTitle(activeBoxSettingsDialog.boxId, title)}
+          onClose={() => {
+            const { boxId } = activeBoxSettingsDialog;
+            setBoxSettingsDialog(null);
+            // ModalFrame のフォーカス復帰はアンマウント時に走るので、その後で引き取る。
+            window.setTimeout(() => focusBoxAfterSettings(boxId), 0);
+          }}
         />
       ) : null}
       <CodeBlockSettingsPopover
@@ -3122,6 +3449,10 @@ function TextFlowEditorImpl({
       <TextFormatContextMenu
         state={textFormatContextMenu}
         onClose={() => setTextFormatContextMenu(null)}
+        onBoxEditTitle={(boxId) => {
+          setTextFormatContextMenu(null);
+          openBoxSettingsDialog(boxId, { focusTitle: true });
+        }}
         onBoxSettings={(boxId) => {
           setTextFormatContextMenu(null);
           openBoxSettingsDialog(boxId);
@@ -3150,6 +3481,7 @@ function TextFlowEditorImpl({
 function TextFormatContextMenu({
   state,
   onClose,
+  onBoxEditTitle,
   onBoxSettings,
   onBoxCopy,
   onBoxDelete,
@@ -3158,6 +3490,7 @@ function TextFormatContextMenu({
 }: {
   state: TextFormatContextMenuState | null;
   onClose: () => void;
+  onBoxEditTitle?: (boxId: string) => void;
   onBoxSettings?: (boxId: string) => void;
   onBoxCopy?: (boxId: string) => void;
   onBoxDelete?: (boxId: string) => void;
@@ -3251,47 +3584,45 @@ function TextFormatContextMenu({
         <>
           <label className="text-format-context-field">
             <span><Type size={15} aria-hidden="true" />{t("textFormat.fontFamily")}</span>
-            <select
+            <Select
               aria-label={t("textFormat.fontFamily")}
               value={state.fontFamily}
               style={{ fontFamily: state.fontFamily }}
-              onChange={(event) => onFontFamilyChange(event.target.value)}
-            >
-              {!fontFamilyIsListed ? <option value={state.fontFamily}>{t("textFormat.currentFont")}</option> : null}
-              {FONT_FAMILY_GROUPS.map((group) => (
-                <optgroup label={group.label} key={group.label}>
-                  {group.options.map((option) => (
-                    <option key={`${group.label}-${option.value}`} value={option.value} style={{ fontFamily: option.value }}>
-                      {option.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+              options={[
+                ...(fontFamilyIsListed ? [] : [{ value: state.fontFamily, label: t("textFormat.currentFont") }]),
+                ...FONT_FAMILY_GROUPS.map((group) => ({
+                  label: group.label,
+                  options: group.options.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                    style: { fontFamily: option.value },
+                  })),
+                })),
+              ]}
+              onChange={onFontFamilyChange}
+            />
           </label>
           <div className="text-format-context-field">
             <span><ListChevronsUpDown size={15} aria-hidden="true" />{t("textFormat.lineHeight")}</span>
-            <select
+            <Select
               aria-label={t("textFormat.lineHeight")}
               value={LINE_HEIGHT_OPTIONS.some((option) => option.value === state.lineHeight) ? state.lineHeight : "custom"}
-              onChange={(event) => {
-                const lineHeight = normalizeLineHeight(event.target.value);
+              options={[
+                ...(LINE_HEIGHT_OPTIONS.some((option) => option.value === state.lineHeight)
+                  ? []
+                  : [{ value: "custom", label: t("textFormat.lineHeightValue", { lines: state.lineHeight }) }]),
+                ...LINE_HEIGHT_OPTIONS.map((option) => ({
+                  value: option.value,
+                  label: t("textFormat.lineHeightValue", { lines: option.value }),
+                })),
+              ]}
+              onChange={(value) => {
+                const lineHeight = normalizeLineHeight(value);
                 if (lineHeight) {
                   onLineHeightChange(lineHeight);
                 }
               }}
-            >
-              {!LINE_HEIGHT_OPTIONS.some((option) => option.value === state.lineHeight) ? (
-                <option value="custom">{t("textFormat.lineHeightValue", { lines: state.lineHeight })}</option>
-              ) : null}
-              {LINE_HEIGHT_OPTIONS.map((option) => (
-                // `option.label` は module 定数で「行」が焼き付いているので使わない
-                // (クローム側も同じ理由で辞書から出している)。
-                <option value={option.value} key={option.value}>
-                  {t("textFormat.lineHeightValue", { lines: option.value })}
-                </option>
-              ))}
-            </select>
+            />
             <div className="line-height-stepper text-format-context-stepper" role="group" aria-label={t("textFormat.lineHeightFine")}>
               <button
                 type="button"
@@ -3313,6 +3644,16 @@ function TextFormatContextMenu({
             </div>
           </div>
         </>
+      )}
+      {state.boxId && onBoxEditTitle && (
+        <button
+          type="button"
+          className="text-format-context-action"
+          onClick={() => onBoxEditTitle(state.boxId!)}
+        >
+          <Heading size={15} aria-hidden="true" />
+          <span>{t("box.editTitle")}</span>
+        </button>
       )}
       {state.boxId && onBoxSettings && (
         <button
@@ -3352,12 +3693,14 @@ function TextFormatContextMenu({
 function BoxActionDialog({
   state,
   onClose,
+  onEditTitle,
   onSettings,
   onCopy,
   onDelete,
 }: {
   state: BoxActionDialogState | null;
   onClose: () => void;
+  onEditTitle: (boxId: string) => void;
   onSettings: (boxId: string) => void;
   onCopy: (boxId: string) => void;
   onDelete: (boxId: string) => void;
@@ -3407,6 +3750,14 @@ function BoxActionDialog({
           <X size={14} />
         </button>
       </div>
+      <button
+        type="button"
+        className="box-action-dialog-item"
+        onClick={() => onEditTitle(state.boxId)}
+      >
+        <Heading size={15} />
+        <span>{t("box.editTitle")}</span>
+      </button>
       <button
         type="button"
         className="box-action-dialog-item"
@@ -3509,18 +3860,18 @@ function CodeBlockSettingsPopover({
       </div>
       <label className="code-block-settings-field">
         <span>{t("codeBlock.language")}</span>
-        <select
+        <Select
           aria-label={t("codeBlock.languageAria")}
           value={state.language ?? ""}
-          onChange={(event) => onLanguageChange(event.target.value || null)}
-        >
-          <option value="">{t("codeBlock.auto")}</option>
-          {CODE_BLOCK_LANGUAGES.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.labelKey ? t(option.labelKey) : option.label}
-            </option>
-          ))}
-        </select>
+          options={[
+            { value: "", label: t("codeBlock.auto") },
+            ...CODE_BLOCK_LANGUAGES.map((option) => ({
+              value: option.value,
+              label: option.labelKey ? t(option.labelKey) : option.label,
+            })),
+          ]}
+          onChange={(value) => onLanguageChange(value || null)}
+        />
       </label>
       <fieldset className="code-block-settings-field">
         <legend>{t("codeBlock.background")}</legend>
@@ -3606,7 +3957,7 @@ function SlashCommandPopover({
             >
               <span className="slash-command-row">
                 <span className="slash-command-name">{getSlashCommandCandidateName(candidate)}</span>
-                <span className="slash-command-kind">{candidate.kind === "box" ? t("slash.kindBox") : t("slash.kindMaterial")}</span>
+                <span className="slash-command-kind">{getSlashCommandCandidateKindLabel(candidate, t)}</span>
               </span>
               <span className="slash-command-meta">{getSlashCommandCandidateMeta(candidate, t)}</span>
             </button>
@@ -3671,6 +4022,9 @@ function handleSlashCommandQueryKeyDown(
   onMaterialInsertRef: { current: TextFlowEditorProps["onMaterialInsert"] },
   onBoxCommandRef: { current: TextFlowEditorProps["onBoxCommand"] },
   onProblemCommandRef: { current: TextFlowEditorProps["onProblemCommand"] },
+  onBodyBlockCommandRef: { current: TextFlowEditorProps["onBodyBlockCommand"] },
+  editorRef: { current: TiptapEditor | null },
+  onHeadingCommandRef: { current: TextFlowEditorProps["onHeadingCommand"] },
   setSlashCommandQuery: (query: ActiveSlashCommandQuery | null) => void,
 ): boolean {
   if (!slashCommandQueryRef.current) {
@@ -3709,6 +4063,9 @@ function handleSlashCommandQueryKeyDown(
       onMaterialInsertRef,
       onBoxCommandRef,
       onProblemCommandRef,
+      onBodyBlockCommandRef,
+      editorRef,
+      onHeadingCommandRef,
       setSlashCommandQuery,
     );
     return true;
@@ -3724,10 +4081,36 @@ function insertSlashCommandFromQuery(
   onMaterialInsertRef: { current: TextFlowEditorProps["onMaterialInsert"] },
   onBoxCommandRef: { current: TextFlowEditorProps["onBoxCommand"] },
   onProblemCommandRef: { current: TextFlowEditorProps["onProblemCommand"] },
+  onBodyBlockCommandRef: { current: TextFlowEditorProps["onBodyBlockCommand"] },
+  editorRef: { current: TiptapEditor | null },
+  onHeadingCommandRef: { current: TextFlowEditorProps["onHeadingCommand"] },
   setSlashCommandQuery: (query: ActiveSlashCommandQuery | null) => void,
 ): void {
   if (candidate.kind === "problem") {
     insertProblemCommandFromQuery(view, slashCommandQueryRef, onProblemCommandRef, setSlashCommandQuery);
+    return;
+  }
+
+  if (candidate.kind === "block") {
+    insertBodyBlockCommandFromQuery(
+      view,
+      candidate.block,
+      slashCommandQueryRef,
+      editorRef,
+      onBodyBlockCommandRef,
+      setSlashCommandQuery,
+    );
+    return;
+  }
+
+  if (candidate.kind === "heading") {
+    insertHeadingCommandFromQuery(
+      view,
+      candidate.heading.level,
+      slashCommandQueryRef,
+      onHeadingCommandRef,
+      setSlashCommandQuery,
+    );
     return;
   }
 
@@ -3737,6 +4120,43 @@ function insertSlashCommandFromQuery(
   }
 
   insertMaterialFromQuery(view, candidate.material, slashCommandQueryRef, onMaterialInsertRef, setSlashCommandQuery);
+}
+
+function insertHeadingCommandFromQuery(
+  view: EditorView,
+  level: 1 | 2 | 3,
+  slashCommandQueryRef: { current: ActiveSlashCommandQuery | null },
+  onHeadingCommandRef: { current: TextFlowEditorProps["onHeadingCommand"] },
+  setSlashCommandQuery: (query: ActiveSlashCommandQuery | null) => void,
+): void {
+  const query = slashCommandQueryRef.current;
+  if (!query) return;
+  const { state } = view;
+  const { $from } = state.selection;
+  const trailingText = $from.parent.textBetween($from.parentOffset, $from.parent.content.size, "", "");
+  const headingType = state.schema.nodes.heading;
+  if (!state.selection.empty || !$from.parent.isTextblock || trailingText.trim() || !headingType) {
+    setSlashCommandQuery(null);
+    return;
+  }
+  if (!(onHeadingCommandRef.current?.({ triggerBlockId: query.blockId, level }) ?? true)) {
+    setSlashCommandQuery(null);
+    return;
+  }
+
+  const blockFrom = $from.before($from.depth);
+  const removedSize = query.to - query.from;
+  const transaction = state.tr.delete(query.from, query.to);
+  transaction.setBlockType(
+    blockFrom,
+    Math.max(blockFrom + 1, $from.after($from.depth) - removedSize),
+    headingType,
+    { ...$from.parent.attrs, level },
+  );
+  transaction.setSelection(TextSelection.create(transaction.doc, query.from));
+  view.dispatch(transaction.scrollIntoView());
+  view.focus();
+  setSlashCommandQuery(null);
 }
 
 function insertMaterialFromQuery(
@@ -3799,6 +4219,52 @@ function insertProblemCommandFromQuery(
   setSlashCommandQuery(null);
 }
 
+/**
+ * 本文ブロック (引用・コード・区切り線) を `/` から作る。
+ *
+ * 打った `/引用` の文字を消してから **Tiptap のコマンドをそのまま呼ぶ** のが肝で、ツールバー・
+ * 入力ルール (`> `, ```` ``` ````, `---`) と同じ 1 本の経路を通る。ここで独自に段落を作り替えると、
+ * リストからの抜け方やコードの fence 除去といった約束が `/` からだけ抜け落ちる。
+ */
+function insertBodyBlockCommandFromQuery(
+  view: EditorView,
+  candidate: TextFlowCommandDefinition,
+  slashCommandQueryRef: { current: ActiveSlashCommandQuery | null },
+  editorRef: { current: TiptapEditor | null },
+  onBodyBlockCommandRef: { current: TextFlowEditorProps["onBodyBlockCommand"] },
+  setSlashCommandQuery: (query: ActiveSlashCommandQuery | null) => void,
+): void {
+  const query = slashCommandQueryRef.current;
+  const editor = editorRef.current;
+  const kind = bodyBlockCommandKindFromId(candidate.id);
+  setSlashCommandQuery(null);
+  if (!query || !kind || !editor || editor.isDestroyed) {
+    return;
+  }
+
+  // 先にトリガー文字だけを消す。ブロックを作り替えるコマンドは「いまの段落」を対象に取るので、
+  // `/引用` が残ったまま包むと引用の中に `/引用` という本文が残る。
+  view.dispatch(view.state.tr.delete(query.from, query.to));
+  view.focus();
+
+  // ホストが受けるならそちらへ渡す。入れ物を作る操作はこのエディタごと remount させるので、
+  // 焦点の戻し先を知っているのはホストだけ (ツールバーのブロックボタンと同じ経路)。
+  if (onBodyBlockCommandRef.current?.({ kind, triggerBlockId: query.blockId })) {
+    return;
+  }
+
+  const chain = editor.chain().focus();
+  if (kind === "quote") {
+    chain.toggleQuoteBlock().run();
+    return;
+  }
+  if (kind === "codeBlock") {
+    chain.toggleCodeBlock().run();
+    return;
+  }
+  chain.toggleDivider().run();
+}
+
 function insertBoxCommandFromQuery(
   view: EditorView,
   candidate: TextFlowCommandDefinition,
@@ -3841,7 +4307,9 @@ function insertBoxCommandFromQuery(
 
   // 既定タイトルは**文書に焼き込まれる**ので、挿入した時点の UI 言語で解決する。
   // ここは React の外 (module 直下のヘルパ) なので `useT` ではなくストアから引く。
-  const boxBlock = createBoxBlock(candidate.id, "", {}, createTranslator(getAppLocale(), "editor"));
+  const boxBlock = applyRememberedBoxFrame(
+    createBoxBlock(candidate.id, "", {}, createTranslator(getAppLocale(), "editor")),
+  );
   const boxNode = state.schema.nodeFromJSON(textFlowBlockToTiptapNode(boxBlock));
   const from = $from.before($from.depth);
   const to = $from.after($from.depth);
@@ -3885,6 +4353,9 @@ function getActiveSlashCommandQuery(view: EditorView): ActiveSlashCommandQuery |
 
   const trailingText = parent.textBetween($from.parentOffset, parent.content.size, "", "");
   const canInsertBox = !isSelectionInsideBoxBlock(view.state) && trailingText.trim().length === 0;
+  const availableBlockCommandIds = trailingText.trim().length === 0
+    ? getAvailableBodyBlockCommandIds(view.state)
+    : [];
   const from = selection.from - trigger.triggerLength;
   const to = selection.from;
   try {
@@ -3895,6 +4366,7 @@ function getActiveSlashCommandQuery(view: EditorView): ActiveSlashCommandQuery |
       to,
       query: trigger.query,
       canInsertBox,
+      availableBlockCommandIds,
       rect: {
         bottom: rect.bottom,
         left: rect.left,
@@ -3923,12 +4395,20 @@ function filterSlashCommandCandidates(
   t: Translate<"editor">,
   boxCommandStyleIds?: readonly string[],
   includeProblemCommand = false,
+  blockCommandIds: readonly string[] = [],
+  includeHeadingCommands = false,
 ): SlashCommandCandidate[] {
   const problemCandidates = includeProblemCommand
     ? filterTextFlowCommandDefinitions([buildProblemCommandDefinition(t)], {
         query,
         limit: 1,
       }).map((problem): SlashCommandCandidate => ({ kind: "problem", problem }))
+    : [];
+  const headingCandidates = includeHeadingCommands
+    ? filterTextFlowCommandDefinitions(buildHeadingCommandDefinitions(t), {
+        query,
+        limit: 3,
+      }).map((heading): SlashCommandCandidate => ({ kind: "heading", heading }))
     : [];
   const boxCandidates = includeBoxCommands
     ? filterTextFlowCommandDefinitions(buildBoxCommandDefinitions(t), {
@@ -3937,14 +4417,34 @@ function filterSlashCommandCandidates(
         limit: MAX_BOX_COMMAND_CANDIDATES,
       }).map((box): SlashCommandCandidate => ({ kind: "box", box }))
     : [];
+  const blockCandidates = blockCommandIds.length > 0
+    ? filterTextFlowCommandDefinitions(buildBodyBlockCommandDefinitions(t), {
+        query,
+        allowedIds: blockCommandIds,
+        limit: BODY_BLOCK_COMMAND_KINDS.length,
+      }).map((block): SlashCommandCandidate => ({ kind: "block", block }))
+    : [];
   const materialCandidates = filterMaterialCandidates(materials, query)
     .map((material): SlashCommandCandidate => ({ kind: "material", material }));
-  return [...problemCandidates, ...boxCandidates, ...materialCandidates].slice(0, MAX_SLASH_COMMAND_CANDIDATES);
+  // 名前が前方一致した候補を先に出す。`/引用` は引用ブロックであって「引用」を別名に持つ箱
+  // (leftbar) ではない、という当たり前の順番は、説明文や別名まで見る絞り込みだけでは作れない。
+  const commandCandidates = [...problemCandidates, ...headingCandidates, ...blockCandidates, ...boxCandidates];
+  const rankedCommands = [...commandCandidates].sort((a, b) => (
+    textFlowCommandNameMatchRank(getSlashCommandCandidateName(a).slice(1), query)
+    - textFlowCommandNameMatchRank(getSlashCommandCandidateName(b).slice(1), query)
+  ));
+  return [...rankedCommands, ...materialCandidates].slice(0, MAX_SLASH_COMMAND_CANDIDATES);
 }
 
 function getSlashCommandCandidateKey(candidate: SlashCommandCandidate): string {
   if (candidate.kind === "problem") {
     return `problem:${candidate.problem.id}`;
+  }
+  if (candidate.kind === "block") {
+    return `block:${candidate.block.id}`;
+  }
+  if (candidate.kind === "heading") {
+    return `heading:${candidate.heading.id}`;
   }
   return candidate.kind === "box" ? `box:${candidate.box.id}` : `material:${candidate.material.id}`;
 }
@@ -3953,6 +4453,12 @@ function getSlashCommandCandidateName(candidate: SlashCommandCandidate): string 
   if (candidate.kind === "problem") {
     return `/${candidate.problem.commandName}`;
   }
+  if (candidate.kind === "block") {
+    return `/${candidate.block.commandName}`;
+  }
+  if (candidate.kind === "heading") {
+    return `/${candidate.heading.commandName}`;
+  }
   return candidate.kind === "box" ? `/${candidate.box.commandName}` : `/${candidate.material.name}`;
 }
 
@@ -3960,7 +4466,25 @@ function getSlashCommandCandidateMeta(candidate: SlashCommandCandidate, t: Trans
   if (candidate.kind === "problem") {
     return candidate.problem.description;
   }
+  if (candidate.kind === "block") {
+    return candidate.block.description;
+  }
+  if (candidate.kind === "heading") {
+    return candidate.heading.description;
+  }
   return candidate.kind === "box" ? candidate.box.description : getMaterialSummaryLabel(candidate.material, t);
+}
+
+function getSlashCommandCandidateKindLabel(candidate: SlashCommandCandidate, t: Translate<"editor">): string {
+  if (candidate.kind === "box") {
+    return t("slash.kindBox");
+  }
+  if (candidate.kind === "block") {
+    return t("slash.kindBlock");
+  }
+  if (candidate.kind === "problem") return t("slash.kindProblem");
+  if (candidate.kind === "heading") return t("slash.kindHeading");
+  return t("slash.kindMaterial");
 }
 
 function sameSlashCommandQuery(a: ActiveSlashCommandQuery | null, b: ActiveSlashCommandQuery | null): boolean {
@@ -3969,6 +4493,7 @@ function sameSlashCommandQuery(a: ActiveSlashCommandQuery | null, b: ActiveSlash
     a?.to === b?.to &&
     a?.query === b?.query &&
     a?.canInsertBox === b?.canInsertBox &&
+    (a?.availableBlockCommandIds ?? []).join(" ") === (b?.availableBlockCommandIds ?? []).join(" ") &&
     a?.rect.left === b?.rect.left &&
     a?.rect.bottom === b?.rect.bottom;
 }
@@ -4000,6 +4525,7 @@ export type TextFlowDecorationRefreshKind =
   | "columnFlow"
   | "comments"
   | "gaps"
+  | "headingNumbers"
   | "guards"
   | "selected"
   | "spaceAfter";
@@ -4027,6 +4553,9 @@ function dispatchTextFlowDecorationRefresh(
   }
   if (kinds.has("gaps")) {
     transaction.setMeta(paginationGapKey, stamp);
+  }
+  if (kinds.has("headingNumbers")) {
+    transaction.setMeta(headingNumberingKey, stamp);
   }
   if (kinds.has("guards")) {
     transaction.setMeta(editGuardKey, stamp);
@@ -4626,6 +5155,16 @@ function findCodeBlockNodeInDoc(
   return found;
 }
 
+function boxTitleFromNode(node: ProseMirrorModelNode): InlineNode[] {
+  const titleNode = node.firstChild;
+  if (titleNode?.type.name !== "boxBlockTitle") {
+    return [];
+  }
+
+  const json = titleNode.toJSON() as { content?: TiptapNode[] };
+  return tiptapNodesToInlineNodes(json.content ?? []);
+}
+
 function boxSettingsBlockFromNode(node: ProseMirrorModelNode): BoxBlockNode | null {
   const boxId = typeof node.attrs.sigmaDocId === "string" ? node.attrs.sigmaDocId : null;
   if (node.type.name !== "boxBlock" || !boxId) {
@@ -4803,14 +5342,7 @@ function getTextFlowPositionAtClientPoint(
   if (!root) {
     return null;
   }
-  const rect = root.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) {
-    return null;
-  }
-
-  const left = clampNumber(clientX, rect.left + 1, rect.right - 1);
-  const top = clampNumber(clientY, rect.top + 1, rect.bottom - 1);
-  return editor.view.posAtCoords({ left, top })?.pos ?? null;
+  return posAtClientPoint(editor.view, clientX, clientY);
 }
 
 function getTextFlowBlockIdAtPosition(editor: TiptapEditor, position: number): string | null {
@@ -5112,11 +5644,102 @@ function resolveFragmentBlockId(
 }
 
 /** 上下移動でキャレットが動いたことを、選択の購読者へ知らせる。 */
-function publishCaretMove(editor: TiptapEditor, preferredX: number): void {
+function publishCaretMove(editor: TiptapEditor, preferredX: number | null): void {
   const bookmark = getTextFlowSelectionBookmark(editor, preferredX);
   if (bookmark) {
     publishTextFlowSelectionBookmark(bookmark);
   }
+}
+
+/**
+ * 段組みセクション (CSS multicol) が絡むテキストブロック境界の矢印移動の行き先。
+ *
+ * Chromium のネイティブキャレット移動は multicol の境界で信用できない:
+ *
+ * - 外→中・中→外の ← / → は渡れず、キャレットが動かない。
+ * - 段を跨ぐ ↑ / ↓ は DOM 選択だけが動いて ProseMirror の選択が古いまま残ることがある。
+ *
+ * 行き先が論理的に決まる形 (テキストブロックの端 × 隣のテキストブロックがセクションの中か
+ * 反対側) だけをここで解決し、セクションが絡まない境界は従来どおりネイティブに任せる。
+ */
+function resolveLayoutSectionArrowJump(
+  view: EditorView,
+  direction: "forward" | "backward" | "up" | "down",
+): ProseMirrorSelection | null {
+  const state = view.state;
+  const { $head, empty } = state.selection;
+  if (!empty || $head.depth === 0) {
+    return null;
+  }
+  // 端の判定は方向で分ける。左右は論理オフセットで決まる (幾何を見ないので multicol でも
+  // 揺れない)。上下は端の行かどうか — `endOfTextblock` は multicol の中で偽陰性を出すので
+  // 幾何の補いが入った判定を使う。
+  const atEdge = direction === "forward"
+    ? $head.parentOffset === $head.parent.content.size
+    : direction === "backward"
+      ? $head.parentOffset === 0
+      : caretAtTextblockEdgeLine(view, direction);
+  if (!atEdge) {
+    return null;
+  }
+  const forward = direction === "forward" || direction === "down";
+  const doc = state.doc;
+  const boundary = forward ? $head.after($head.depth) : $head.before($head.depth);
+  if (boundary < 0 || boundary > doc.content.size) {
+    return null;
+  }
+  const near = TextSelection.near(doc.resolve(boundary), forward ? 1 : -1);
+  if (near.$head.parent === $head.parent) {
+    return null;
+  }
+  const fromSection = layoutSectionAncestorPos($head);
+  const toSection = layoutSectionAncestorPos(near.$head);
+  if (direction === "forward" || direction === "backward") {
+    // 左右はセクションの境界を渡るときだけ。中どうしはネイティブで足りる。
+    return fromSection !== toSection ? near : null;
+  }
+  // 上下は「セクションの中」であれば介入する。ページ紙面のセクションは**ユニットとして**
+  // 描かれ、その editor の doc に layoutSection ノードは無い (multicol はユニットの殻の
+  // CSS)。doc の祖先では判定できないので、殻の DOM で判定する。
+  if (fromSection === null && toSection === null
+    && !view.dom.closest(".layout-section-paper-body")) {
+    return null;
+  }
+  return near;
+}
+
+/**
+ * セクション境界の上下ジャンプを適用する。行き先の**ブロック**は doc 位置で決まっているので、
+ * その行の中の横位置だけ `preferredX` (画面 px) で選び直す — 上下移動の列を保つ。
+ */
+function applyLayoutSectionArrowJump(
+  view: EditorView,
+  jump: ProseMirrorSelection,
+  preferredX: number,
+): void {
+  view.dispatch(view.state.tr.setSelection(jump).scrollIntoView());
+  try {
+    const top = view.coordsAtPos(view.state.selection.head).top;
+    const refined = view.posAtCoords({ left: preferredX, top: top + 1 })?.pos;
+    if (refined !== undefined) {
+      const $refined = view.state.doc.resolve(refined);
+      if ($refined.parent === view.state.selection.$head.parent) {
+        view.dispatch(view.state.tr.setSelection(TextSelection.near($refined, 1)));
+      }
+    }
+  } catch {
+    // 横位置の微調整は失敗しても致命ではない。
+  }
+}
+
+/** その位置を含む段組みセクションの doc 位置。セクションの外なら null。 */
+function layoutSectionAncestorPos(position: ProseMirrorSelection["$head"]): number | null {
+  for (let depth = position.depth; depth > 0; depth -= 1) {
+    if (position.node(depth).type.name === "layoutSection") {
+      return position.before(depth);
+    }
+  }
+  return null;
 }
 
 /**
@@ -5127,7 +5750,7 @@ function focusTextFlowCaretAfterBlock(
   editor: TiptapEditor,
   containerBlockId: string,
   direction: "up" | "down",
-  preferredX: number,
+  preferredX: number | null,
 ): boolean {
   let containerPosition: number | null = null;
   let containerSize = 0;
@@ -5160,6 +5783,10 @@ function focusTextFlowCaretAfterBlock(
     }
     editor.view.dispatch(editor.state.tr.setSelection(near));
     focusTextFlowSurface(editor, null);
+    if (preferredX === null) {
+      // 左右移動の出口。論理的な端 (直後の先頭 / 直前の末尾) がそのまま答えで、横位置は選ばない。
+      return true;
+    }
     // 行が決まったので、その行の中の横位置だけ `preferredX` で選び直す。
     try {
       const top = editor.view.coordsAtPos(editor.state.selection.head).top;

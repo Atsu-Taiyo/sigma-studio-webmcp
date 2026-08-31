@@ -1,5 +1,5 @@
 import type { EditorClipboardPayload } from "@/lib/editor-clipboard";
-import type { Graph2DPreset } from "@/lib/graph2d";
+import type { Graph2DPreset, Graph3DPreset } from "@/features/document";
 import type { SharedFillState } from "./overlay-canvas/style-patch";
 import type { OverlayArrowhead, OverlayAsset, OverlayDash, OverlayPoint, OverlayShape, OverlayTextSize } from "./overlay-canvas/types";
 
@@ -72,6 +72,7 @@ export type OverlayCommand =
   | "text"
   | "callout"
   | "graph"
+  | "graph3d"
   | "table";
 
 export type OverlayArrangeAction = "front" | "back" | "forward" | "backward";
@@ -149,6 +150,7 @@ export interface OverlayCommandRequest {
   id: number;
   command: OverlayCommand;
   graphPreset?: Graph2DPreset;
+  graph3dPreset?: Graph3DPreset;
   /** 起点となったツールバーボタンの画面座標（表のサイズ選択ポップオーバーをその近くに出すため）。 */
   anchorRect?: { x: number; y: number; width: number; height: number };
 }
@@ -190,6 +192,7 @@ export type OverlayModeId =
   | "overlay.textEditing"
   | "overlay.imageCropping"
   | "overlay.graphEditing"
+  | "overlay.graph3dEditing"
   | "overlay.tableEditing"
   | "overlay.originPicking"
   | "overlay.graphFillPicking"
@@ -212,6 +215,7 @@ export const OVERLAY_MODE_STATUS_LABEL_IDS = [
   "textEditing",
   "imageCropping",
   "graphEditing",
+  "graph3dEditing",
   "tableEditing",
   "originPicking",
   "fillPicking",

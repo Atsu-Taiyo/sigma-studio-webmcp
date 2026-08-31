@@ -50,7 +50,7 @@ describe("shape adjustment readouts", () => {
           baseEnd: { x: 68, y: 72 },
           tip: { x: 24, y: 100 },
         },
-        richText: { blocks: [{ type: "paragraph", children: [] }] },
+        blocks: [{ type: "paragraph", id: "shape_adjustment_test_31", children: [] }],
         color: "black",
         size: "m",
         dash: "solid",

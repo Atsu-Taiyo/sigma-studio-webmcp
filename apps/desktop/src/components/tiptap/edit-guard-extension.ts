@@ -86,6 +86,13 @@ export const EditGuardExtension = Extension.create<EditGuardOptions>({
           decorations: (state) => createEditGuardDecorations(state.doc, getGuards()),
         },
         filterTransaction: (transaction, state) => {
+          // `setContent(..., { emitUpdate: false })` marks canonical SigmaDoc -> editor view
+          // synchronization with `preventUpdate`. It is not a user edit and must cross the guard;
+          // otherwise applying one proposal while another proposal still locks the same block
+          // updates SigmaDoc but leaves the derived Tiptap view permanently stale.
+          if (transaction.getMeta("preventUpdate")) {
+            return true;
+          }
           const guards = getGuards();
           if (guards.size === 0) {
             return true;

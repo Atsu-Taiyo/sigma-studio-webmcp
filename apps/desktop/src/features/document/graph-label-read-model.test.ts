@@ -5,12 +5,12 @@ import {
   getExistingGraphAxisLabelTextShapeIdsByKey,
   getGraphAxisLabelSpecText,
   getGraphAxisLabelTextsByKey,
-  getOverlayRichTextLabelText,
+  getOverlayTextBlocksLabelText,
   hydrateGraphSpecWithOwnedLabelTexts,
 } from "./graph-label-read-model";
 import type {
   OverlayGraphShape,
-  OverlayRichTextDocument,
+  OverlayTextBlock,
   OverlayShape,
   OverlayTextShape,
 } from "./overlay-model";
@@ -53,7 +53,7 @@ function graphShape(
 
 function labelShape(
   id: string,
-  richText: OverlayRichTextDocument,
+  blocks: OverlayTextBlock[],
 ): OverlayTextShape {
   return {
     id,
@@ -63,8 +63,7 @@ function labelShape(
     props: {
       w: 80,
       h: 24,
-      richText,
-      autoSize: false,
+      blocks,
       color: "black",
       size: "m",
     },
@@ -73,24 +72,24 @@ function labelShape(
 
 describe("graph label read model", () => {
   it("concatenates canonical text and math inline content without separators", () => {
-    const richText: OverlayRichTextDocument = {
-      blocks: [
-        {
-          type: "paragraph",
-          children: [
-            { type: "text", text: " A=" },
-            { type: "mathInline", id: "math_x", tex: "x^2", display: "inline" },
-            { type: "text", text: "+1" },
-          ],
-        },
-        {
-          type: "paragraph",
-          children: [{ type: "text", text: " tail " }],
-        },
-      ],
-    };
+    const blocks: OverlayTextBlock[] = [
+      {
+        type: "paragraph",
+        id: "p_1",
+        children: [
+          { type: "text", text: " A=" },
+          { type: "mathInline", id: "math_x", tex: "x^2", display: "inline" },
+          { type: "text", text: "+1" },
+        ],
+      },
+      {
+        type: "paragraph",
+        id: "p_2",
+        children: [{ type: "text", text: " tail " }],
+      },
+    ];
 
-    expect(getOverlayRichTextLabelText(richText)).toBe(" A=x^2+1 tail ");
+    expect(getOverlayTextBlocksLabelText(blocks)).toBe(" A=x^2+1 tail ");
   });
 
   it("trims fixed spec labels and omits whitespace-only labels", () => {
@@ -108,15 +107,14 @@ describe("graph label read model", () => {
       y: "missing_label",
       origin: "not_text",
     });
-    const xLabel = labelShape("label_x", {
-      blocks: [{
-        type: "paragraph",
-        children: [
-          { type: "text", text: "x=" },
-          { type: "mathInline", id: "math_t", tex: "t+1", display: "inline" },
-        ],
-      }],
-    });
+    const xLabel = labelShape("label_x", [{
+      type: "paragraph",
+      id: "p_x",
+      children: [
+        { type: "text", text: "x=" },
+        { type: "mathInline", id: "math_t", tex: "t+1", display: "inline" },
+      ],
+    }]);
     const notText: OverlayShape = {
       id: "not_text",
       type: "geo",
@@ -149,9 +147,7 @@ describe("graph label read model", () => {
 
   it("does not replace an existing empty text label with legacy spec text", () => {
     const graph = graphShape({ x: "label_x" });
-    const emptyLabel = labelShape("label_x", {
-      blocks: [{ type: "paragraph", children: [] }],
-    });
+    const emptyLabel = labelShape("label_x", [{ type: "paragraph", id: "p_empty", children: [] }]);
 
     expect(getGraphAxisLabelTextsByKey(graph, [graph, emptyLabel]).x).toBe("");
   });
@@ -165,10 +161,10 @@ describe("graph label read model", () => {
     graph.props.spec.annotations = [{ id: "note_1", x: "2", y: "3", text: "stale note" }];
     graph.props.spec.curves = [{ id: "curve_1", expr: "x", color: "black", label: "stale curve" }];
     const labels = [
-      labelShape("label_x", { blocks: [{ type: "paragraph", children: [{ type: "text", text: "X" }] }] }),
-      labelShape("label_point", { blocks: [{ type: "paragraph", children: [{ type: "text", text: "P" }] }] }),
-      labelShape("label_note", { blocks: [{ type: "paragraph", children: [{ type: "text", text: "N" }] }] }),
-      labelShape("label_curve", { blocks: [{ type: "paragraph", children: [{ type: "text", text: "f" }] }] }),
+      labelShape("label_x", [{ type: "paragraph", id: "p_lx", children: [{ type: "text", text: "X" }] }]),
+      labelShape("label_point", [{ type: "paragraph", id: "p_lp", children: [{ type: "text", text: "P" }] }]),
+      labelShape("label_note", [{ type: "paragraph", id: "p_ln", children: [{ type: "text", text: "N" }] }]),
+      labelShape("label_curve", [{ type: "paragraph", id: "p_lc", children: [{ type: "text", text: "f" }] }]),
     ];
 
     const hydrated = hydrateGraphSpecWithOwnedLabelTexts(graph, [graph, ...labels]);

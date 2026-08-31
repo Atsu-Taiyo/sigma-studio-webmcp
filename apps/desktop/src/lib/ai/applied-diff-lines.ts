@@ -151,7 +151,7 @@ export function flattenBlockLines(
   if (block.type === "quote") {
     return block.blocks.flatMap((child) => flattenLayoutSectionChild(child, undefined));
   }
-  // problem: 導入文/問題文/コメント/解答の順(AiEditableBlockPreviewの表示順と揃える)。
+  // problem: 導入文/問題文/コメント/解答の順(紙面描画の PROBLEM_AREA_ORDER と揃える)。
   // 区分の呼び名は `editor.block.problem*` が唯一の出典 (本文編集面と同じ語)。
   const areas: Array<[ProblemAreaBlock[], string]> = [
     [block.lead, t("block.problemLead")],

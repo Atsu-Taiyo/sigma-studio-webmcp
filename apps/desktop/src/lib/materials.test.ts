@@ -110,8 +110,8 @@ describe("materials", () => {
             anchor: { type: "shape", shapeId: "shape_geo", dx: 12, dy: 8 },
             props: {
               w: 40,
-              richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "A" }] }] },
-              autoSize: false,
+              h: 16,
+              blocks: [{ type: "paragraph", id: "materials_test_33", children: [{ type: "text", text: "A" }] }],
               color: "black",
               size: "s",
             },
@@ -223,8 +223,8 @@ describe("materials", () => {
             anchor: { type: "shape", shapeId: "shape_geo", dx: 20, dy: 12 },
             props: {
               w: 40,
-              richText: { blocks: [{ type: "paragraph", children: [{ type: "text", text: "A" }] }] },
-              autoSize: false,
+              h: 16,
+              blocks: [{ type: "paragraph", id: "materials_test_34", children: [{ type: "text", text: "A" }] }],
               color: "black",
               size: "s",
             },

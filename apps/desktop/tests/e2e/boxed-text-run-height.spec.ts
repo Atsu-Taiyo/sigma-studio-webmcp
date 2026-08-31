@@ -798,13 +798,11 @@ function createOverlayBoxedTextDocument(): SigmaDocument {
         props: {
           w: 360,
           h: 72,
-          autoSize: false,
           color: "#111827",
           size: "m",
-          richText: {
-            blocks: [
+          blocks: [
               {
-                type: "paragraph",
+                type: "paragraph", id: "boxed_text_run_height_spec_39",
                 lineHeight: "1.8",
                 children: [
                   {
@@ -830,7 +828,6 @@ function createOverlayBoxedTextDocument(): SigmaDocument {
                 ],
               },
             ],
-          },
         },
       },
     ],
@@ -879,10 +876,9 @@ function createSegmentBorderIntentDocument(): SigmaDocument {
         props: {
           w: 360,
           h: 72,
-          autoSize: false,
           color: "#111827",
           size: "m",
-          richText: { blocks: [{ type: "paragraph", lineHeight: "1.8", children: boxedRun("m_intent_overlay") }] },
+          blocks: [{ type: "paragraph", id: "boxed_text_run_height_spec_40", lineHeight: "1.8", children: boxedRun("m_intent_overlay") }],
         },
       },
       {
