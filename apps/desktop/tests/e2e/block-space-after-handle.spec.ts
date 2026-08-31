@@ -933,7 +933,15 @@ test("the drag stays continuous at 150% zoom", async ({ page }) => {
   test.setTimeout(90_000);
 
   await openDocument(page, createDocument());
-  await selectUiOptionInPage(page, "ズーム", "150");
+  await page.evaluate(() => {
+    const select = document.querySelector<HTMLSelectElement>('select[aria-label="ズーム"]');
+    if (!select) {
+      throw new Error("ズームのselectが見つかりません");
+    }
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    setter?.call(select, "150");
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
   await page.waitForTimeout(800);
 
   const scale = await readScale(page, "p_spaced");
