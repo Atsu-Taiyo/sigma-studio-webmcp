@@ -1084,11 +1084,106 @@ test("the handle never reaches the PDF surface", async ({ page }) => {
   await expect(page.locator(".page-block-affordance-layer")).toHaveCount(0);
 });
 
+/**
+ * 伸ばした余白の下端がフッター帯へ入っても、掴み直して縮められる。
+ *
+ * フッター帯 (`.page-running-editor-band`) はダブルタップで直接編集に入るので当たり判定を
+ * 持ち、本文より前面に敷かれている。ページ下余白の側にあるので普段は本文と重ならないが、
+ * 下余白を伸ばすとブロックの下端がそこへ入る。当たり判定を最前面の 1 枚だけで見ていた頃は、
+ * そこで「ブロックが居ない」に倒れて左ガターのアフォーダンスがまるごと消え、伸ばした余白を
+ * 二度と掴めなかった。
+ */
+test("the handle survives when the grown space reaches the footer band", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await installDesktopRuntimeMock(page, createFooterBandDocument());
+  await page.goto("/");
+  await page.waitForTimeout(1500);
+
+  const footerBand = page.locator(".page-running-editor-band.footer").first();
+  await expect(footerBand).toHaveCount(1);
+  const band = await footerBand.boundingBox();
+
+  // 下端を帯の中まで伸ばす。ここが「掴めなくなっていた」位置。
+  const start = await blockBox(page, "p_spaced");
+  const travel = band!.y + band!.height - 6 - start.bottom;
+  expect(travel).toBeGreaterThan(20);
+  await dragHandle(page, await hoverBlock(page, "p_spaced"), travel);
+
+  const grown = await blockBox(page, "p_spaced");
+  expect(grown.bottom).toBeGreaterThan(band!.y);
+  expect(grown.bottom).toBeLessThan(band!.y + band!.height);
+
+  const handle = page.locator('.page-block-space-handle[data-block-id="p_spaced"]');
+
+  // 左ガターの、つまみの少し上 — 帯に覆われていて、つまみ自身の当たり判定にはまだ入って
+  // いない一点。ここで解決が空振りすると、寄っていく途中でつまみが unmount される。
+  const probeY = grown.bottom - 14;
+  expect(probeY).toBeGreaterThan(band!.y);
+  await page.mouse.move(grown.left + 40, grown.top + 6);
+  await expect(handle).toBeVisible();
+  await page.mouse.move(grown.left - 12, probeY);
+  await expect(handle).toBeVisible();
+
+  // 本文から左ガターのつまみへ寄せる間も、つまみは一度も消えない。
+  await page.mouse.move(grown.left + 40, grown.top + 6);
+  const target = await handle.boundingBox();
+  const [sx, sy] = [grown.left + 40, grown.top + 6];
+  const [tx, ty] = [target!.x + target!.width / 2, target!.y + target!.height / 2];
+  for (let step = 1; step <= 12; step += 1) {
+    await page.mouse.move(sx + ((tx - sx) * step) / 12, sy + ((ty - sy) * step) / 12);
+    await expect(handle).toBeVisible();
+  }
+
+  // そのまま掴んで縮められる。
+  const before = await page.evaluate(() => {
+    const element = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="p_spaced"]');
+    return element ? Number.parseFloat(getComputedStyle(element).paddingBottom || "0") : -1;
+  });
+  await dragHandle(page, handle, -DRAG_PX);
+  await expect.poll(async () => page.evaluate(() => {
+    const element = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="p_spaced"]');
+    return element ? Number.parseFloat(getComputedStyle(element).paddingBottom || "0") : -1;
+  })).toBeLessThanOrEqual(before - DRAG_PX + 2);
+});
+
 function baseDocument(docId: string): SigmaDocument {
   const document = structuredClone(sampleDocument);
   document.docId = docId;
   document.metadata = { title: "下端つまみ e2e" };
   document.comments = [];
+  return document;
+}
+
+/**
+ * フッター帯がページ下余白に敷かれた紙面。帯の上端は本文領域の下端のすぐ下なので、
+ * 下余白を少し伸ばしただけでブロックの下端が帯の中へ入る。
+ */
+function createFooterBandDocument(): SigmaDocument {
+  const document = baseDocument("doc_e2e_space_after_footer_band");
+  document.content = [
+    { type: "paragraph", id: "p_spaced", children: [{ type: "text", text: "下端を掴む段落" }] },
+    { type: "paragraph", id: "p_after", children: [{ type: "text", text: "つまみの後の段落" }] },
+  ];
+  document.pageLayout = normalizePageLayout({
+    preset: "custom",
+    pageSize: { widthMm: 210, heightMm: 110 },
+    marginsMm: { top: 10, right: 16, bottom: 18, left: 16 },
+    footer: {
+      enabled: true,
+      heightMm: 12.5,
+      offsetMm: 5,
+      showOnFirstPage: true,
+      blocks: [
+        {
+          type: "paragraph",
+          id: "page_footer_running_body",
+          children: [{ type: "text", text: "{page}" }],
+          align: "center",
+        },
+      ],
+    },
+  });
   return document;
 }
 

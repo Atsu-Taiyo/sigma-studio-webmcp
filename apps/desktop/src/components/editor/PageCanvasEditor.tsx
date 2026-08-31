@@ -8467,17 +8467,45 @@ function isAtomicTopLevelBlock(block: SigmaBlock): boolean {
 }
 
 
-/** Walks out to the outermost block element, so a nested paragraph reports its column or box. */
+/**
+ * ポインタの下の本文ブロック。**紙面の chrome を透かして** 探す。
+ *
+ * `elementFromPoint` は最前面の 1 枚しか返さない。ところが紙面には本文の上に敷かれた
+ * 当たり判定つきの層がある — 代表がヘッダー / フッター帯 (`.page-running-editor-band`:
+ * ダブルタップで直接編集に入るので `pointer-events` を持つ)。帯はページ余白の側にあるので
+ * 普段は本文と重ならないが、**ブロック下余白を伸ばして下端が余白域へ入る**と重なる。
+ * そこで 1 枚しか見ないと「ここにブロックは居ない」に倒れ、左ガターのつまみ・グリップ・＋ が
+ * まるごと消える ＝ 伸ばした余白を掴み直して縮められない。
+ *
+ * なので重なり順に走査して、**最初にブロックへ解決できた 1 枚**を採る。紙面の外の何か
+ * (ダイアログ・ポップオーバー) が覆っているときはそこで打ち切る — そこは「本文が隠れている」
+ * が正しい (`canvas` の祖先は覆っているわけではないので素通りする)。
+ */
 function resolveTopLevelBlockAtPoint(
   canvas: HTMLElement,
   clientX: number,
   clientY: number,
 ): { id: string; element: HTMLElement; isProblem: boolean } | null {
-  const target = canvas.ownerDocument.elementFromPoint(clientX, clientY);
-  if (!(target instanceof Element) || !canvas.contains(target)) {
-    return null;
+  for (const target of canvas.ownerDocument.elementsFromPoint(clientX, clientY)) {
+    if (!canvas.contains(target)) {
+      if (target.contains(canvas)) {
+        continue;
+      }
+      return null;
+    }
+    const owner = resolveBlockOwnerOf(canvas, target);
+    if (owner) {
+      return owner;
+    }
   }
+  return null;
+}
 
+/** Walks out to the outermost block element, so a nested paragraph reports its column or box. */
+function resolveBlockOwnerOf(
+  canvas: HTMLElement,
+  target: Element,
+): { id: string; element: HTMLElement; isProblem: boolean } | null {
   const problemArea = target.closest<HTMLElement>("[data-problem-id]");
   const problemId = problemArea?.getAttribute("data-problem-id");
   if (problemArea && problemId) {
