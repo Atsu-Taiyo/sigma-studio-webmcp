@@ -133,6 +133,7 @@ import {
   getTextFlowBlockEditorLength,
   getTextFlowBlockIds,
   getTextFlowBlocksSyncKey,
+  hasTextFlowBlockAttributeChange,
   hasTextFlowBlockKindChange,
   idPrefixForTextNode,
   isRecord,
@@ -144,6 +145,7 @@ import {
   shouldSyncExternalTextFlowContent,
   shouldSyncFocusedTextFlowContent,
   shouldUseDocumentNextBlockForPageBreak,
+  textFlowBlockAttributeSignature,
   textFlowBlocksContainId,
   type ManualTextPageBreakSelection,
   type TextFlowBlock,
@@ -2219,6 +2221,7 @@ function TextFlowEditorImpl({
       && editor.isFocused
       && areTextFlowBlockIdSequencesEqual(editorBlockIds, nextBlockIds)
       && !hasTextFlowBlockKindChange(getEditorTextBlockKinds(editor), blocksRef.current)
+      && !hasTextFlowBlockAttributeChange(getEditorTextBlockAttributes(editor), blocksRef.current)
     ) {
       return;
     }
@@ -2268,7 +2271,8 @@ function TextFlowEditorImpl({
       const shouldSyncFocusedEditor =
         editor.isFocused &&
         (shouldSyncFocusedTextFlowContent(getEditorTextBlockIds(editor), blocksRef.current)
-          || hasTextFlowBlockKindChange(getEditorTextBlockKinds(editor), blocksRef.current));
+          || hasTextFlowBlockKindChange(getEditorTextBlockKinds(editor), blocksRef.current)
+          || hasTextFlowBlockAttributeChange(getEditorTextBlockAttributes(editor), blocksRef.current));
       if (!editor.isDestroyed && (!editor.isFocused || shouldSyncFocusedEditor)) {
         applySync(() => {
           setTextFlowContentPreservingSelection(editor, blocksRef.current);
@@ -4684,6 +4688,27 @@ function getEditorTextBlockKinds(editor: TiptapEditor): Map<string, TextFlowBloc
   });
 
   return kinds;
+}
+
+/**
+ * PM の doc から読んだ非構造属性の署名。`hasTextFlowBlockAttributeChange` が SigmaDoc 側と
+ * 突き合わせる。**署名を作るのは SigmaDoc 側と同じ関数**なので、属性が増えてもここは変わらない。
+ *
+ * リスト項目の先頭段落は SigmaDoc では listItem で、あちらの写像に載らない。両側に載っている
+ * id だけを突き合わせる規約なので、ここでも素直に外しておく。
+ */
+export function getEditorTextBlockAttributes(editor: TiptapEditor): Map<string, string> {
+  const attributes = new Map<string, string>();
+
+  editor.state.doc.descendants((node) => {
+    const id = node.attrs.sigmaDocId;
+    if (typeof id !== "string" || node.attrs.sigmaDocType === "listItem") {
+      return;
+    }
+    attributes.set(id, textFlowBlockAttributeSignature(node.attrs));
+  });
+
+  return attributes;
 }
 
 function getEditorTextBlockIds(editor: TiptapEditor): string[] {

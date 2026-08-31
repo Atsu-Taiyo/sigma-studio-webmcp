@@ -10,8 +10,11 @@ import {
   getTextFlowColumnLayoutsSyncKey,
   getTextFlowFragmentLayoutsSyncKey,
   getLastTextFlowBlockId,
+  getTextFlowBlockAttributes,
   getTextFlowBlockKinds,
+  hasTextFlowBlockAttributeChange,
   hasTextFlowBlockKindChange,
+  textFlowBlockAttributeSignature,
   getTextFlowBlockIds,
   getTextFlowBlocksSyncKey,
   shouldSyncExternalTextFlowContent,
@@ -386,5 +389,76 @@ describe("hasTextFlowBlockKindChange", () => {
       styleId: "fancybox",
       blocks: [heading("inner", 2)],
     }])).toBe(true);
+  });
+});
+
+describe("hasTextFlowBlockAttributeChange", () => {
+  // 入れ物の中へも入れるので、union ではなく段落そのものの型で返す。
+  const paragraph = (id: string, spaceAfterPx?: number) => (
+    spaceAfterPx === undefined
+      ? { type: "paragraph" as const, id, children: [] }
+      : { type: "paragraph" as const, id, children: [], spaceAfterPx }
+  );
+
+  it("下余白が付いたら描き直しを求める", () => {
+    const editorAttributes = getTextFlowBlockAttributes([paragraph("p1")]);
+    expect(hasTextFlowBlockAttributeChange(editorAttributes, [paragraph("p1", 40)])).toBe(true);
+  });
+
+  it("下余白が変わっても、消えても求める", () => {
+    const editorAttributes = getTextFlowBlockAttributes([paragraph("p1", 40)]);
+    expect(hasTextFlowBlockAttributeChange(editorAttributes, [paragraph("p1", 80)])).toBe(true);
+    expect(hasTextFlowBlockAttributeChange(editorAttributes, [paragraph("p1")])).toBe(true);
+  });
+
+  it("同じ値なら求めない", () => {
+    const editorAttributes = getTextFlowBlockAttributes([paragraph("p1", 40), paragraph("p2")]);
+    expect(hasTextFlowBlockAttributeChange(editorAttributes, [paragraph("p1", 40), paragraph("p2")])).toBe(false);
+  });
+
+  /**
+   * 正規化を挟まないと、PM 側の `null` / SigmaDoc 側の `0` / 小数が別の署名になり、
+   * 焦点面への `setContent` が毎レンダー走り続ける (同期が止まらない)。
+   */
+  it("「値なし」と同じ意味の値は同じ署名になる", () => {
+    const editorAttributes = getTextFlowBlockAttributes([paragraph("p1")]);
+    expect(hasTextFlowBlockAttributeChange(editorAttributes, [paragraph("p1", 0)])).toBe(false);
+    expect(textFlowBlockAttributeSignature({ spaceAfterPx: null }))
+      .toBe(textFlowBlockAttributeSignature({}));
+    expect(textFlowBlockAttributeSignature({ spaceAfterPx: 40.4 }))
+      .toBe(textFlowBlockAttributeSignature({ spaceAfterPx: 40 }));
+  });
+
+  it("片側にしか無い id は突き合わせない", () => {
+    const editorAttributes = getTextFlowBlockAttributes([paragraph("p1")]);
+    expect(hasTextFlowBlockAttributeChange(editorAttributes, [paragraph("p2", 40)])).toBe(false);
+  });
+
+  it("枠・段組・リストの中のブロックも見る", () => {
+    const nested = (spaceAfterPx?: number): TextFlowBlock[] => ([{
+      type: "boxBlock",
+      id: "box",
+      styleId: "fancybox",
+      blocks: [{
+        type: "layoutSection",
+        id: "layout",
+        layout: { columnCount: 2 },
+        children: [paragraph("inner", spaceAfterPx)],
+      }],
+    }]);
+    expect(hasTextFlowBlockAttributeChange(getTextFlowBlockAttributes(nested()), nested(40))).toBe(true);
+
+    const list = (spaceAfterPx?: number): TextFlowBlock[] => ([{
+      type: "list",
+      id: "list",
+      listType: "bullet",
+      items: [{
+        type: "listItem",
+        id: "item",
+        children: [],
+        continuations: [paragraph("continuation", spaceAfterPx)],
+      }],
+    }]);
+    expect(hasTextFlowBlockAttributeChange(getTextFlowBlockAttributes(list()), list(40))).toBe(true);
   });
 });

@@ -7,11 +7,16 @@ import {
   BoxBlockBodyExtension,
   BoxBlockExtension,
   BoxBlockTitleExtension,
+  getEditorTextBlockAttributes,
   LayoutSectionExtension,
   SigmaDocTextAttrs,
 } from "@/components/editor/TextFlowEditor";
 import { createRichTextEngineExtensions } from "@/components/tiptap/rich-text-engine";
-import type { TextFlowBlock } from "@/features/text-editing";
+import {
+  getTextFlowBlockAttributes,
+  hasTextFlowBlockAttributeChange,
+  type TextFlowBlock,
+} from "@/features/text-editing";
 
 import { textFlowBlockToTiptapNode, textFlowToTiptap, tiptapToTextFlow } from "./tiptap-document-adapter";
 import { sliceToTextFlowBlocks } from "./text-run-slice";
@@ -263,6 +268,57 @@ describe("block space after round trip", () => {
     // 枠を持つ引用は今回は描かない (padding が枠の内側に入るため)。値は doc に残る。
     expect(dom.querySelector<HTMLElement>('[data-sigma-doc-id="quote_space"]')?.style
       .getPropertyValue("--sigma-doc-space-after")).toBe("");
+    editor.destroy();
+  });
+
+  /**
+   * フォーカス中の面への同期は「PM のノード属性から作った署名」と「SigmaDoc から作った署名」の
+   * 食い違いで起こす。**どれか 1 種別でも往復で食い違うと、その面への `setContent` が毎レンダー
+   * 走り続ける** (キャレットが飛び続ける) ので、全種別を実物のスキーマで突き合わせる。
+   */
+  it("gives every block family the same attribute signature on both sides", () => {
+    const blocks: TextFlowBlock[] = [
+      PARAGRAPH_WITH_SPACE,
+      { type: "heading", id: "h_space", level: 2, children: [], spaceAfterPx: 8 },
+      { type: "section", id: "s_space", title: "節", spaceAfterPx: 9 },
+      {
+        type: "list",
+        id: "list_space",
+        listType: "bullet",
+        items: [{
+          type: "listItem",
+          id: "li_space",
+          children: [{ type: "text", text: "項目" }],
+          continuations: [{ type: "paragraph", id: "li_cont", children: [], spaceAfterPx: 16 }],
+        }],
+        spaceAfterPx: 10,
+      },
+      { type: "divider", id: "divider_space", spaceAfterPx: 11 },
+      { type: "quote", id: "quote_space", blocks: [{ type: "paragraph", id: "quote_p", children: [], spaceAfterPx: 17 }], spaceAfterPx: 12 },
+      { type: "codeBlock", id: "code_space", children: [], spaceAfterPx: 13 },
+      {
+        type: "boxBlock",
+        id: "box_space",
+        styleId: "fancybox",
+        blocks: [{ type: "paragraph", id: "box_p", children: [], spaceAfterPx: 18 }],
+        spaceAfterPx: 14,
+      },
+      {
+        type: "layoutSection",
+        id: "layout_space",
+        layout: { columnCount: 2 },
+        children: [{ type: "paragraph", id: "layout_p", children: [], spaceAfterPx: 19 }],
+        spaceAfterPx: 15,
+      },
+    ];
+    const editor = createEditor(blocks);
+
+    expect(hasTextFlowBlockAttributeChange(getEditorTextBlockAttributes(editor), blocks)).toBe(false);
+    // 突き合わせが空振りしていない (どちらの写像にも実際に値が載っている) ことも見る。
+    const editorAttributes = getEditorTextBlockAttributes(editor);
+    for (const [id, signature] of getTextFlowBlockAttributes(blocks)) {
+      expect(editorAttributes.get(id), `${id} の署名が PM 側に無い`).toBe(signature);
+    }
     editor.destroy();
   });
 

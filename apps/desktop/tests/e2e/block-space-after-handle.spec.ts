@@ -316,6 +316,45 @@ test("dragging the handle does not move the caret or the selection", async ({ pa
   expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe(selectionBefore);
 });
 
+/**
+ * **キャレットを本文に置いたまま**離しても、確定した余白が紙面に残る。
+ *
+ * 編集中の面 (ProseMirror) は自分が正本なので、外からの更新はブロック id 列か種別が動いた
+ * ときだけ流し込まれる。下余白は id も種別も動かさないので、この経路を通さないとキャレットの
+ * 居るチャンクにだけ永遠に届かない —「離した瞬間に元の位置へ戻る」の正体がそれだった。
+ * 文書には正しく入るので、保存を見るだけでは検出できない: **紙面の padding を見る**。
+ *
+ * 置き方は **1 回のクリック**でなければならない。ダブル/トリプルクリックは紙面の
+ * 「余白のダブルタップ」経路に吸われて面のフォーカスが外れ、外部同期が普通に流れてしまう
+ * (上の選択の test が不具合を素通りしていたのはこれ)。焦点が本文にあることを先に確かめる。
+ */
+test("the committed space survives with the caret still in the body", async ({ page }) => {
+  test.setTimeout(60_000);
+
+  await installDesktopRuntimeMock(page, createDocument());
+  await page.goto("/");
+  await page.waitForTimeout(1500);
+
+  await expect(page.locator('.page-flow [data-sigma-doc-id="p_after"]')).toBeVisible();
+  // 本文を編集していた流れそのもの: キャレットが同じチャンクに残ったまま掴む。
+  await page.locator('.page-flow [data-sigma-doc-id="p_before"]').first().click();
+  await expect.poll(async () => page.evaluate(
+    () => !!document.activeElement?.closest(".ProseMirror"),
+  )).toBe(true);
+
+  const scale = await readScale(page, "p_spaced");
+  const startTop = await blockTop(page, "p_after");
+  await dragHandle(page, await hoverBlock(page, "p_spaced"), DRAG_PX * scale);
+
+  await expect.poll(async () => Math.round((await blockTop(page, "p_after") - startTop) / scale))
+    .toBeGreaterThanOrEqual(DRAG_PX - 2);
+  // 紙面の面そのものが余白を持っている (プレビューの平行移動が残っているだけではない)。
+  await expect.poll(async () => page.evaluate(() => {
+    const element = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="p_spaced"]');
+    return element ? Number.parseFloat(window.getComputedStyle(element).paddingBottom || "0") : 0;
+  })).toBeGreaterThanOrEqual(DRAG_PX - 2);
+});
+
 test("the handle follows the column a block sits in", async ({ page }) => {
   test.setTimeout(60_000);
 

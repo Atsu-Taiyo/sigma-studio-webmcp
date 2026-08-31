@@ -1,3 +1,4 @@
+import { normalizeBlockSpaceAfterPx } from "@/features/document";
 import type {
   BoxBlockChildBlock,
   BoxFrameSpec,
@@ -333,6 +334,51 @@ export function hasTextFlowBlockKindChange(
   return false;
 }
 
+/**
+ * SigmaDoc だけが運ぶ **非構造の属性** の写像 (ブロック id → 署名)。
+ *
+ * {@link getTextFlowBlockKinds} と同じ穴をふさぐ 2 枚目。フォーカス中のエディタの受動同期は
+ * 「ブロック id 列が同じなら何もしない」ので、id も種別も動かさない属性は、キャレットの居る面
+ * にだけ永遠に届かない。下端つまみの `spaceAfterPx` がまさにそれで、確定値が紙面に出ないまま
+ * 局所プレビューだけが外れる ＝ 離した瞬間に元の位置へ戻って見える、という形で出ていた。
+ *
+ * 載せてよいのは **PM のノード属性としてそのまま往復する値** だけ。往復で同じ値に戻らない
+ * ものを載せると毎回「変わった」と判定され、焦点面への `setContent` が止まらなくなる。
+ * 突き合わせるのは双方に載っている id だけなので、片側にしか無いブロック (リスト項目など) は
+ * 自然に外れる。
+ */
+export function getTextFlowBlockAttributes(blocks: TextFlowBlock[]): Map<string, string> {
+  const attributes = new Map<string, string>();
+  collectTextFlowBlockAttributes(blocks, attributes);
+  return attributes;
+}
+
+export function hasTextFlowBlockAttributeChange(
+  editorAttributes: ReadonlyMap<string, string>,
+  blocks: TextFlowBlock[],
+): boolean {
+  const attributes = getTextFlowBlockAttributes(blocks);
+  for (const [id, signature] of attributes) {
+    const editorSignature = editorAttributes.get(id);
+    if (editorSignature !== undefined && editorSignature !== signature) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 突き合わせる値を 1 つの文字列に畳む。**SigmaDoc 側と PM 側の両方がこれを呼ぶ**ので、
+ * 属性を増やすときはここへ 1 つ足すだけで両側が同時に増える (正規化も共通になる)。
+ */
+export function textFlowBlockAttributeSignature(
+  values: { spaceAfterPx?: unknown },
+): string {
+  return [
+    normalizeBlockSpaceAfterPx(values.spaceAfterPx) ?? "",
+  ].join(" ");
+}
+
 function collectTextFlowBlockKinds(
   blocks: readonly TextFlowBlock[],
   kinds: Map<string, TextFlowBlockKind>,
@@ -368,6 +414,30 @@ function collectTextFlowBlockKinds(
         // 項目そのものは PM 側で段落として描かれるが SigmaDoc では listItem なので載せない。
         collectTextFlowBlockKinds(item.continuations ?? [], kinds);
         collectTextFlowBlockKinds(item.nested ?? [], kinds);
+      }
+    }
+  }
+}
+
+function collectTextFlowBlockAttributes(
+  blocks: readonly TextFlowBlock[],
+  attributes: Map<string, string>,
+): void {
+  for (const block of blocks) {
+    attributes.set(block.id, textFlowBlockAttributeSignature(block));
+    if (block.type === "quote" || block.type === "boxBlock") {
+      collectTextFlowBlockAttributes(block.blocks, attributes);
+      continue;
+    }
+    if (block.type === "layoutSection") {
+      collectTextFlowBlockAttributes(block.children, attributes);
+      continue;
+    }
+    if (block.type === "list") {
+      for (const item of block.items) {
+        // 項目そのものは SigmaDoc では listItem で、下余白を持たない。中に入った本文だけ載せる。
+        collectTextFlowBlockAttributes(item.continuations ?? [], attributes);
+        collectTextFlowBlockAttributes(item.nested ?? [], attributes);
       }
     }
   }
