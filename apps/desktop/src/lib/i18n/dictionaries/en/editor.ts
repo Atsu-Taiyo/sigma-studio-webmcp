@@ -15,6 +15,11 @@ export const editor = {
   webMcpProposal: {
     pendingOperationsAnnouncement: "A draft with {{operations}} operations is waiting for review.",
     applyFailed: "Could not apply the change. Ask the agent to read the current content and try again.",
+    applyRejected: "The editor did not accept the change. Apply this draft again when editing is available.",
+    applyConflict: "Could not apply the change because these targets changed: {{targets}}. Discard this draft, then ask the agent to read the latest content and create a new proposal.",
+    previewConflict: "This draft conflicts with changes to these targets: {{targets}}. Discard this draft, then ask the agent to read the latest content and create a new proposal.",
+    discardDraft: "Discard draft",
+    previewStale: "The document changed after this preview was shown. Review the refreshed preview, then apply it again.",
     noPendingAnnouncement: "No proposed changes are waiting for review.",
   },
   body: {

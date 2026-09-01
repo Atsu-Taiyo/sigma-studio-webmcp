@@ -28,6 +28,11 @@ export const editor = {
   webMcpProposal: {
     pendingOperationsAnnouncement: "{{operations}}操作のドラフトが確認待ちです。",
     applyFailed: "変更を適用できませんでした。エージェントに現在の内容を読み直してもらい、もう一度依頼してください。",
+    applyRejected: "エディタが変更を受け付けませんでした。編集できる状態になってから、このドラフトをもう一度適用してください。",
+    applyConflict: "対象（{{targets}}）が変更されたため適用できませんでした。このドラフトを破棄してから、エージェントに最新の内容を読み直して新しい提案を作成してもらってください。",
+    previewConflict: "対象（{{targets}}）への変更とこのドラフトが競合しています。このドラフトを破棄してから、エージェントに最新の内容を読み直して新しい提案を作成してもらってください。",
+    discardDraft: "ドラフトを破棄",
+    previewStale: "プレビュー表示後に教材が変更されました。更新されたプレビューを確認してから、もう一度適用してください。",
     noPendingAnnouncement: "確認待ちの変更案はありません。",
   },
   body: {

@@ -6,7 +6,10 @@ import { findBlock } from "@/lib/document-tree";
 import { sampleDocument } from "@/lib/sample-document";
 import {
   createSigmaWebMcpTools,
+  END_OF_DOCUMENT_TARGET,
   getWebMcpAgentInstructionsStorageKey,
+  initializeWebMcpHeavyFallbackCounter,
+  recordWebMcpHeavyFallback,
   SIGMA_WEB_MCP_TOOL_NAMES,
   WEB_MCP_PROPOSAL_ID,
   type SigmaWebMcpPorts,
@@ -44,6 +47,7 @@ function createHarness(initial = baseDocument(), catalog: "public" | "implementa
   let document = initial;
   let revision = 0;
   let proposal: SigmaWebMcpProposal | null = null;
+  const undoStack: SigmaDocument[] = [];
   const proposalUpdates: SigmaWebMcpProposal[] = [];
   const ports: SigmaWebMcpPorts = {
     getDocument: () => document,
@@ -70,11 +74,30 @@ function createHarness(initial = baseDocument(), catalog: "public" | "implementa
     getProposalUpdates: () => proposalUpdates,
     apply: () => {
       if (!proposal) throw new Error("No proposal");
+      undoStack.push(structuredClone(document));
       document = proposal.apply(document).document;
+      proposal.accept();
       proposal = null;
       revision += 1;
     },
-    humanEdit: (next: SigmaDocument) => { document = next; revision += 1; },
+    undo: () => {
+      const previous = undoStack.pop();
+      if (!previous) throw new Error("No undo entry");
+      document = previous;
+      revision += 1;
+    },
+    humanEdit: (next: SigmaDocument) => {
+      document = next;
+      revision += 1;
+      if (proposal) {
+        try {
+          proposal = proposal.refresh(document);
+        } catch {
+          // The real Bridge keeps the last reviewed proposal visible so Apply can report the
+          // concrete conflicting target. Safe rebases replace it with a refreshed preview.
+        }
+      }
+    },
   };
 }
 
@@ -90,6 +113,13 @@ function currentShape(document: SigmaDocument, id: string): OverlayShape {
 }
 
 describe("Sigma WebMCP desktop-parity tools", () => {
+  it("keeps the heavy-fallback counter observable and at zero on the normal path (acceptance 14)", () => {
+    const target: { __sigmaWebMcpHeavyFallbackCount?: number } = {};
+    initializeWebMcpHeavyFallbackCounter(target);
+    expect(target.__sigmaWebMcpHeavyFallbackCount).toBe(0);
+    recordWebMcpHeavyFallback(target);
+    expect(target.__sigmaWebMcpHeavyFallbackCount).toBe(1);
+  });
   it("publishes the documented open-document tool set with safety annotations", () => {
     const { tools } = createHarness(baseDocument(), "public");
     expect(tools.map((tool) => tool.name)).toEqual(SIGMA_WEB_MCP_TOOL_NAMES);
@@ -606,7 +636,21 @@ describe("Sigma WebMCP desktop-parity tools", () => {
     expect(harness.getProposal()).toBeNull(); expect(findBlock(harness.getDocument(), "p_added")).toBeNull();
   });
 
-  it("rejects stale writes and stale human approval with changed target IDs", async () => {
+  it("rebases an update and a following operation over an unrelated human block edit (acceptance 1)", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
+    harness.humanEdit({
+      ...harness.getDocument(),
+      content: [harness.getDocument().content[0]!, { type: "paragraph", id: "p_second", children: [{ type: "text", text: "Human edit B" }] }],
+    });
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: END_OF_DOCUMENT_TARGET, blocks: [{ id: "p_added", text: "Agent addition" }] });
+    harness.apply();
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_existing")!)).toBe("Agent edit");
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_second")!)).toBe("Human edit B");
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_added")!)).toBe("Agent addition");
+  });
+
+  it("rejects a human change to the updated block with its target ID (acceptance 2)", async () => {
     const harness = createHarness();
     expect(() => harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "stale", text: "No" })).toThrow("STALE_TARGET");
     await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
@@ -616,30 +660,388 @@ describe("Sigma WebMCP desktop-parity tools", () => {
     expect(() => harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: "p_second", blocks: ["Another edit"] })).toThrow(/STALE_DRAFT.*p_existing/);
   });
 
-  it.each([
-    ["outputProfiles", (document: SigmaDocument) => ({ ...document, outputProfiles: { ...document.outputProfiles, student: { ...document.outputProfiles.student, showHints: true } } })],
-  ] as const)("rejects approval after a %s-only live document change", async (field, update) => {
+  it("rebases insertion after A over an unrelated B edit (acceptance 3)", async () => {
     const harness = createHarness();
-    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
-    const pending = harness.getProposal()!;
-    harness.humanEdit(update(harness.getDocument()) as SigmaDocument);
-    expect(() => pending.apply(harness.getDocument())).toThrow(new RegExp(`STALE_DRAFT.*${field}`));
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: "p_existing", blocks: [{ id: "p_ai", text: "AI" }] });
+    harness.humanEdit({ ...harness.getDocument(), content: [harness.getDocument().content[0]!, { type: "paragraph", id: "p_second", children: [{ type: "text", text: "Human B" }] }] });
+    harness.apply();
+    expect(harness.getDocument().content.map((block) => block.id)).toEqual(["p_existing", "p_ai", "p_second"]);
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_second")!)).toBe("Human B");
   });
 
-  it("rejects approval after an updatedAt-only live document change", async () => {
+  it("rejects insertion when its anchor was deleted (acceptance 4)", async () => {
     const harness = createHarness();
-    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: "p_existing", blocks: [{ id: "p_ai", text: "AI" }] });
     const pending = harness.getProposal()!;
-    harness.humanEdit({ ...harness.getDocument(), updatedAt: "2026-08-30T01:00:00.000Z" });
-    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT/);
+    harness.humanEdit({ ...harness.getDocument(), content: [harness.getDocument().content[1]!] });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*p_existing/);
   });
 
-  it("rejects approval whenever the live revision changes even if content is structurally equal", async () => {
+  it("inserts at the current document end after unrelated revision drift (acceptance 5)", async () => {
+    const harness = createHarness();
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: END_OF_DOCUMENT_TARGET, blocks: [{ id: "p_ai", text: "AI end" }] });
+    harness.humanEdit({ ...harness.getDocument(), content: [...harness.getDocument().content, { type: "paragraph", id: "p_human", children: [{ type: "text", text: "Human end" }] }] });
+    harness.apply();
+    expect(harness.getDocument().content.map((block) => block.id).slice(-2)).toEqual(["p_human", "p_ai"]);
+  });
+
+  it("preserves the call order of multiple END_OF_DOCUMENT insertions during replay", async () => {
+    const harness = createHarness();
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: END_OF_DOCUMENT_TARGET, blocks: [{ id: "p_ai_first", text: "AI first" }] });
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: END_OF_DOCUMENT_TARGET, blocks: [{ id: "p_ai_second", text: "AI second" }] });
+    harness.humanEdit({
+      ...harness.getDocument(),
+      content: [...harness.getDocument().content, { type: "paragraph", id: "p_human_end", children: [{ type: "text", text: "Human end" }] }],
+    });
+    expect(harness.getProposal()!.previewDraft.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: "insertAfter", targetId: "p_human_end", insertedBlock: expect.objectContaining({ id: "p_ai_first" }) }),
+      expect.objectContaining({ operation: "insertAfter", targetId: "p_ai_first", insertedBlock: expect.objectContaining({ id: "p_ai_second" }) }),
+    ]));
+    harness.apply();
+    expect(harness.getDocument().content.map((block) => block.id).slice(-3)).toEqual(["p_human_end", "p_ai_first", "p_ai_second"]);
+  });
+
+  it("preserves a human edit to shape B while updating shape A (acceptance 6)", async () => {
+    const shapeA: OverlayShape = { id: "shape_a", type: "geo", x: 10, y: 20, props: { w: 80, h: 50, geo: "rectangle", fill: "none", color: "#111827", labelColor: "#111827", dash: "solid", size: "m" } };
+    const shapeB: OverlayShape = { ...shapeA, id: "shape_b", x: 120 };
+    const harness = createHarness(baseDocument([shapeA, shapeB]));
+    await harness.tool("update_shape").execute({ expectedRevision: 0, shapeId: "shape_a", expectedShape: shapeA, x: 40 });
+    harness.humanEdit({ ...harness.getDocument(), pageLayout: { ...harness.getDocument().pageLayout!, overlay: { ...harness.getDocument().pageLayout!.overlay!, overlaySnapshot: { version: 1, assets: {}, shapes: [shapeA, { ...shapeB, y: 90 }] } } } });
+    harness.apply();
+    expect(currentShape(harness.getDocument(), "shape_a").x).toBe(40);
+    expect(currentShape(harness.getDocument(), "shape_b").y).toBe(90);
+  });
+
+  it("rejects concurrent changes to the same page-settings region (acceptance 7)", async () => {
+    const harness = createHarness();
+    await harness.tool("update_page_layout").execute({ expectedRevision: 0, orientation: "landscape" });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({ ...harness.getDocument(), pageLayout: { ...harness.getDocument().pageLayout!, marginsMm: { ...harness.getDocument().pageLayout!.marginsMm, left: 25 } } });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*pageLayout/);
+  });
+
+  it("accepts comments and updatedAt-only drift (acceptance 8)", async () => {
     const harness = createHarness();
     await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
-    const pending = harness.getProposal()!;
+    harness.humanEdit({
+      ...harness.getDocument(),
+      updatedAt: "2026-08-30T01:00:00.000Z",
+      comments: [{ id: "comment_human", anchor: { type: "block", blockId: "p_second" }, messages: [{ id: "message_human", body: [{ type: "text", text: "Keep" }], createdAt: "2026-08-30T01:00:00.000Z" }], createdAt: "2026-08-30T01:00:00.000Z" }],
+    });
+    harness.apply();
+    expect(harness.getDocument().comments?.[0]?.id).toBe("comment_human");
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_existing")!)).toBe("Agent edit");
+  });
+
+  it("accepts revision-only drift when the structure is equal (acceptance 9)", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
     harness.humanEdit(structuredClone(harness.getDocument()));
-    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*document/);
+    harness.apply();
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_existing")!)).toBe("Agent edit");
+  });
+
+  it("rejects an occupied generated ID and keeps the generated ID stable across replay (acceptance 10)", async () => {
+    const harness = createHarness();
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: "p_existing", blocks: [{ text: "Generated ID" }] });
+    const inserted = harness.getProposal()!.previewDraft.operations.find((operation) => operation.operation === "insertAfter");
+    if (!inserted || inserted.operation !== "insertAfter") throw new Error("Missing inserted operation");
+    const generatedId = inserted.insertedBlock.id;
+    harness.humanEdit({ ...harness.getDocument(), content: [...harness.getDocument().content, { type: "paragraph", id: generatedId, children: [{ type: "text", text: "Collision" }] }] });
+    expect(() => harness.getProposal()!.apply(harness.getDocument())).toThrow(new RegExp(`STALE_DRAFT.*${generatedId}`));
+    expect(harness.getProposal()!.previewDraft.operations.find((operation) => operation.operation === "insertAfter")).toMatchObject({ insertedBlock: { id: generatedId } });
+  });
+
+  it("rejects a human collision with an ID nested inside an inserted problem", async () => {
+    const harness = createHarness();
+    await harness.tool("create_problem_content").execute({
+      expectedRevision: 0,
+      targetId: "p_second",
+      id: "problem_with_nested_ids",
+      prompt: { id: "prompt_collision", text: "Solve it." },
+    });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({
+      ...harness.getDocument(),
+      content: [
+        ...harness.getDocument().content,
+        { type: "paragraph", id: "prompt_collision", children: [{ type: "text", text: "Human block" }] },
+      ],
+    });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*prompt_collision/);
+  });
+
+  it("keeps an implicitly generated post-problem paragraph stable when a later draft operation edits it", async () => {
+    const harness = createHarness();
+    await harness.tool("create_problem_content").execute({
+      expectedRevision: 0,
+      targetId: "p_second",
+      id: "problem_generated_body",
+      prompt: { id: "prompt_generated_body", text: "Solve it." },
+    });
+    const draftDocument = parseResult(await harness.tool("read_document").execute({ detail: "full" })).document as SigmaDocument;
+    const problemIndex = draftDocument.content.findIndex((item) => item.type === "problem");
+    expect(problemIndex).toBeGreaterThanOrEqual(0);
+    const generatedParagraphId = draftDocument.content[problemIndex + 1]?.id;
+    expect(generatedParagraphId).toMatch(/^p_[0-9a-f-]+$/);
+    expect(harness.getProposal()!.previewDraft.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: "insertAfter", insertedBlock: expect.objectContaining({ id: generatedParagraphId }) }),
+    ]));
+    await harness.tool("update_rich_content").execute({
+      expectedRevision: 0,
+      blockId: generatedParagraphId,
+      expectedContent: "",
+      text: "Agent edited generated paragraph",
+    });
+    harness.humanEdit({
+      ...harness.getDocument(),
+      content: [{ type: "paragraph", id: "p_existing", children: [{ type: "text", text: "Human unrelated" }] }, harness.getDocument().content[1]!],
+    });
+    harness.apply();
+    expect(blockToReferenceText(findBlock(harness.getDocument(), generatedParagraphId!)!)).toBe("Agent edited generated paragraph");
+  });
+
+  it("keeps an implicitly generated layout-section ID stable for a following section update", async () => {
+    const harness = createHarness();
+    await harness.tool("update_column_layout").execute({
+      expectedRevision: 0,
+      scope: "blocks",
+      blockIds: ["p_existing", "p_second"],
+      columnCount: 2,
+    });
+    const outline = parseResult(await harness.tool("get_document_outline").execute({})).outline as Array<{ id: string; type: string }>;
+    const sectionId = outline.find((item) => item.type === "layoutSection")?.id;
+    expect(sectionId).toMatch(/^layout_/);
+    await harness.tool("update_column_layout").execute({ expectedRevision: 0, scope: "section", sectionId, columnCount: 3 });
+    harness.humanEdit({ ...harness.getDocument(), metadata: { ...harness.getDocument().metadata, title: "Human title" } });
+    harness.apply();
+    expect(findBlock(harness.getDocument(), sectionId!)).toMatchObject({ type: "layoutSection", layout: { columnCount: 3 } });
+  });
+
+  it("rejects a human insertion inside a pending column-wrap range with target IDs", async () => {
+    const harness = createHarness();
+    await harness.tool("update_column_layout").execute({
+      expectedRevision: 0,
+      scope: "blocks",
+      blockIds: ["p_existing", "p_second"],
+      columnCount: 2,
+    });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({
+      ...harness.getDocument(),
+      content: [
+        harness.getDocument().content[0]!,
+        { type: "paragraph", id: "p_human_inside", children: [{ type: "text", text: "Human inside" }] },
+        harness.getDocument().content[1]!,
+      ],
+    });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*p_existing.*p_second/);
+  });
+
+  it("rebases an insert-then-wrap draft over an unrelated human edit", async () => {
+    const harness = createHarness();
+    await harness.tool("insert_body_content").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      blocks: [{ id: "p_ai_first", text: "AI first" }, { id: "p_ai_second", text: "AI second" }],
+    });
+    await harness.tool("update_column_layout").execute({
+      expectedRevision: 0,
+      scope: "blocks",
+      blockIds: ["p_ai_first", "p_ai_second"],
+      columnCount: 2,
+    });
+    harness.humanEdit({ ...harness.getDocument(), metadata: { ...harness.getDocument().metadata, title: "Human title" } });
+    harness.apply();
+    expect(findBlock(harness.getDocument(), "p_ai_first")).not.toBeNull();
+    expect(findBlock(harness.getDocument(), "p_ai_second")).not.toBeNull();
+    expect(harness.getDocument().metadata.title).toBe("Human title");
+  });
+
+  it("rebases a move-then-wrap draft when the move makes the range contiguous", async () => {
+    const initial = baseDocument();
+    initial.content.splice(1, 0, { type: "paragraph", id: "p_middle", children: [{ type: "text", text: "Middle" }] });
+    const harness = createHarness(initial);
+    await harness.tool("move_blocks").execute({
+      expectedRevision: 0,
+      blockIds: ["p_second"],
+      targetId: "p_existing",
+      position: "after",
+    });
+    await harness.tool("update_column_layout").execute({
+      expectedRevision: 0,
+      scope: "blocks",
+      blockIds: ["p_existing", "p_second"],
+      columnCount: 2,
+    });
+    harness.humanEdit({ ...harness.getDocument(), metadata: { ...harness.getDocument().metadata, title: "Human title" } });
+    harness.apply();
+    expect(harness.getDocument().content[0]).toMatchObject({
+      type: "layoutSection",
+      children: [expect.objectContaining({ id: "p_existing" }), expect.objectContaining({ id: "p_second" })],
+    });
+    expect(harness.getDocument().metadata.title).toBe("Human title");
+  });
+
+  it("rebases a column wrap over an outside insertion and unrelated edit", async () => {
+    const harness = createHarness();
+    await harness.tool("update_column_layout").execute({
+      expectedRevision: 0,
+      scope: "blocks",
+      blockIds: ["p_existing", "p_second"],
+      columnCount: 2,
+    });
+    harness.humanEdit({
+      ...harness.getDocument(),
+      metadata: { ...harness.getDocument().metadata, title: "Human title" },
+      content: [
+        ...harness.getDocument().content,
+        { type: "paragraph", id: "p_human_outside", children: [{ type: "text", text: "Human outside" }] },
+      ],
+    });
+    harness.apply();
+    expect(harness.getDocument().content).toEqual([
+      expect.objectContaining({
+        type: "layoutSection",
+        children: [expect.objectContaining({ id: "p_existing" }), expect.objectContaining({ id: "p_second" })],
+      }),
+      expect.objectContaining({ id: "p_human_outside" }),
+    ]);
+    expect(harness.getDocument().metadata.title).toBe("Human title");
+  });
+
+  it("rejects a concurrent human relocation of a block targeted by move_blocks", async () => {
+    const harness = createHarness();
+    await harness.tool("move_blocks").execute({ expectedRevision: 0, blockIds: ["p_existing"], targetId: "p_second", position: "after" });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({ ...harness.getDocument(), content: [harness.getDocument().content[1]!, harness.getDocument().content[0]!] });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*p_existing/);
+  });
+
+  it("rejects a concurrent placement change around a concrete move_blocks destination", async () => {
+    const initial = baseDocument();
+    initial.content.push({ type: "paragraph", id: "p_tail", children: [{ type: "text", text: "Tail" }] });
+    const harness = createHarness(initial);
+    await harness.tool("move_blocks").execute({ expectedRevision: 0, blockIds: ["p_existing"], targetId: "p_second", position: "before" });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({
+      ...harness.getDocument(),
+      content: [
+        harness.getDocument().content[0]!,
+        harness.getDocument().content[1]!,
+        { type: "paragraph", id: "p_human", children: [{ type: "text", text: "Human" }] },
+        harness.getDocument().content[2]!,
+      ],
+    });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*p_second/);
+  });
+
+  it("validates repeated moves sequentially after an unrelated human edit", async () => {
+    const initial = baseDocument();
+    initial.content.push({ type: "paragraph", id: "p_third", children: [{ type: "text", text: "Third" }] });
+    const harness = createHarness(initial);
+    await harness.tool("move_blocks").execute({ expectedRevision: 0, blockIds: ["p_existing"], targetId: "p_second", position: "after" });
+    await harness.tool("move_blocks").execute({ expectedRevision: 0, blockIds: ["p_existing"], targetId: "p_third", position: "after" });
+    harness.humanEdit({ ...harness.getDocument(), metadata: { ...harness.getDocument().metadata, title: "Human title" } });
+    harness.apply();
+    expect(harness.getDocument().content.map((block) => block.id)).toEqual(["p_second", "p_third", "p_existing"]);
+  });
+
+  it("validates a move against the replayed state of a preceding column wrap", async () => {
+    const initial = baseDocument();
+    initial.content.push({ type: "paragraph", id: "p_tail", children: [{ type: "text", text: "Tail" }] });
+    const harness = createHarness(initial);
+    await harness.tool("update_column_layout").execute({ expectedRevision: 0, scope: "blocks", blockIds: ["p_existing", "p_second"], columnCount: 2 });
+    await harness.tool("move_blocks").execute({ expectedRevision: 0, blockIds: ["p_existing"], targetId: "p_tail", position: "after" });
+    harness.humanEdit({ ...harness.getDocument(), metadata: { ...harness.getDocument().metadata, title: "Human title" } });
+    harness.apply();
+    expect(harness.getDocument().content.map((block) => block.id).slice(-2)).toEqual(["p_tail", "p_existing"]);
+    expect(findBlock(harness.getDocument(), "p_second")).not.toBeNull();
+  });
+
+  it("keeps END_OF_DOCUMENT dynamic when replaying move_blocks", async () => {
+    const harness = createHarness();
+    await harness.tool("move_blocks").execute({ expectedRevision: 0, blockIds: ["p_existing"], targetId: END_OF_DOCUMENT_TARGET, position: "after" });
+    harness.humanEdit({
+      ...harness.getDocument(),
+      content: [...harness.getDocument().content, { type: "paragraph", id: "p_human_end", children: [{ type: "text", text: "Human end" }] }],
+    });
+    harness.apply();
+    expect(harness.getDocument().content.map((block) => block.id).slice(-2)).toEqual(["p_human_end", "p_existing"]);
+  });
+
+  it("rejects applying an end insertion after the open document changes", async () => {
+    const harness = createHarness();
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: END_OF_DOCUMENT_TARGET, blocks: [{ id: "p_ai", text: "AI" }] });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({ ...harness.getDocument(), docId: "doc_other" });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*docId/);
+    expect(parseResult(await harness.tool("get_pending_proposal").execute({}))).toMatchObject({ currentRevision: 1, conflictIds: ["docId"] });
+  });
+
+  it("applies no part of a multi-operation draft when one target conflicts (acceptance 11)", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "AI A" });
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_second", expectedContent: "Second paragraph", text: "AI B" });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({ ...harness.getDocument(), content: [harness.getDocument().content[0]!, { type: "paragraph", id: "p_second", children: [{ type: "text", text: "Human B" }] }] });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*p_second/);
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_existing")!)).toBe("Original text");
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_second")!)).toBe("Human B");
+  });
+
+  it("regenerates the preview over the latest human document (acceptance 12)", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "AI A" });
+    harness.humanEdit({ ...harness.getDocument(), content: [harness.getDocument().content[0]!, { type: "paragraph", id: "p_second", children: [{ type: "text", text: "Human B" }] }] });
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: END_OF_DOCUMENT_TARGET, blocks: [{ id: "p_ai", text: "AI end" }] });
+    const proposal = harness.getProposal()!;
+    expect(proposal.previewDraft.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ targetId: "p_existing", replacementBlock: expect.objectContaining({ id: "p_existing" }) }),
+      expect.objectContaining({ insertedBlock: expect.objectContaining({ id: "p_ai" }) }),
+    ]));
+    const previewed = proposal.apply(harness.getDocument()).document;
+    expect(blockToReferenceText(findBlock(previewed, "p_second")!)).toBe("Human B");
+    expect(findBlock(previewed, "p_ai")).not.toBeNull();
+  });
+
+  it("keeps human insertions at a shared insertion point before AI insertions", async () => {
+    const harness = createHarness();
+    await harness.tool("insert_body_content").execute({ expectedRevision: 0, targetId: "p_existing", blocks: [{ id: "p_ai", text: "AI" }] });
+    harness.humanEdit({ ...harness.getDocument(), content: [harness.getDocument().content[0]!, { type: "paragraph", id: "p_human", children: [{ type: "text", text: "Human" }] }, harness.getDocument().content[1]!] });
+    expect(harness.getProposal()!.previewDraft.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: "insertAfter", targetId: "p_human", insertedBlock: expect.objectContaining({ id: "p_ai" }) }),
+    ]));
+    harness.apply();
+    expect(harness.getDocument().content.map((block) => block.id)).toEqual(["p_existing", "p_human", "p_ai", "p_second"]);
+  });
+
+  it("keeps the latest human document as the single Undo boundary (acceptance 13)", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "AI A" });
+    harness.humanEdit({ ...harness.getDocument(), content: [harness.getDocument().content[0]!, { type: "paragraph", id: "p_second", children: [{ type: "text", text: "Human B" }] }] });
+    const latestBeforeApply = structuredClone(harness.getDocument());
+    harness.apply();
+    harness.undo();
+    expect(harness.getDocument()).toEqual(latestBeforeApply);
+  });
+
+  it("returns the live document and structured conflict details after approval fails", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "AI edit" });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({
+      ...harness.getDocument(),
+      content: [{ type: "paragraph", id: "p_existing", children: [{ type: "text", text: "Human edit" }] }, harness.getDocument().content[1]!],
+    });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT.*p_existing/);
+    const read = parseResult(await harness.tool("read_document").execute({ detail: "full" }));
+    expect(blockToReferenceText(findBlock(read.document as SigmaDocument, "p_existing")!)).toBe("Human edit");
+    expect(parseResult(await harness.tool("get_pending_proposal").execute({}))).toMatchObject({
+      pending: true,
+      currentRevision: 1,
+      conflictIds: ["p_existing"],
+    });
   });
 
   it("rolls back every apply_edits operation when a later operation fails", async () => {

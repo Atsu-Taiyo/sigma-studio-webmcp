@@ -26,6 +26,9 @@ test("WebMCP converts Markdown math, previews it, and applies one draft", async 
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(26);
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __sigmaWebMcpHeavyFallbackCount: number }
+  ).__sigmaWebMcpHeavyFallbackCount)).toBe(0);
 
   const result = await page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;

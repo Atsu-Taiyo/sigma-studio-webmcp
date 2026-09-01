@@ -7,7 +7,7 @@ import { WEBMCP_STATUS_EVENT, type WebMcpUiStatus } from "@/components/editor/we
 import { getWebMcpAgentInstructionsStorageKey } from "@/lib/webmcp-tools";
 import { useT } from "@/lib/i18n/react";
 
-const EMPTY_STATUS: WebMcpUiStatus = { state: "loading", registeredToolCount: 0, failedToolNames: [], operationCount: 0, changedIds: [] };
+const EMPTY_STATUS: WebMcpUiStatus = { state: "loading", registeredToolCount: 0, failedToolNames: [], operationCount: 0, changedIds: [], conflictTargetIds: [], conflictTargets: "" };
 
 /**
  * Web版のAI面はキャンバス左上の `AiTaskDock` 1箇所に集約している。ここはその中の
@@ -17,8 +17,9 @@ const EMPTY_STATUS: WebMcpUiStatus = { state: "loading", registeredToolCount: 0,
  * 指示は教材IDごとの設定データとしてlocalStorageに置き、`get_agent_instructions`
  * からだけ読める。ambient contextへは混ぜない (docs/webmcp.md)。
  */
-export function WebMcpDockSection({ instructionScopeId }: { instructionScopeId: string }) {
+export function WebMcpDockSection({ instructionScopeId, onDismissProposal }: { instructionScopeId: string; onDismissProposal(): void }) {
   const t = useT("ai");
+  const tEditor = useT("editor");
   const instructionsId = useId();
   const storageKey = getWebMcpAgentInstructionsStorageKey(instructionScopeId);
   const [instructions, setInstructions] = useState(() => typeof window === "undefined" ? "" : window.localStorage.getItem(storageKey) ?? "");
@@ -51,6 +52,15 @@ export function WebMcpDockSection({ instructionScopeId }: { instructionScopeId: 
         {connectionStatus.icon}
         <span>{connectionStatus.text}</span>
       </p>
+      {status.conflictTargetIds.length > 0 && (
+        <div className="ai-task-dock-webmcp-conflict" role="status">
+          <CircleAlert size={13} aria-hidden="true" />
+          <span>{tEditor("webMcpProposal.previewConflict", { targets: status.conflictTargets })}</span>
+          <button type="button" className="ai-task-dock-action" onClick={() => onDismissProposal()}>
+            {tEditor("webMcpProposal.discardDraft")}
+          </button>
+        </div>
+      )}
       {status.state === "unavailable" && <p className="ai-task-dock-webmcp-note">{t("webPlaceholder.enableSteps")}</p>}
       <h3 id={`${instructionsId}-title`} className="ai-task-dock-webmcp-title">{t("webPlaceholder.instructionsTitle")}</h3>
       <textarea

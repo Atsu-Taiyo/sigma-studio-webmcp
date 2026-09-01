@@ -18,6 +18,7 @@ import type { AiEditPreviewState, StaleMcpProposalGroup, StaleMcpProposalKind } 
 import type { DesktopMcpEditProposalSummary } from "@/types/desktop";
 import type { InlineNode, SigmaDocument } from "@/features/document";
 import type { AiProposalApplyOutcome } from "@/features/ai-edit";
+import { WEB_MCP_PROPOSAL_ID } from "@/lib/webmcp-tools";
 
 const ANCHOR_EXCERPT_MAX_LENGTH = 26;
 
@@ -276,7 +277,7 @@ export function buildTaskRows(
  * 無く、ボタンを出すと押せてしまう。 */
 export function buildWebMcpHistoryRows(entries: WebMcpHistoryEntry[], document: SigmaDocument): TaskRow[] {
   return entries.map((entry) => ({
-    key: `webmcp-history:${entry.id}`,
+    key: `webmcp-history:${entry.entryId}`,
     roomId: null,
     runId: null,
     // 保留中の行 (WebMcpBridgeのpreview group) と同じ印にそろえる。
@@ -377,7 +378,13 @@ export function AiTaskDockPanel({
           </button>
         )}
       </header>
-      {webMcpInstructionScopeId && <WebMcpDockSection key={webMcpInstructionScopeId} instructionScopeId={webMcpInstructionScopeId} />}
+      {webMcpInstructionScopeId && (
+        <WebMcpDockSection
+          key={webMcpInstructionScopeId}
+          instructionScopeId={webMcpInstructionScopeId}
+          onDismissProposal={() => onDismissGroup([WEB_MCP_PROPOSAL_ID])}
+        />
+      )}
       <div className="ai-task-dock-list">
         {rows.length === 0 ? (
           <p className="ai-task-dock-empty">{t("dock.empty")}</p>

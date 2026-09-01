@@ -493,14 +493,19 @@ describe("buildWebMcpHistoryRows (Web版の結果行)", () => {
   it("keeps applied and discarded drafts visible with no revert or repropose affordance", () => {
     const rows = buildWebMcpHistoryRows(
       [
-        { id: "draft_2", status: "rejected", operationCount: 2, targetIds: ["p1"], resolvedAt: 2 },
-        { id: "draft_1", status: "applied", operationCount: 1, targetIds: ["p1"], resolvedAt: 1 },
+        { entryId: "entry_2", id: "webmcp_single_draft", status: "rejected", operationCount: 2, targetIds: ["p1"], resolvedAt: 2 },
+        { entryId: "entry_1", id: "webmcp_single_draft", status: "applied", operationCount: 1, targetIds: ["p1"], resolvedAt: 1 },
       ],
       makeDocument(),
     );
 
     expect(rows.map((row) => row.status)).toEqual(["rejected", "applied"]);
-    expect(rows.map((row) => row.key)).toEqual(["webmcp-history:draft_2", "webmcp-history:draft_1"]);
+    expect(rows.map((row) => row.key)).toEqual(["webmcp-history:entry_2", "webmcp-history:entry_1"]);
+    expect(new Set(rows.map((row) => row.key).filter(Boolean)).size).toBe(2);
+    expect(rows.map((row) => row.proposalIds)).toEqual([
+      ["webmcp_single_draft"],
+      ["webmcp_single_draft"],
+    ]);
     expect(rows[0]!.anchorExcerpt).toBe("二次関数のグラフを描く問題です");
     // Webには承認バッチも巻き戻し判定も無い。押せるボタンを生やさないこと。
     expect(rows.every((row) => row.revertibleProposalIds.length === 0)).toBe(true);
@@ -512,7 +517,7 @@ describe("buildWebMcpHistoryRows (Web版の結果行)", () => {
 
   it("still renders a row when the changed block is already gone", () => {
     const rows = buildWebMcpHistoryRows(
-      [{ id: "draft_1", status: "applied", operationCount: 1, targetIds: ["removed"], resolvedAt: 1 }],
+      [{ entryId: "entry_1", id: "draft_1", status: "applied", operationCount: 1, targetIds: ["removed"], resolvedAt: 1 }],
       makeDocument(),
     );
 

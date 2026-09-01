@@ -19997,6 +19997,34 @@ button.ai-source-ref-chip--document:focus-visible {
   color: var(--text-muted);
 }
 
+.ai-task-dock-webmcp-conflict {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 0;
+  border: 1px solid color-mix(in srgb, var(--warning) 28%, var(--border-subtle));
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--warning) 8%, var(--background));
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ai-task-dock-webmcp-conflict svg {
+  flex: 0 0 auto;
+  margin-block-start: 1px;
+}
+
+.ai-task-dock-webmcp-conflict > span {
+  flex: 1 1 auto;
+}
+
+.ai-task-dock-webmcp-conflict .ai-task-dock-action {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
 .ai-task-dock-webmcp-title {
   margin: 6px 0 0;
   color: var(--text-primary);
