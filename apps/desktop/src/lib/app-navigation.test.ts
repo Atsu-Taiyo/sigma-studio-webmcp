@@ -4,6 +4,7 @@ import { getAppRouteHref } from "@/lib/app-navigation";
 
 describe("app navigation", () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
 
@@ -16,5 +17,31 @@ describe("app navigation", () => {
     });
 
     expect(getAppRouteHref("/", { fileId: "file_1" })).toBe("file:///Applications/Sigma%20Studio.app/Contents/Resources/app.asar/out/index.html?fileId=file_1");
+  });
+
+  it("uses exported HTML files for production web navigation", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubGlobal("window", {
+      location: {
+        href: "https://sigma-studio.example/",
+        protocol: "https:",
+      },
+    });
+
+    expect(getAppRouteHref("/workspace")).toBe("/workspace.html");
+    expect(getAppRouteHref("/print", { fileId: "file_1" })).toBe("/print.html?fileId=file_1");
+    expect(getAppRouteHref("/", { fileId: "file_1" })).toBe("/index.html?fileId=file_1");
+  });
+
+  it("keeps extensionless routes for the development server", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubGlobal("window", {
+      location: {
+        href: "http://127.0.0.1:3000/",
+        protocol: "http:",
+      },
+    });
+
+    expect(getAppRouteHref("/workspace")).toBe("/workspace");
   });
 });
