@@ -330,7 +330,6 @@ export const editor = {
     blockCopied: "ブロックをコピーしました",
     copyFailed: "コピーできませんでした",
     nothingToPaste: "貼り付けできるブロックがありません",
-    materialsDesktopOnly: "デスクトップアプリでのみ素材を保存できます。",
     materialSaved: "素材として保存しました",
     materialSaveFailed: "素材を保存できませんでした。",
     selectMaterialSource: "素材として保存する本文または図形を選択してください。",

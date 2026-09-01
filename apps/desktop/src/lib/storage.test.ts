@@ -41,12 +41,11 @@ describe("document storage runtime boundary", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps deprecated browser storage helpers unavailable", () => {
+  it("keeps the deprecated synchronous browser-storage helpers unavailable", () => {
     expect(loadSavedDocument()).toBeNull();
-    expect(saveDocument(sampleDocument)).toEqual({
-      ok: false,
-      error: expect.stringContaining("ローカルワークスペースにだけ保存"),
-    });
+    const result = saveDocument(sampleDocument);
+    expect(result.ok).toBe(false);
+    expect(STORAGE_RUNTIME_MISSING).toContain(result.ok ? "" : result.error);
   });
 
   it("routes workspace initialization and document reads through desktopAPI.storage", async () => {
@@ -202,20 +201,29 @@ describe("document storage runtime boundary", () => {
    * 差し替えるテストなのでロケールも固定できない (ストアが localStorage を触る)。
    * 辞書から期待値を作るのが、環境に依存しない唯一の書き方。
    */
-  it("does not fall back to browser storage when desktopAPI is missing", async () => {
+  /**
+   * デスクトップの bridge が無い = Web 版。**保存できない**のではなく、
+   * このブラウザの保存先 (IndexedDB。vitest は node なのでメモリ) へ落ちる。
+   * ここが落ちるときは「リロードで教材が消える」に戻っている。
+   */
+  it("falls back to browser storage when desktopAPI is missing", async () => {
     vi.stubGlobal("window", {});
 
-    const expectRuntimeUnavailable = async (run: () => Promise<unknown>): Promise<void> => {
-      const error = await run().then(() => null, (caught: unknown) => caught);
-      expect(error).toBeInstanceOf(Error);
-      expect(STORAGE_RUNTIME_MISSING).toContain((error as Error).message);
-    };
+    const created = await createNewDocument("教材A");
+    expect(created.metadata.title).toBe("教材A");
 
-    await expectRuntimeUnavailable(() => listSavedDocuments());
-    await expectRuntimeUnavailable(() => createNewDocument("教材A"));
-    const saved = await saveDocumentRecord(observedWrite("file_1", sampleDocument));
-    expect(saved.ok).toBe(false);
-    expect(STORAGE_RUNTIME_MISSING).toContain(saved.ok ? "" : saved.error);
+    const listed = await listSavedDocuments();
+    expect(listed.map((file) => file.fileId)).toContain(created.fileId);
+
+    const saved = await saveDocumentRecord(observedWrite(
+      created.fileId,
+      created.document,
+      created.metadata.revision,
+    ));
+    expect(saved).toMatchObject({ ok: true, revision: created.metadata.revision + 1 });
+
+    const reloaded = await loadDocumentByFileId(created.fileId);
+    expect(reloaded?.docId).toBe(created.document.docId);
   });
 });
 

@@ -323,6 +323,7 @@ import {
 import type { LedgerSchemaFailure } from "@/lib/library-schema";
 import { getAppRouteHref, navigateToAppRoute } from "@/lib/app-navigation";
 import { getDesktopBridge } from "@/lib/desktop-bridge";
+import { getAppRuntime, isPersistentRuntime } from "@/lib/runtime";
 import { createCurrentLocaleTranslator, createTranslator, getAppLocale, normalizeLocale, setAppLocale, type AppLocale, type Translate } from "@/lib/i18n";
 import { formatSigmaValidationCode } from "@/lib/validation-text";
 import { useT } from "@/lib/i18n/react";
@@ -613,6 +614,14 @@ const tEditor = ((key: string, options?: Record<string, unknown>) =>
 
 /** ワークスペース / 素材面の文言 (`workspace` namespace)。解決の仕方は `tEditor` と同じ。 */
 const tWorkspace = createCurrentLocaleTranslator("workspace");
+
+/**
+ * 起動時の状態表示。**保存先がこのセッション限りのときは、その事実を先に出す。**
+ * ブラウザがサイトデータを拒む (プライベートウィンドウ等) と編集自体はできてしまうので、
+ * 「準備完了」とだけ出すとタブを閉じた時に黙って消える。
+ */
+const storageWarningOrStatus = (status: string): string =>
+  isPersistentRuntime() ? status : tWorkspace("error.browserStorageUnavailable");
 
 /** 図形 / グラフ面の文言 (`shape` namespace)。解決の仕方は `tEditor` と同じ。 */
 const shapeTextCache: { locale: AppLocale | null; translate: Translate<"shape"> | null } = {
@@ -1885,7 +1894,12 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, [documentHistory, setSelectedId, setSelectedInlineMath]);
 
   const refreshDocumentMetadatas = useCallback(async () => {
-    const metadatas = await listSavedDocuments();
+    // 一覧の取り直しは補助的な更新。ここで投げっぱなしにすると、保存先が使えない
+    // 環境で unhandled rejection になって画面全体が落ちる。
+    const metadatas = await listSavedDocuments().catch(() => null);
+    if (!metadatas) {
+      return;
+    }
     // 保存のたびに読み直すので毎回新しい配列になる。中身が同じなら state を動かさない
     // (動かすと打鍵 1 回ごとに画面全体が再描画される)。
     setDocumentMetadatas((current) => sameDocumentMetadatas(current, metadatas) ? current : metadatas);
@@ -2792,15 +2806,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, [commandSettingsError, commandSettingsLoaded, setStatusMessage]);
 
   const refreshMaterials = useCallback(async () => {
-    const bridge = getDesktopBridge();
-    if (!bridge?.materials) {
-      setMaterials(mergeOfficialMaterials([]));
-      return;
-    }
-
     setMaterialsLoading(true);
     try {
-      const nextMaterials = await bridge.materials.listMaterials();
+      const nextMaterials = await getAppRuntime().materials.listMaterials();
       setMaterials(mergeOfficialMaterials(nextMaterials));
       setMaterialError(null);
     } catch (error) {
@@ -3369,9 +3377,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             if (requestedFileId) {
               clearRequestedFileId();
             }
-            setStatusMessage(requestedFileId && nextActiveFileId !== requestedFileId
+            setStatusMessage(storageWarningOrStatus(requestedFileId && nextActiveFileId !== requestedFileId
               ? tEditor("status.fallbackDocument")
-              : tEditor("status.ready"));
+              : tEditor("status.ready")));
             return;
           }
 
@@ -3388,7 +3396,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           if (requestedFileId) {
             clearRequestedFileId();
           }
-          setStatusMessage(tEditor("status.documentCreated"));
+          setStatusMessage(storageWarningOrStatus(tEditor("status.documentCreated")));
         })
         .catch((error) => {
           if (cancelled) {
@@ -4862,12 +4870,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, []);
 
   const createMaterialFromContent = useCallback(async (content: MaterialContent, requestedName: string, metadataDraft?: MaterialMetadataDraft) => {
-    const bridge = getDesktopBridge();
-    if (!bridge?.materials) {
-      setMaterialError(tEditor("status.materialsDesktopOnly"));
-      return null;
-    }
-
     const fallbackName = content.blocks[0] ? getMaterialNameFromBlock(content.blocks[0], tWorkspace) : tEditor("material.shapeMaterial");
     const name = requestedName.trim() || fallbackName;
     setMaterialsLoading(true);
@@ -4877,7 +4879,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         transformPolicy: content.overlaySnapshot.shapes.length > 0 ? { scale: true, rotate: false } : undefined,
         ports: content.overlaySnapshot.shapes.length > 0 ? inferDefaultMaterialPorts(content) : undefined,
       });
-      const material = await bridge.materials.createMaterial({ name, ...metadata, content });
+      const material = await getAppRuntime().materials.createMaterial({ name, ...metadata, content });
       setMaterials((current) => mergeOfficialMaterials([
         material,
         ...current.filter((item) => !isOfficialMaterial(item) && item.id !== material.id),
@@ -5078,10 +5080,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       return;
     }
     window.dispatchEvent(new Event(FLUSH_OVERLAY_CHANGES_EVENT));
-    const bridge = getDesktopBridge();
     const name = materialEditingDraft.name.trim();
     const content = materialEditingContentRef.current ?? materialEditingContent ?? material.content;
-    if (!bridge?.materials || !name) {
+    if (!name) {
       return;
     }
     if (content.blocks.length === 0 && content.overlaySnapshot.shapes.length === 0) {
@@ -5091,13 +5092,11 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
 
     setMaterialsLoading(true);
     try {
-      const nextMaterial = bridge.materials.updateMaterialMetadata
-        ? await bridge.materials.updateMaterialMetadata(material.id, {
-            name,
-            ...materialMetadataDraftToInput(materialEditingDraft),
-            content,
-          })
-        : await bridge.materials.renameMaterial(material.id, name);
+      const nextMaterial = await getAppRuntime().materials.updateMaterialMetadata(material.id, {
+        name,
+        ...materialMetadataDraftToInput(materialEditingDraft),
+        content,
+      });
       setMaterials((current) => current.map((item) => item.id === nextMaterial.id ? nextMaterial : item));
       closeMaterialEditing();
       setMaterialActionMenu(null);
@@ -5116,14 +5115,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       setMaterialActionMenu(null);
       return;
     }
-    const bridge = getDesktopBridge();
-    if (!bridge?.materials) {
-      return;
-    }
-
     setMaterialsLoading(true);
     try {
-      const result = await bridge.materials.deleteMaterial(material.id);
+      const result = await getAppRuntime().materials.deleteMaterial(material.id);
       if (!result.ok) {
         throw new Error(result.error ?? tEditor("status.materialDeleteFailed"));
       }
@@ -5987,7 +5981,10 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
 
   const openDocumentViaDesktop = async () => {
     const bridge = getDesktopBridge();
+    // Web 版にはネイティブのファイルピッカーが無い。取り込みと同じ隠しinputへ回す
+    // (何も起きないままだと「開く」が壊れているようにしか見えない)。
     if (!bridge) {
+      importInputRef.current?.click();
       return;
     }
     try {
@@ -6434,12 +6431,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, [isDesktopApp]);
 
   useEffect(() => {
-    if (!isDesktopApp) {
-      return;
-    }
-
-    const bridge = getDesktopBridge();
-    if (!bridge?.storage.onChange) {
+    if (isEmbedded) {
       return;
     }
 
@@ -6576,7 +6568,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     };
     documentStorageChangeProcessorRef.current = processDocumentChange;
 
-    const unsubscribe = bridge.storage.onChange((event) => {
+    // desktop は fs.watch、web は他タブからの BroadcastChannel。どちらも同じ形の
+    // 変更イベントで届くので、購読側は保存先を意識しない。
+    const unsubscribe = getAppRuntime().library.onChange((event) => {
       if (!isDesktopStorageChangeEvent(event) || !workspaceReadyRef.current) {
         return;
       }
@@ -6614,7 +6608,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     applyMergedExternalDocument,
     dispatchDocumentStorageChange,
     isCurrentDocumentDirty,
-    isDesktopApp,
+    isEmbedded,
     loadWorkspaceDocument,
     refreshDocumentMetadatas,
     refreshMcpEditProposals,

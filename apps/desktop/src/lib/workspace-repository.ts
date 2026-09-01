@@ -1,4 +1,4 @@
-import { getDesktopRuntime } from "@/lib/runtime";
+import { getAppRuntime } from "@/lib/runtime";
 import { createCurrentLocaleTranslator } from "@/lib/i18n";
 import type {
   DocumentFileRecord,
@@ -23,31 +23,15 @@ export type {
 
 const tWorkspace = createCurrentLocaleTranslator("workspace");
 
-/** 表示直前に解決する。module 直下で解決すると読み込み時の言語で焼き付く。 */
-const runtimeUnavailableMessage = (): string => tWorkspace("error.desktopRuntimeMissing");
-
-export function isLocalWorkspaceRepository(): boolean {
-  return Boolean(getDesktopRuntime());
-}
-
 export async function listWorkspaceOverview(
   workspaceId?: string | null,
 ): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.listOverview(workspaceId);
+  return getAppRuntime().workspace.listOverview(workspaceId);
 }
 
 export async function loadWorkspacePreviewDocument(fileId: string): Promise<SigmaDocument | null> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return null;
-  }
-
   try {
+    const runtime = getAppRuntime();
     return await runtime.library.loadDocument(fileId);
   } catch {
     return null;
@@ -55,30 +39,15 @@ export async function loadWorkspacePreviewDocument(fileId: string): Promise<Sigm
 }
 
 export async function createWorkspace(name: string): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.createWorkspace(name);
+  return getAppRuntime().workspace.createWorkspace(name);
 }
 
 export async function updateWorkspaceName(workspaceId: string, name: string): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.renameWorkspace(workspaceId, name);
+  return getAppRuntime().workspace.renameWorkspace(workspaceId, name);
 }
 
 export async function deleteWorkspace(workspaceId: string): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.deleteWorkspace(workspaceId);
+  return getAppRuntime().workspace.deleteWorkspace(workspaceId);
 }
 
 export async function createFolder(
@@ -86,12 +55,7 @@ export async function createFolder(
   name: string,
   parentFolderId?: string | null,
 ): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.createFolder(workspaceId, name, parentFolderId);
+  return getAppRuntime().workspace.createFolder(workspaceId, name, parentFolderId);
 }
 
 export async function updateFolder(
@@ -99,21 +63,11 @@ export async function updateFolder(
   folderId: string,
   patch: FolderPatch,
 ): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.updateFolder(workspaceId, folderId, patch);
+  return getAppRuntime().workspace.updateFolder(workspaceId, folderId, patch);
 }
 
 export async function deleteFolder(workspaceId: string, folderId: string): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.deleteFolder(workspaceId, folderId);
+  return getAppRuntime().workspace.deleteFolder(workspaceId, folderId);
 }
 
 export async function createDocumentInWorkspace(
@@ -121,11 +75,7 @@ export async function createDocumentInWorkspace(
   folderId: string | null,
   title = tWorkspace("untitledMaterial"),
 ): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
+  const runtime = getAppRuntime();
   const result = await runtime.library.createDocument({ workspaceId, folderId, title });
   return runtime.workspace.listOverview(result.metadata.workspaceId);
 }
@@ -135,23 +85,14 @@ export async function createDocumentFromTemplateInWorkspace(
   folderId: string | null,
   document: SigmaDocument,
 ): Promise<DocumentFileRecord> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    throw new Error(runtimeUnavailableMessage());
-  }
-
-  return runtime.library.createFileFromDocument({ document, workspaceId, folderId });
+  return getAppRuntime().library.createFileFromDocument({ document, workspaceId, folderId });
 }
 
 export async function deleteDocumentInWorkspace(
   workspaceId: string,
   fileId: string,
 ): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
+  const runtime = getAppRuntime();
   const result = await runtime.library.deleteFile(fileId);
   if (!result.ok) {
     return { state: "error", error: result.error ?? tWorkspace("error.deleteMaterialFailed") };
@@ -165,11 +106,7 @@ export async function renameDocumentInWorkspace(
   fileId: string,
   name: string,
 ): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
+  const runtime = getAppRuntime();
   const title = name.trim();
   for (let attempt = 0; attempt < 2; attempt += 1) {
     // 教材名変更も本文全体を読み書きするため、AI承認と競合したら最新docへタイトルだけを
@@ -207,12 +144,7 @@ export async function moveFileToFolder(
   fileId: string,
   folderId?: string | null,
 ): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.moveFileToFolder(workspaceId, fileId, folderId);
+  return getAppRuntime().workspace.moveFileToFolder(workspaceId, fileId, folderId);
 }
 
 export async function moveFileToWorkspace(
@@ -220,14 +152,5 @@ export async function moveFileToWorkspace(
   targetWorkspaceId: string,
   folderId?: string | null,
 ): Promise<WorkspaceOverviewResult> {
-  const runtime = getDesktopRuntime();
-  if (!runtime) {
-    return unavailableWorkspaceResult();
-  }
-
-  return runtime.workspace.moveFileToWorkspace(fileId, targetWorkspaceId, folderId);
-}
-
-function unavailableWorkspaceResult(): WorkspaceOverviewResult {
-  return { state: "unavailable", error: runtimeUnavailableMessage() };
+  return getAppRuntime().workspace.moveFileToWorkspace(fileId, targetWorkspaceId, folderId);
 }

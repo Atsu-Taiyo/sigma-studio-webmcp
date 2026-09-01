@@ -7,7 +7,6 @@ import {
   deleteDocumentInWorkspace,
   deleteFolder,
   deleteWorkspace,
-  isLocalWorkspaceRepository,
   loadWorkspacePreviewDocument,
   listWorkspaceOverview,
   moveFileToFolder,
@@ -17,10 +16,6 @@ import {
 } from "@/lib/workspace-repository";
 import { sampleDocument } from "@/lib/sample-document";
 import type { DesktopAPI, DesktopStorageAPI, DesktopWorkspaceOverview } from "@/types/desktop";
-import { createTranslator } from "@/lib/i18n";
-
-const RUNTIME_MISSING = (["ja", "en"] as const)
-  .map((locale) => createTranslator(locale, "workspace")("error.desktopRuntimeMissing") as unknown as string);
 
 describe("workspace repository runtime boundary", () => {
   afterEach(() => {
@@ -28,34 +23,21 @@ describe("workspace repository runtime boundary", () => {
   });
 
   /**
-   * 文言はロケール依存になったので、**日本語を決め打ちしない**。
-   * このテストは `window` を `{}` に差し替えるため `setAppLocale` は使えない
-   * (ロケールストアが localStorage を触って落ちる)。ロケールを指定した
-   * 翻訳器から期待値を作るのが、環境に依存しない唯一の書き方。
+   * デスクトップの bridge が無い = Web 版。ワークスペースは「利用できません」ではなく、
+   * このブラウザの保存先 (IndexedDB。vitest は node なのでメモリ) の上に立ち上がる。
    */
-  it("reports unavailable when desktopAPI.storage is missing", async () => {
+  it("falls back to a browser workspace when desktopAPI.storage is missing", async () => {
     vi.stubGlobal("window", {});
 
-    expect(isLocalWorkspaceRepository()).toBe(false);
     const listed = await listWorkspaceOverview();
-    expect(listed).toMatchObject({ state: "unavailable" });
-    expect(RUNTIME_MISSING).toContain(listed.state === "unavailable" ? listed.error : "");
-    await expect(loadWorkspacePreviewDocument("file_1")).resolves.toBeNull();
-    const deleted = await deleteWorkspace("workspace_1");
-    expect(deleted).toMatchObject({ state: "unavailable" });
-    expect(RUNTIME_MISSING).toContain(deleted.state === "unavailable" ? deleted.error : "");
-  });
 
-  it("uses the unavailability message from the dictionary, not a hard-coded string", async () => {
-    vi.stubGlobal("window", {});
+    expect(listed.state).toBe("ready");
+    expect(listed.state === "ready" && listed.overview.workspaces.length).toBeGreaterThan(0);
 
-    const result = await listWorkspaceOverview();
-    expect(result).toMatchObject({ state: "unavailable" });
-    const message = result.state === "unavailable" ? result.error : "";
-    // どちらかのロケールの文言と一致していれば、辞書経由で出ていると言える。
-    const candidates = (["ja", "en"] as const)
-      .map((locale) => createTranslator(locale, "workspace")("error.desktopRuntimeMissing") as unknown as string);
-    expect(candidates).toContain(message);
+    const workspaceId = listed.state === "ready" ? listed.overview.activeWorkspaceId : "";
+    const created = await createDocumentInWorkspace(workspaceId, null, "ブラウザ教材");
+    expect(created.state === "ready" && created.overview.files.map((file) => file.title))
+      .toContain("ブラウザ教材");
   });
 
   it("routes workspace mutations through desktopAPI.storage", async () => {
@@ -73,7 +55,6 @@ describe("workspace repository runtime boundary", () => {
     await deleteFolder("workspace_1", "folder_1");
     await moveFileToFolder("workspace_1", "file_1", "folder_1");
 
-    expect(isLocalWorkspaceRepository()).toBe(true);
     expect(storage.getWorkspaceOverview).toHaveBeenCalledWith("workspace_1");
     expect(storage.createWorkspace).toHaveBeenCalledWith("教材棚");
     expect(storage.renameWorkspace).toHaveBeenCalledWith("workspace_1", "教材棚2");

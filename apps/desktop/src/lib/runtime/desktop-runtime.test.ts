@@ -17,9 +17,20 @@ describe("desktop runtime surface", () => {
       "ai",
       "capabilities",
       "library",
+      "materials",
       "target",
+      "templates",
       "workspace",
     ]);
+  });
+
+  it("keeps the desktop target on file-backed storage, not the browser store", () => {
+    installDesktopBridge();
+
+    const runtime = getDesktopRuntime();
+
+    expect(runtime?.target).toBe("desktop");
+    expect(runtime?.capabilities).toMatchObject({ desktopStorage: true, browserStorage: false });
   });
 
   it("does not advertise a cloud workspace capability", () => {

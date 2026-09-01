@@ -37,7 +37,7 @@ import { LedgerSchemaFailurePanel } from "@/components/ledger/LedgerSchemaFailur
 import { createDocumentFromTemplate } from "@/lib/templates";
 import type { TemplateItem } from "@/types/template";
 import { navigateToAppRoute } from "@/lib/app-navigation";
-import { getDesktopBridge } from "@/lib/desktop-bridge";
+import { getAppRuntime } from "@/lib/runtime";
 import { resolveDocumentTitle } from "@/lib/document-title";
 import type { LedgerSchemaFailure } from "@/lib/library-schema";
 import { useWorkspaceViewPreference } from "@/lib/workspace-view-preferences";
@@ -187,15 +187,10 @@ export function WorkspaceManager() {
   }, [loadOverview]);
 
   useEffect(() => {
-    const storage = getDesktopBridge()?.storage;
-    if (!storage?.onChange) {
-      return;
-    }
-    // Remote collaborators' structural changes (shares, renames, new files)
-    // arrive as library/workspace storage events; refresh the overview so
-    // shared workspaces stay live. Per-document edits reload in the editor.
+    // 別ウィンドウ / 別タブでの構造変更 (作成・改名・移動) は library/workspace
+    // イベントで届く。desktop は fs.watch、web は BroadcastChannel。
     let timeoutId: number | null = null;
-    const unsubscribe = storage.onChange((event) => {
+    const unsubscribe = getAppRuntime().library.onChange((event) => {
       const type = (event as { type?: unknown } | null)?.type;
       if (type !== "library" && type !== "workspace") {
         return;
@@ -734,13 +729,6 @@ export function WorkspaceManager() {
 
   const addFileToTemplate = async (file: WorkspaceFileSummary) => {
     setFileActionMenu(null);
-    const bridge = getDesktopBridge();
-    if (!bridge?.templates) {
-      setStatus("error");
-      setMessage(t("error.saveTemplateFailed"));
-      return;
-    }
-
     setSavingFileId(file.fileId);
     setStatus("saving");
     setMessage(t("status.addingTemplate"));
@@ -750,7 +738,7 @@ export function WorkspaceManager() {
         throw new Error(t("error.loadMaterialFailed"));
       }
       const templateName = file.title || resolveDocumentTitle(document, t("untitledTemplate"));
-      await bridge.templates.createTemplate({
+      await getAppRuntime().templates.createTemplate({
         workspaceId: file.workspaceId,
         name: templateName,
         document: {

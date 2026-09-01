@@ -45,6 +45,8 @@ export const error = {
     unsavedBackupFailed: "未保存の入力を退避できませんでした",
     qrTextRequired: "QRコードにする文字列を入力してください。",
     documentLoadFailed: "教材を読み込めませんでした。",
+    templatesUnavailable: "テンプレートを利用できません。",
+    materialsUnavailable: "素材を利用できません。",
   },
   crash: {
     unknownError: "原因不明のエラーが発生しました。",

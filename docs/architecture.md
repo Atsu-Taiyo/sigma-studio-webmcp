@@ -155,13 +155,25 @@ TeXは数式ノードの中だけに閉じ込めます。
 
 ### 2.1 Persistence Is Local First
 
-デスクトップ版では、Electron main process が `app.getPath("userData")/data` 配下に `library.json`、`workspace.json`、`documents/<fileId>.sigmadoc.json` を保存し、このローカルファイル群をSigmaDocとワークスペース表示の正本にします。`library.json` は workspace、folder、file の管理正本です。初期 workspace は `マイ教材` です。`workspace.json` は開いている `openFileIds` と `activeFileId` だけを持つUI状態です。Codex app-server のログ、セッション、ログイン状態は同じ `data` 配下の `codex-agent-home` に置き、作業用cwdは `codex-agent-workspace` に分離します。この作業用cwdは永続で、AIリソース(AGENTS.md / skills)が同期されます。Claude CLI も同様に `claude-agent-home` を持ち、Antigravity CLI は作業用cwd `antigravity-agent-workspace` に `AGENTS.md`、`.agents/skills`、`.agents/mcp_config.json` を持ち、共有設定 `~/.gemini/config/mcp_config.json` と併用します。Studio管理のグローバル指示とskillはCodex・Claude・Antigravityの3社共通リソースとして各実行cwdへ投影し、ワークスペース指示は実行時プロンプトで共通適用します。Antigravity 経由の提案は provider `antigravity` として保存します。各プロバイダのアプリ実行コンテキスト(選択ブロックや添付画像など)は `ai-run-context/<provider>.run-context.json` で受け渡します。renderer の IndexedDB / `localStorage` は通常のデスクトップ教材保存経路では使いません。
+デスクトップ版では、Electron main process が `app.getPath("userData")/data` 配下に `library.json`、`workspace.json`、`documents/<fileId>.sigmadoc.json` を保存し、このローカルファイル群をSigmaDocとワークスペース表示の正本にします。`library.json` は workspace、folder、file の管理正本です。初期 workspace は `マイ教材` です。`workspace.json` は開いている `openFileIds` と `activeFileId` だけを持つUI状態です。Codex app-server のログ、セッション、ログイン状態は同じ `data` 配下の `codex-agent-home` に置き、作業用cwdは `codex-agent-workspace` に分離します。この作業用cwdは永続で、AIリソース(AGENTS.md / skills)が同期されます。Claude CLI も同様に `claude-agent-home` を持ち、Antigravity CLI は作業用cwd `antigravity-agent-workspace` に `AGENTS.md`、`.agents/skills`、`.agents/mcp_config.json` を持ち、共有設定 `~/.gemini/config/mcp_config.json` と併用します。Studio管理のグローバル指示とskillはCodex・Claude・Antigravityの3社共通リソースとして各実行cwdへ投影し、ワークスペース指示は実行時プロンプトで共通適用します。Antigravity 経由の提案は provider `antigravity` として保存します。各プロバイダのアプリ実行コンテキスト(選択ブロックや添付画像など)は `ai-run-context/<provider>.run-context.json` で受け渡します。renderer の IndexedDB / `localStorage` はデスクトップ版の教材保存経路では使いません (Web版の保存先については 2.2 を参照)。
 
 デスクトップ版は `data/documents`、`library.json`、`workspace.json` を監視します。外部エディタやファイル同期ツールが現在開いている `documents/<fileId>.sigmadoc.json` を更新した場合、main process は `{ type: "document", fileId, change }` をrendererへ通知し、renderer はそのSigmaDocを読み直して画面に即時反映します。アプリ内編集がdirtyな状態で外部更新が来た場合は、新しい `fileId` の退避教材を作ってから外部変更を反映します。外部削除時は削除済みfileを復活させず、別fileへ切り替えます。
 
 IDの境界は分けます。`fileId` はローカルのファイル管理IDで、workspace、folder、revision、タブ、一覧、watch、AI編集対象の基準です。`docId` はSigmaDoc内部IDで、教材本文の内部識別子としてだけ残します。
 
 教材作成、保存、削除、フォルダ移動、workspace変更、画像参照はすべてローカルlibrary内で完結し、標準UIもこのローカルデータだけを表示します。`library.json` が現行スキーマに適合しない場合は専用エラー画面で違反箇所とAI修復用プロンプトを示し、再読み込みされるまで台帳へ書き込みません。
+
+### 2.2 Web Version Persists In The Browser
+
+Web版 (Electron の preload bridge `window.desktopAPI` が無い素のブラウザ) は、同じ台帳とSigmaDocをそのブラウザの IndexedDB (`sigma-studio`) へ保存します。教材、ワークスペース、フォルダ、タブ状態、テンプレート、素材がすべて再読み込み後も残ります。サーバもログインも使いません。同期先はこのブラウザだけで、別の端末やブラウザへは渡りません。
+
+保存先の選択は `src/lib/runtime/app-runtime.ts` の `getAppRuntime()` が 1 か所で行います。bridge があれば desktop runtime、無ければ browser runtime です。`src/lib/storage.ts` と `src/lib/workspace-repository.ts` はこの runtime だけを呼ぶので、画面側は保存先を意識しません。MCP提案・データフォルダ・AI実行のように desktop でしか意味を持たない操作だけが `getDesktopRuntime()` を使い、`null` を分岐します。
+
+台帳の行の形と操作の意味 (既定ワークスペースの生成、ソフト削除、フォルダの入れ子、`revision` の楽観ロック) は `src/lib/library-ledger.ts` の純関数が唯一の出典で、デスクトップ版の `library.json` と同じ形です。両実装が同じ操作列で同じ結果になることは `electron/browser-store-parity.test.ts` で縛ります。
+
+デスクトップ版がプロセス間ロックで守っている台帳の read-modify-write は、ブラウザでは IndexedDB のトランザクション 1 つに置き換えます。台帳と本文を同じトランザクションで書くので、「行はあるが本文が無い」状態は原理的に作れません。外部変更の通知は `fs.watch` の代わりに `BroadcastChannel("sigma-studio:storage")` で、他タブの作成・改名・保存が同じ形のイベントで届きます。
+
+ブラウザがサイトデータを拒む場合 (プライベートウィンドウなど) はメモリ上の保存先へ落ち、`capabilities.browserStorage` が `false` になります。このときは編集できてもタブを閉じると失われるので、起動時にその旨を表示します。
 
 ### 3. Semantic Nodes Before Visual Styling
 

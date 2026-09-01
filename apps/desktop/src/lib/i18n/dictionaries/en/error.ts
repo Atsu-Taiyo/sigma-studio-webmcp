@@ -44,6 +44,8 @@ export const error = {
     unsavedBackupFailed: "Couldn't back up the unsaved input",
     qrTextRequired: "Enter text to create a QR code.",
     documentLoadFailed: "Couldn't load the material.",
+    templatesUnavailable: "Templates are unavailable.",
+    materialsUnavailable: "Materials are unavailable.",
   },
   crash: {
     unknownError: "An unknown error occurred.", title: "The screen couldn't be displayed", subtitle: "An error occurred while rendering the app. Your teaching-material data was not changed.", errorHeading: "Error", locationHeading: "Location", locationAria: "Error location", promptTitle: "Ready-to-use AI repair prompt", promptHint: "Copy this prompt and paste it into an AI. After it is fixed, select Reload to recover.", copied: "Copied", copyPrompt: "Copy prompt", promptAria: "Prompt for repairing the error", copyFailed: "Couldn't copy the prompt. Select the text above and copy it manually.", reload: "Reload",

@@ -294,7 +294,6 @@ export const editor = {
     blockCopied: "Copied the block",
     copyFailed: "Could not copy",
     nothingToPaste: "There is nothing to paste",
-    materialsDesktopOnly: "Materials can only be saved in the desktop app.",
     materialSaved: "Saved as a material",
     materialSaveFailed: "Could not save the material.",
     selectMaterialSource: "Select the body text or shapes you want to save as a material.",

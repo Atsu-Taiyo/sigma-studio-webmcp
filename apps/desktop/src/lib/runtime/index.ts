@@ -2,11 +2,18 @@ export {
   getDesktopRuntime,
   isDesktopRuntimeAvailable,
 } from "./desktop-runtime";
+export {
+  getAppRuntime,
+  getRuntimeTarget,
+  isPersistentRuntime,
+} from "./app-runtime";
 export type {
   AppRuntime,
   CreateDocumentInput,
   CreateFileFromDocumentInput,
   DesktopAiRuntime,
+  DesktopRuntime,
+  DocumentLibraryRepository,
   DocumentFileRecord,
   DocumentLoadFailureKind,
   DocumentLoadResult,
@@ -14,8 +21,10 @@ export type {
   FolderPatch,
   LocalLibraryRepository,
   LocalWorkspaceRepository,
+  MaterialRepository,
   RuntimeCapabilities,
   RuntimeTarget,
+  TemplateRepository,
   StorageResult,
   WorkspaceFileSummary,
   WorkspaceFolderSummary,

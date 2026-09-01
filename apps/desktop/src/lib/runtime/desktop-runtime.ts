@@ -7,18 +7,24 @@ import {
   type SigmaDocument,
 } from "@/features/document";
 import { createBlankDocument } from "@/lib/blank-document";
-import type { DesktopStorageAPI } from "@/types/desktop";
+import type {
+  DesktopMaterialsAPI,
+  DesktopStorageAPI,
+  DesktopTemplatesAPI,
+} from "@/types/desktop";
 
 import type {
-  AppRuntime,
   CreateDocumentInput,
   CreateFileFromDocumentInput,
   DocumentFileRecord,
   DocumentLoadResult,
   DocumentMetadata,
+  DesktopRuntime,
   LocalLibraryRepository,
   LocalWorkspaceRepository,
+  MaterialRepository,
   RuntimeCapabilities,
+  TemplateRepository,
   WorkspaceInitializationResult,
   WorkspaceOverviewResult,
 } from "./types";
@@ -27,6 +33,7 @@ const te = createCurrentLocaleTranslator("error");
 
 const DESKTOP_CAPABILITIES: RuntimeCapabilities = {
   desktopStorage: true,
+  browserStorage: false,
   localFolders: true,
   localFileWatch: true,
   mcpProposals: true,
@@ -35,7 +42,7 @@ const DESKTOP_CAPABILITIES: RuntimeCapabilities = {
   publicWeb: false,
 };
 
-export function getDesktopRuntime(): AppRuntime | null {
+export function getDesktopRuntime(): DesktopRuntime | null {
   const bridge = getDesktopBridge();
   if (!bridge?.storage) {
     return null;
@@ -46,6 +53,8 @@ export function getDesktopRuntime(): AppRuntime | null {
     capabilities: DESKTOP_CAPABILITIES,
     library: createDesktopLibraryRepository(bridge.storage),
     workspace: createDesktopWorkspaceRepository(bridge.storage),
+    templates: createDesktopTemplateRepository(bridge.templates),
+    materials: createDesktopMaterialRepository(bridge.materials),
     ai: bridge.aiEdit,
   };
 }
@@ -160,6 +169,46 @@ function createDesktopWorkspaceRepository(storage: DesktopStorageAPI): LocalWork
     moveFileToWorkspace(fileId: string, targetWorkspaceId: string, folderId?: string | null): Promise<WorkspaceOverviewResult> {
       return storage.moveFileToWorkspace(fileId, targetWorkspaceId, folderId);
     },
+  };
+}
+
+/**
+ * bridge 側の API をそのまま repository として渡さない。古い preload では
+ * templates / materials が無い可能性があり、その時は「利用できない」を
+ * 明示的に返して呼び出し側の分岐を 1 か所に閉じ込める。
+ */
+function createDesktopTemplateRepository(templates: DesktopTemplatesAPI | undefined): TemplateRepository {
+  return {
+    listTemplates: (workspaceId) => templates
+      ? templates.listTemplates(workspaceId)
+      : Promise.resolve([]),
+    createTemplate: (input) => templates
+      ? templates.createTemplate(input)
+      : Promise.reject(new Error(te("runtime.templatesUnavailable"))),
+    renameTemplate: (id, name) => templates
+      ? templates.renameTemplate(id, name)
+      : Promise.reject(new Error(te("runtime.templatesUnavailable"))),
+    deleteTemplate: (id) => templates
+      ? templates.deleteTemplate(id)
+      : Promise.resolve({ ok: false, error: te("runtime.templatesUnavailable") }),
+  };
+}
+
+function createDesktopMaterialRepository(materials: DesktopMaterialsAPI | undefined): MaterialRepository {
+  return {
+    listMaterials: () => materials ? materials.listMaterials() : Promise.resolve([]),
+    createMaterial: (input) => materials
+      ? materials.createMaterial(input)
+      : Promise.reject(new Error(te("runtime.materialsUnavailable"))),
+    renameMaterial: (id, name) => materials
+      ? materials.renameMaterial(id, name)
+      : Promise.reject(new Error(te("runtime.materialsUnavailable"))),
+    updateMaterialMetadata: (id, input) => materials
+      ? materials.updateMaterialMetadata(id, input)
+      : Promise.reject(new Error(te("runtime.materialsUnavailable"))),
+    deleteMaterial: (id) => materials
+      ? materials.deleteMaterial(id)
+      : Promise.resolve({ ok: false, error: te("runtime.materialsUnavailable") }),
   };
 }
 

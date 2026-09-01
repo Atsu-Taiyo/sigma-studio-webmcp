@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 
 import { PrintPreviewThumbnail } from "@/components/print/PrintPreview";
-import { getDesktopBridge } from "@/lib/desktop-bridge";
+import { getAppRuntime } from "@/lib/runtime";
 import { listWorkspaceOverview } from "@/lib/workspace-repository";
 import type { SigmaDocument } from "@/features/document";
 import type { TemplateItem } from "@/types/template";
@@ -130,18 +130,11 @@ export function TemplateGallery({
     }
     let cancelled = false;
     void (async () => {
-      const bridge = getDesktopBridge();
-      if (!bridge?.templates) {
-        if (!cancelled) {
-          setTemplates([]);
-        }
-        return;
-      }
       if (!cancelled) {
         setLoading(true);
       }
       try {
-        const next = await bridge.templates.listTemplates();
+        const next = await getAppRuntime().templates.listTemplates();
         if (!cancelled) {
           setTemplates(next);
           setError(null);
@@ -182,11 +175,6 @@ export function TemplateGallery({
   }, [templates, search, selectedWorkspaceId, workspaceNameById]);
 
   const saveCurrentAsTemplate = useCallback(async () => {
-    const bridge = getDesktopBridge();
-    if (!bridge?.templates) {
-      setError(t("template.desktopOnly"));
-      return;
-    }
     if (!selectedWorkspaceId) {
       setError(t("template.selectWorkspace"));
       return;
@@ -199,7 +187,7 @@ export function TemplateGallery({
     const name = currentDocument.metadata.title || t("untitledTemplate");
     setBusy(true);
     try {
-      const template = await bridge.templates.createTemplate({
+      const template = await getAppRuntime().templates.createTemplate({
         workspaceId: selectedWorkspaceId,
         name,
         document: currentDocument,
@@ -214,14 +202,13 @@ export function TemplateGallery({
   }, [selectedWorkspaceId, currentDocument, t]);
 
   const renameTemplate = useCallback(async (template: TemplateItem) => {
-    const bridge = getDesktopBridge();
     const name = editingName.trim();
-    if (!bridge?.templates || !name) {
+    if (!name) {
       return;
     }
     setBusy(true);
     try {
-      const next = await bridge.templates.renameTemplate(template.id, name);
+      const next = await getAppRuntime().templates.renameTemplate(template.id, name);
       setTemplates((current) => current.map((item) => (item.id === next.id ? next : item)));
       setEditingId(null);
       setEditingName("");
@@ -234,13 +221,9 @@ export function TemplateGallery({
   }, [editingName, t]);
 
   const deleteTemplate = useCallback(async (template: TemplateItem) => {
-    const bridge = getDesktopBridge();
-    if (!bridge?.templates) {
-      return;
-    }
     setBusy(true);
     try {
-      const result = await bridge.templates.deleteTemplate(template.id);
+      const result = await getAppRuntime().templates.deleteTemplate(template.id);
       if (!result.ok) {
         throw new Error(result.error ?? t("template.deleteFailed"));
       }

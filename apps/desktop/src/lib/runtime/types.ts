@@ -5,19 +5,30 @@ import type {
   DesktopStorageChangeEvent,
 } from "@/types/desktop";
 import type { SigmaDocument } from "@/features/document";
+import type { MaterialContent, MaterialItem } from "@/types/material";
+import type { TemplateItem } from "@/types/template";
 import type { LedgerSchemaFailure } from "@/lib/library-schema";
 import type { SigmaDocumentRecoveryIssue, SigmaDocumentSchemaFailure } from "@/lib/sigma-doc-schema";
 
-export type RuntimeTarget = "desktop";
+/**
+ * どの土台で動いているか。
+ * - `desktop`: Electron の preload bridge (`window.desktopAPI`) がある。保存先はユーザーデータの実ファイル。
+ * - `web`: 素のブラウザ。保存先はこのブラウザの IndexedDB。
+ */
+export type RuntimeTarget = "desktop" | "web";
 
 export interface RuntimeCapabilities {
-  desktopStorage: true;
-  localFolders: true;
-  localFileWatch: true;
-  mcpProposals: true;
-  codexAppServerAi: true;
-  hostedAiApi: false;
-  publicWeb: false;
+  /** ユーザーデータ配下の実ファイルへ保存する。 */
+  desktopStorage: boolean;
+  /** このブラウザの IndexedDB へ保存する。 */
+  browserStorage: boolean;
+  localFolders: boolean;
+  /** 保存先の外部変更を監視して通知できる (desktop: fs.watch / web: 他タブ配信)。 */
+  localFileWatch: boolean;
+  mcpProposals: boolean;
+  codexAppServerAi: boolean;
+  hostedAiApi: boolean;
+  publicWeb: boolean;
 }
 
 export interface StorageResult {
@@ -136,7 +147,14 @@ export type ListMcpEditProposalsOptions = {
   resolvedLimit?: number;
 };
 
-export interface LocalLibraryRepository {
+/**
+ * デスクトップ / ブラウザのどちらでも成立する教材保存の契約。
+ *
+ * ここに置いてよいのは「教材と台帳をどう読み書きするか」だけ。ユーザーデータの
+ * 実パスや MCP 提案のように desktop でしか意味を持たないものは
+ * `LocalLibraryRepository` 側へ置く。
+ */
+export interface DocumentLibraryRepository {
   initializeWorkspace(): Promise<WorkspaceInitializationResult>;
   listFiles(): Promise<DocumentMetadata[]>;
   loadDocument(fileId: string): Promise<SigmaDocument | null>;
@@ -151,11 +169,15 @@ export interface LocalLibraryRepository {
   duplicateFile(fileId: string): Promise<DocumentFileRecord>;
   deleteFile(fileId: string): Promise<StorageResult>;
   saveWorkspace(state: WorkspaceState): Promise<StorageResult>;
+  onChange(handler: (event: DesktopStorageChangeEvent) => void): () => void;
+}
+
+/** desktop 専用の追加操作。ブラウザには対応物が無い。 */
+export interface LocalLibraryRepository extends DocumentLibraryRepository {
   getDataDir(): Promise<{ path: string }>;
   listMcpEditProposals(options?: ListMcpEditProposalsOptions): Promise<DesktopMcpEditProposalSummary[]>;
   approveMcpEditProposal(proposalId: string): Promise<DesktopMcpEditProposalActionResult>;
   rejectMcpEditProposal(proposalId: string): Promise<DesktopMcpEditProposalActionResult>;
-  onChange(handler: (event: DesktopStorageChangeEvent) => void): () => void;
 }
 
 export interface LocalWorkspaceRepository {
@@ -170,14 +192,48 @@ export interface LocalWorkspaceRepository {
   moveFileToWorkspace(fileId: string, targetWorkspaceId: string, folderId?: string | null): Promise<WorkspaceOverviewResult>;
 }
 
+export type CreateMaterialInput = { name: string; content: MaterialContent }
+  & Pick<MaterialItem, "description" | "tags" | "usage" | "visualConcepts" | "transformPolicy" | "ports">;
+
+export type UpdateMaterialInput = Partial<Pick<
+  MaterialItem,
+  "name" | "description" | "tags" | "usage" | "visualConcepts" | "transformPolicy" | "ports" | "content"
+>>;
+
+export interface MaterialRepository {
+  listMaterials(): Promise<MaterialItem[]>;
+  createMaterial(input: CreateMaterialInput): Promise<MaterialItem>;
+  renameMaterial(id: string, name: string): Promise<MaterialItem>;
+  updateMaterialMetadata(id: string, input: UpdateMaterialInput): Promise<MaterialItem>;
+  deleteMaterial(id: string): Promise<StorageResult>;
+}
+
+export interface TemplateRepository {
+  listTemplates(workspaceId?: string | null): Promise<TemplateItem[]>;
+  createTemplate(input: { workspaceId: string; name: string; document: SigmaDocument }): Promise<TemplateItem>;
+  renameTemplate(id: string, name: string): Promise<TemplateItem>;
+  deleteTemplate(id: string): Promise<StorageResult>;
+}
+
 export interface DesktopAiRuntime {
   run(payload: unknown, onEvent: (event: unknown) => void): Promise<unknown>;
 }
 
+/**
+ * 教材の保存先。desktop でもブラウザでも必ず 1 つ手に入る (`getAppRuntime`)。
+ * desktop 固有の機能が要る呼び出しだけが `getDesktopRuntime()` を使う。
+ */
 export interface AppRuntime {
   target: RuntimeTarget;
   capabilities: RuntimeCapabilities;
-  library: LocalLibraryRepository;
+  library: DocumentLibraryRepository;
   workspace: LocalWorkspaceRepository;
+  templates: TemplateRepository;
+  materials: MaterialRepository;
+}
+
+export interface DesktopRuntime extends AppRuntime {
+  target: "desktop";
+  library: LocalLibraryRepository;
   ai: DesktopAiRuntime;
 }
