@@ -10,11 +10,16 @@ type RouteSearch = URLSearchParams | Record<string, string | number | boolean | 
 
 export function getAppRouteHref(route: AppRoute, search?: RouteSearch): string {
   const query = normalizeSearch(search);
-  if (
-    typeof window !== "undefined"
-    && (window.location.protocol === "file:" || process.env.NODE_ENV === "production")
-  ) {
+  if (typeof window !== "undefined" && window.location.protocol === "file:") {
     const url = new URL(STATIC_ROUTE_FILES[route], window.location.href);
+    url.search = query;
+    return url.toString();
+  }
+
+  if (typeof window !== "undefined" && process.env.NODE_ENV === "production") {
+    // Sites ではアプリを `/sigma/` 配下に置く。route を origin 相対にすると
+    // `/workspace` へ飛んで配信 prefix を失うため、現在の directory から解決する。
+    const url = new URL(route === "/" ? "." : route.slice(1), window.location.href);
     url.search = query;
     return url.toString();
   }

@@ -28,9 +28,9 @@ describe("app navigation", () => {
       },
     });
 
-    expect(getAppRouteHref("/workspace")).toBe("https://sigma-studio.example/sigma/workspace.html");
-    expect(getAppRouteHref("/print", { fileId: "file_1" })).toBe("https://sigma-studio.example/sigma/print.html?fileId=file_1");
-    expect(getAppRouteHref("/", { fileId: "file_1" })).toBe("https://sigma-studio.example/sigma/index.html?fileId=file_1");
+    expect(getAppRouteHref("/workspace")).toBe("https://sigma-studio.example/sigma/workspace");
+    expect(getAppRouteHref("/print", { fileId: "file_1" })).toBe("https://sigma-studio.example/sigma/print?fileId=file_1");
+    expect(getAppRouteHref("/", { fileId: "file_1" })).toBe("https://sigma-studio.example/sigma/?fileId=file_1");
   });
 
   it("keeps extensionless routes for the development server", () => {
