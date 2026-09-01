@@ -14,6 +14,7 @@ import type { OverlayGraphShape, OverlayShape, OverlayShapeId } from "../types";
 import {
   getExistingGraphLabelTextShapeIds,
   materializeMissingGraphOwnedTextLabels,
+  syncGraphOwnedLabelTextShapePositions,
 } from "./graph-labels";
 
 type TextShape = Extract<OverlayShape, { type: "text" }>;
@@ -159,6 +160,32 @@ describe("graph-owned label ownership", () => {
  * moved or resized. `resolveShapeAnchorPositions` is what re-derives `x`/`y` from that anchor.
  */
 describe("graph-owned label follow", () => {
+  it("keeps point and annotation labels visible after an unrelated graph settings edit", () => {
+    const shapes = materializeTestGraph();
+    const graph = shapes.find(isGraphShape)!;
+    expect(graph.props.spec.points?.[0]).not.toHaveProperty("label");
+    expect(graph.props.spec.annotations?.[0]?.text).toBe("");
+
+    const changedGraph: OverlayGraphShape = {
+      ...graph,
+      props: {
+        ...graph.props,
+        spec: {
+          ...graph.props.spec,
+          axes: { ...graph.props.spec.axes, grid: !graph.props.spec.axes.grid },
+        },
+      },
+    };
+    const changedShapes = shapes.map((shape) => (
+      shape.id === graph.id ? changedGraph : shape
+    ));
+    const synced = syncGraphOwnedLabelTextShapePositions(changedShapes, changedGraph);
+
+    expect(synced.filter(isTextShape)).toHaveLength(EXPECTED_LABEL_COUNT);
+    expect(synced.filter(isTextShape).every((shape) => !shape.hidden)).toBe(true);
+    expect(getExistingGraphLabelTextShapeIds(changedGraph, synced)).toHaveLength(EXPECTED_LABEL_COUNT);
+  });
+
   it("follows the graph when it moves", () => {
     const shapes = materializeTestGraph();
     const before = labelPositionsById(resolveShapeAnchorPositions(shapes));

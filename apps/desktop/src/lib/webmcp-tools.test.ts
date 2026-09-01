@@ -13,7 +13,11 @@ import {
   type SigmaWebMcpProposal,
   type WebMcpToolDefinition,
 } from "@/lib/webmcp-tools";
-import type { OverlayShape, SigmaDocument } from "@/features/document";
+import {
+  hydrateGraphSpecWithOwnedLabelTexts,
+  type OverlayShape,
+  type SigmaDocument,
+} from "@/features/document";
 
 function baseDocument(shapes: OverlayShape[] = []): SigmaDocument {
   return {
@@ -154,6 +158,43 @@ describe("Sigma WebMCP desktop-parity tools", () => {
     });
     harness.apply();
     expect(currentShape(harness.getDocument(), created.id)).toMatchObject({ props: { color: "#dc2626" } });
+  });
+
+  it("materializes every WebMCP graph label with recoverable ownership", async () => {
+    const harness = createHarness(baseDocument(), "public");
+    await harness.tool("create_overlay").execute({
+      expectedRevision: 0,
+      objectType: "graph",
+      targetId: "p_existing",
+      id: "graph_with_labels",
+      kind: "cartesian",
+      axes: { xLabel: "X軸", yLabel: "Y軸", originLabel: "O", grid: true },
+      curves: [{ id: "curve_webmcp", expr: "x^2", label: "f" }],
+      points: [{ id: "point_webmcp", x: "1", y: "1", label: "P" }],
+      annotations: [{ id: "annotation_webmcp", x: "2", y: "2", text: "注記" }],
+      showFormulaLabels: true,
+    });
+    harness.apply();
+
+    const document = harness.getDocument();
+    const graph = currentShape(document, "graph_with_labels");
+    expect(graph.type).toBe("graph2dShape");
+    if (graph.type !== "graph2dShape") return;
+    const overlayShapes = document.pageLayout?.overlay?.overlaySnapshot?.shapes ?? [];
+    expect(graph.props.axisLabelTextShapeIds).toEqual({
+      x: expect.any(String),
+      y: expect.any(String),
+      origin: expect.any(String),
+    });
+    expect(graph.props.pointLabelTextShapeIdsByPointId).toEqual({ point_webmcp: expect.any(String) });
+    expect(graph.props.annotationTextShapeIdsByAnnotationId).toEqual({ annotation_webmcp: expect.any(String) });
+    expect(graph.props.labelTextShapeIdsByCurveId).toEqual({ curve_webmcp: expect.any(String) });
+    expect(hydrateGraphSpecWithOwnedLabelTexts(graph, overlayShapes)).toMatchObject({
+      axes: { xLabel: "X軸", yLabel: "Y軸", originLabel: "O" },
+      curves: [{ id: "curve_webmcp", label: "f" }],
+      points: [{ id: "point_webmcp", label: "P" }],
+      annotations: [{ id: "annotation_webmcp", text: "注記" }],
+    });
   });
 
   it("converts Markdown independently inside semantic problem areas", async () => {

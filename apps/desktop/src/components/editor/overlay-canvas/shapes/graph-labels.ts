@@ -378,16 +378,27 @@ export function syncGraphOwnedLabelTextShapePositions(
   graphShape: OverlayGraphShape,
   options: { preserveExistingPositions?: boolean } = {},
 ): OverlayShape[] {
+  // Persisted graphs keep label content in their owned text shapes, not duplicated in the graph
+  // spec. Layout helpers still need that content to build point/annotation templates. Hydrate a
+  // transient shape for layout only; otherwise any unrelated graph settings edit sees the cleared
+  // canonical spec, produces no template, and incorrectly hides those owned labels.
+  const layoutGraphShape: OverlayGraphShape = {
+    ...graphShape,
+    props: {
+      ...graphShape.props,
+      spec: hydrateGraphSpecWithOwnedLabelTexts(graphShape, shapes),
+    },
+  };
   const currentLabelIdsByKey = getExistingGraphAxisLabelTextShapeIdsByKey(graphShape, shapes);
-  const axisEntries = createGraphAxisLabelShapeEntries(graphShape, () => "", {
+  const axisEntries = createGraphAxisLabelShapeEntries(layoutGraphShape, () => "", {
     keys: Object.keys(currentLabelIdsByKey).filter(isOverlayGraphAxisLabelKey),
   });
   const currentLabelIdsByPointId = getExistingGraphPointLabelTextShapeIdsByPointId(graphShape, shapes);
-  const pointEntries = createGraphPointLabelShapeEntries(graphShape, () => "", {
+  const pointEntries = createGraphPointLabelShapeEntries(layoutGraphShape, () => "", {
     pointIds: Object.keys(currentLabelIdsByPointId),
   });
   const currentLabelIdsByAnnotationId = getExistingGraphAnnotationLabelTextShapeIdsByAnnotationId(graphShape, shapes);
-  const annotationEntries = createGraphAnnotationLabelShapeEntries(graphShape, () => "", {
+  const annotationEntries = createGraphAnnotationLabelShapeEntries(layoutGraphShape, () => "", {
     annotationIds: Object.keys(currentLabelIdsByAnnotationId),
   });
   const entries = [

@@ -49,6 +49,73 @@ test("WebMCP converts Markdown math, previews it, and applies one draft", async 
   await expect(liveBlock.locator('.inline-math-node[data-tex="x^2+y^2=1"]')).toBeVisible();
 });
 
+test("WebMCP graph labels survive a human settings edit", async ({ page }) => {
+  await installWebMcpMock(page);
+  await page.goto("/");
+  await expect(page.locator(".startup-splash")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }
+  ).__sigmaWebMcpTools.size)).toBe(18);
+
+  const result = await page.evaluate(async () => {
+    const tools = (window as unknown as {
+      __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }>;
+    }).__sigmaWebMcpTools;
+    const inspected = JSON.parse(await tools.get("inspect_document")!.execute({ detail: "full" }) as string) as {
+      revision: number;
+      document: { content: Array<{ id: string }> };
+    };
+    return tools.get("create_overlay")!.execute({
+      expectedRevision: inspected.revision,
+      objectType: "graph",
+      targetId: inspected.document.content[0]!.id,
+      id: "webmcp_graph_labels",
+      kind: "cartesian",
+      axes: { xLabel: "X軸", yLabel: "Y軸", originLabel: "O", grid: true },
+      curves: [{ id: "curve_webmcp", expr: "x^2", label: "f" }],
+      points: [{ id: "point_webmcp", x: "1", y: "1", label: "P" }],
+      annotations: [{ id: "annotation_webmcp", x: "2", y: "2", text: "注記" }],
+      showFormulaLabels: true,
+    });
+  });
+  expect(JSON.parse(result as string)).toMatchObject({
+    ok: true,
+    status: "pending_approval",
+    operationCount: 7,
+  });
+
+  const taskDock = page.locator(".ai-task-dock-root");
+  await taskDock.getByRole("button", { name: /AIタスク/ }).hover();
+  await taskDock.getByRole("button", { name: "適用", exact: true }).click();
+
+  const graph = page.locator("#webmcp_graph_labels");
+  await expect(graph).toBeVisible();
+  const graphWrapper = page.locator(".overlay-shape").filter({ has: graph }).first();
+  const labels = page.locator(".overlay-shape-text");
+  await expect(labels).toHaveCount(6);
+  await expect(labels).toContainText(["X軸", "Y軸", "O", "P", "注記", "f"]);
+
+  const graphBox = await graph.boundingBox();
+  expect(graphBox).not.toBeNull();
+  await page.mouse.click(
+    graphBox!.x + graphBox!.width * 0.5,
+    graphBox!.y + graphBox!.height * 0.65,
+  );
+  await expect(graphWrapper).toHaveClass(/selected/);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent(
+    "sigma-studio:open-overlay-graph-settings",
+    { detail: { shapeId: "webmcp_graph_labels" } },
+  )));
+
+  const settings = page.getByRole("dialog", { name: "グラフの設定" });
+  await expect(settings).toBeVisible();
+  await settings.getByRole("button", { name: "表示範囲", exact: true }).click();
+  await settings.getByLabel("グリッド", { exact: true }).uncheck();
+
+  await expect(labels).toHaveCount(6);
+  await expect(labels).toContainText(["X軸", "Y軸", "O", "P", "注記", "f"]);
+});
+
 test("web AI panel stores instructions and the web selection has no AI reference wand", async ({ page }) => {
   await installWebMcpMock(page);
   await page.goto("/");
