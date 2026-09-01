@@ -6,6 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import { renderProviderMark } from "@/components/branding/provider-logos";
 import { AiThinkingOrb } from "@/components/branding/AiThinkingOrb";
 import { AiProposalDecisionButton } from "@/components/editor/AiProposalDecisionButton";
+import { WebMcpDockSection } from "@/components/editor/webmcp/WebMcpDockSection";
+import type { WebMcpHistoryEntry } from "@/components/editor/webmcp/webmcp-history";
 import { Shimmer } from "@/components/ui/Shimmer";
 import { findBlock, type EditableBlock } from "@/lib/document-tree";
 import { cancelRun, isDefaultChatRoomTitle, useAiChatRoomsForDocument, type AiEditChatRoom } from "@/lib/ai/ai-run-controller";
@@ -267,6 +269,27 @@ export function buildTaskRows(
   return rows;
 }
 
+/** Web版 (WebMCP) の決着済みドラフトを、デスクトップと同じ行の形へ写す。
+ *
+ * 部屋も run も無いので `buildTaskRows` の room ループには乗らない。**巻き戻し/再提案の
+ * IDは必ず空にすること** — Webには承認バッチ (appliedRevision) も main の getRevertPlan も
+ * 無く、ボタンを出すと押せてしまう。 */
+export function buildWebMcpHistoryRows(entries: WebMcpHistoryEntry[], document: SigmaDocument): TaskRow[] {
+  return entries.map((entry) => ({
+    key: `webmcp-history:${entry.id}`,
+    roomId: null,
+    runId: null,
+    // 保留中の行 (WebMcpBridgeのpreview group) と同じ印にそろえる。
+    provider: "chatgpt" as const,
+    status: entry.status,
+    label: "WebMCP",
+    anchorExcerpt: entry.targetIds[0] ? excerptForBlock(findBlock(document, entry.targetIds[0])) : null,
+    proposalIds: [entry.id],
+    revertibleProposalIds: [],
+    restorableProposalId: null,
+  }));
+}
+
 // Statuses that still need a human (or the AI) to do something: a run actually
 // executing, or a proposal sitting there awaiting approval/rejection/conflict
 // resolution. Settled rows (applied/auto-applied/rejected/reverted) are just
@@ -306,6 +329,11 @@ export interface AiTaskDockProps {
   onRestoreProposal?: (proposalId: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
   onFocusSession?: (roomId: string) => void;
   resolvedProposals: DesktopMcpEditProposalSummary[];
+  /** Web版だけ: 接続状態とエージェント指示欄をこのdockの中に出す (教材IDがスコープ)。
+   * デスクトップとSDK埋め込みでは渡さない。 */
+  webMcpInstructionScopeId?: string | null;
+  /** Web版だけ: 適用済み/破棄済みのWebMCPドラフト。行の末尾に履歴として並べる。 */
+  webMcpHistory?: WebMcpHistoryEntry[];
 }
 
 /** Presentational task list -- header + rows, no state of its own. Kept separate
@@ -322,6 +350,7 @@ export function AiTaskDockPanel({
   onRestoreProposal,
   onFocusSession,
   onClose,
+  webMcpInstructionScopeId,
 }: {
   rows: TaskRow[];
   busy: boolean;
@@ -333,6 +362,7 @@ export function AiTaskDockPanel({
   onRestoreProposal?: (proposalId: string) => Promise<{ ok: true } | { ok: false; reason: string }>;
   onFocusSession?: (roomId: string) => void;
   onClose?: () => void;
+  webMcpInstructionScopeId?: string | null;
 }) {
   const t = useT("ai");
   const tCommon = useT("common");
@@ -347,6 +377,7 @@ export function AiTaskDockPanel({
           </button>
         )}
       </header>
+      {webMcpInstructionScopeId && <WebMcpDockSection key={webMcpInstructionScopeId} instructionScopeId={webMcpInstructionScopeId} />}
       <div className="ai-task-dock-list">
         {rows.length === 0 ? (
           <p className="ai-task-dock-empty">{t("dock.empty")}</p>
@@ -394,6 +425,8 @@ export function AiTaskDock({
   onRestoreProposal,
   onFocusSession,
   resolvedProposals,
+  webMcpInstructionScopeId,
+  webMcpHistory,
 }: AiTaskDockProps) {
   const t = useT("ai");
   const [expanded, setExpanded] = useState(false);
@@ -440,7 +473,10 @@ export function AiTaskDock({
     };
   }, [expanded]);
 
-  const rows = buildTaskRows(rooms, sessions, previewGroups, staleGroups, resolvedProposals, document, activeDocumentRevision, t);
+  const rows = [
+    ...buildTaskRows(rooms, sessions, previewGroups, staleGroups, resolvedProposals, document, activeDocumentRevision, t),
+    ...(webMcpHistory ? buildWebMcpHistoryRows(webMcpHistory, document) : []),
+  ];
   const badgeCount = countAiTaskBadge(rows);
   const isRunning = hasActiveAiTaskRun(rows);
   const toggleLabel = badgeCount > 0 ? t("dock.titleWithCount", { replace: { count: badgeCount } }) : t("dock.title");
@@ -468,6 +504,12 @@ export function AiTaskDock({
     }
     closeTimerRef.current = setTimeout(() => {
       closeTimerRef.current = null;
+      // ポインタが外れても、dockの中を触っている最中なら閉じない。Web版は指示欄の
+      // textareaがこの中にあるので、入力中にマウスが逃げただけで畳むと入力が飛ぶ。
+      // 閉じる経路は onBlur / Esc / 外側クリックが引き続き担当する。
+      if (anchorRef.current?.contains(window.document.activeElement)) {
+        return;
+      }
       setExpanded(false);
     }, 100);
   };
@@ -529,6 +571,7 @@ export function AiTaskDock({
                 }
               : undefined}
             onClose={closePanel}
+            webMcpInstructionScopeId={webMcpInstructionScopeId}
           />
         </div>
       )}

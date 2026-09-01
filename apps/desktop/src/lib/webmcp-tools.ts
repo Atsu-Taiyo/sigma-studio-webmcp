@@ -26,14 +26,22 @@ import { searchSigmaDocument } from "@/lib/ai/sigma-doc-search";
 import { findBlock, findContainingProblem } from "@/lib/document-tree";
 import { resolveDocumentTitle } from "@/lib/document-title";
 import {
+  appendCommentMessage,
+  createCommentThread,
   formatInlineNodeRange,
   hydrateGraphSpecWithOwnedLabelTexts,
   inlineNodesReferenceLength,
   normalizeOverlaySnapshot,
+  setCommentThreadResolved,
+  SIGMA_COMMENT_AGENT_VENDORS,
+  type CommentMutationPorts,
   type InlineNode,
   type InlineFormatPatch,
   type OverlayShape,
   type OverlayTextBlock,
+  type SigmaCommentAgent,
+  type SigmaCommentAnchor,
+  type SigmaCommentThread,
   type SigmaDocument,
 } from "@/features/document";
 import { collectOutline } from "@/lib/document-tree";
@@ -42,7 +50,16 @@ import { areStructurallyEqual } from "@/lib/structural-equality";
 import { inlineNodesToOverlayTextBlocks } from "@/lib/tiptap-adapter";
 import type { AiEditSessionOperationOrderEntry } from "@/lib/ai/sigma-doc-edit-schema";
 import { getGraphPlotBox } from "@/lib/graph2d";
-import { parseMarkdownToTextFlowBlocks } from "@/lib/markdown-to-text-flow";
+import { parseInlineMarkdown, parseMarkdownToTextFlowBlocks } from "@/lib/markdown-to-text-flow";
+import {
+  DEFAULT_COMMENT_COLOR,
+  getCommentAnchorLabel,
+  getCommentAnchorQuote,
+  inlineNodesToCommentText,
+  isCommentAnchorOrphan,
+} from "@/lib/comments";
+import { createId } from "@/lib/id";
+import { resolveCommentAgentVendor } from "@/lib/comment-agents";
 
 export const END_OF_DOCUMENT_TARGET = "END_OF_DOCUMENT";
 export const WEB_MCP_PROPOSAL_ID = "webmcp_single_draft";
@@ -75,6 +92,10 @@ export const SIGMA_WEB_MCP_TOOL_NAMES = [
   "update_graph",
   "insert_graph3d",
   "update_graph3d",
+  "list_comments",
+  "add_comment",
+  "reply_comment",
+  "resolve_comment",
 ] as const;
 
 export interface WebMcpToolAnnotations {
@@ -105,6 +126,18 @@ export interface SigmaWebMcpPorts {
   getAgentInstructions?(): string;
   proposeDocumentChange(proposal: SigmaWebMcpProposal): void;
   withdrawDocumentChange?(proposalId: string): void;
+  /**
+   * コメントの書き込み。**提案ドラフトを通さず、そのまま文書へ入る。**
+   *
+   * コメントは本文・図形・ページ設定のどれも書き換えない注釈で、Figma と同じく
+   * 「誰でも書ける / 承認の対象ではない」もの。承認待ちのドラフトに混ぜると、
+   * 1本しか持てないドラフトをコメント1件が占有してしまう。取り消しは⌘Z一本
+   * (`commitDocumentChange` が1 undo単位) と、パネル上の削除で足りる。
+   *
+   * 反映されなかった場合 (AI が本文を書き込み中など) は文書が変わらないので、
+   * 呼び出し側は前後の文書を比べて失敗を検出する。
+   */
+  commitComments?(mutate: (document: SigmaDocument) => SigmaDocument): void;
 }
 
 export interface SigmaWebMcpProposalApplication {
@@ -292,6 +325,7 @@ export const WEBMCP_APPLICATION_GUIDANCE = [
   "For new body content, use insert_markdown. Both $x^2$ and $$x^2$$ become math; write a literal dollar as \\$.",
   "Use typed runs only when Markdown cannot express the required SigmaDoc formatting.",
   "After a stale error, discard assumptions, read the current revision and target again, then retry.",
+  "To leave feedback rather than change content, use add_comment. Name yourself in author, including the vendor whose model you are, so the reader sees which AI wrote it.",
 ].join("\n");
 
 function toolResult<T>(value: T): T { return value; }
@@ -361,6 +395,17 @@ function changedDocumentTargets(base: SigmaDocument, current: SigmaDocument): st
   if (!sameValue(base, current) && changed.size === 0) changed.add("document");
   return [...changed];
 }
+/**
+ * ドラフトの鮮度判定に使う変更点。**コメントと `updatedAt` は数えない。**
+ *
+ * コメントは本文・図形・ページ設定のどれも書き換えない別レーンなので、承認待ちの
+ * ドラフトを無効にしてはいけない。`updatedAt` は内容ではなく書き込み時刻で、
+ * 保存経路も打鍵も別コピーを作るため常にズレる (MISS.md R1)。
+ */
+function contentChangedTargets(base: SigmaDocument, current: SigmaDocument): string[] {
+  return changedDocumentTargets(base, current).filter((id) => id !== "comments" && id !== "updatedAt");
+}
+
 function formatStaleError(ids: readonly string[]): Error {
   return new Error(`STALE_DRAFT: The document changed after this draft started. Changed target(s): ${ids.join(", ")}. Withdraw the pending proposal, read the current context, and retry.`);
 }
@@ -477,6 +522,158 @@ function makeWriteTool(name: string, description: string, inputSchema: Record<st
   };
 }
 
+/** コメント側の時計とID採番。文書本体の変更 (draft) とは独立に走る。 */
+const COMMENT_MUTATION_PORTS: CommentMutationPorts = {
+  now: () => new Date().toISOString(),
+  createId,
+};
+
+const COMMENT_AUTHOR_SCHEMA = {
+  type: "object",
+  description: "Who is writing. Required: the person reading the document must be able to see which AI left the comment.",
+  properties: {
+    name: { type: "string", minLength: 1, description: "Display name on the comment, for example ChatGPT, Claude, or Gemini." },
+    vendor: {
+      type: "string",
+      enum: [...SIGMA_COMMENT_AGENT_VENDORS],
+      description: "Which company's model is writing. This chooses the logo drawn on the comment avatar; use other when none of these fit.",
+    },
+    model: { type: "string", minLength: 1, description: "Optional exact model name shown next to the display name." },
+  },
+  required: ["name", "vendor"],
+  additionalProperties: false,
+} as const;
+
+const COMMENT_TARGET_SCHEMA = {
+  type: "object",
+  description: "Where the comment is pinned. Pass shapeIds for a figure, blockId plus mathInlineId for one formula, blockId plus text for a phrase, or blockId alone for the whole block.",
+  properties: {
+    blockId: { type: "string", description: "Body or problem-area block ID from inspect_document." },
+    text: { type: "string", minLength: 1, description: "Exact phrase inside that block to underline. Must appear verbatim." },
+    occurrence: { type: "integer", minimum: 1, description: "Which occurrence of text to use when it appears more than once." },
+    mathInlineId: { type: "string", description: "Inline math ID inside that block." },
+    shapeIds: { type: "array", minItems: 1, maxItems: 20, items: { type: "string" }, description: "Overlay shape IDs (figures, tables, graphs)." },
+  },
+  additionalProperties: false,
+} as const;
+
+function commentAuthor(value: unknown): { name: string; agent: SigmaCommentAgent } {
+  const author = objectInput(value);
+  const name = requiredString(author.name, "author.name");
+  const vendor = resolveCommentAgentVendor(requiredString(author.vendor, "author.vendor"));
+  const model = typeof author.model === "string" && author.model.trim() !== "" ? author.model.trim() : undefined;
+  return { name, agent: model ? { vendor, model } : { vendor } };
+}
+
+/** コメント本文。`$...$` は数式に、`**...**` などは書式になる (本文挿入と同じ規則)。 */
+function commentBody(value: unknown, field: string): InlineNode[] {
+  const text = requiredString(value, field);
+  const body = parseInlineMarkdown(text);
+  if (body.length === 0) throw new Error(`${field} must contain visible text.`);
+  return body;
+}
+
+/**
+ * ツール入力の対象指定を、アプリのコメントアンカーへ変換する。オフセットは
+ * `$tex$` を含む平文の文字数 (エディタ側の外部ハイライトと同じ座標系)。
+ */
+function resolveCommentAnchorInput(document: SigmaDocument, value: unknown): SigmaCommentAnchor {
+  const target = objectInput(value);
+
+  if (target.shapeIds !== undefined) {
+    const shapeIds = requiredStringArray(target.shapeIds, "target.shapeIds");
+    // 引用文は付けない。図形の引用は画面では意味を持たず (種別名は表示側のラベルが出す)、
+    // 人が図形へ付けたコメントも同じくアンカーだけを持つ。
+    for (const id of shapeIds) findShape(document, id);
+    return { type: "overlayShape", shapeIds };
+  }
+
+  const blockId = requiredString(target.blockId, "target.blockId");
+  const block = findBlock(document, blockId);
+  if (!block) throw new Error(`Block not found: ${blockId}`);
+
+  if (target.mathInlineId !== undefined) {
+    const mathInlineId = requiredString(target.mathInlineId, "target.mathInlineId");
+    const children = "children" in block && Array.isArray(block.children) ? block.children as InlineNode[] : [];
+    const math = children.find((child) => child.type === "mathInline" && child.id === mathInlineId);
+    if (!math || math.type !== "mathInline") throw new Error(`Inline math ${mathInlineId} is not in block ${blockId}.`);
+    return { type: "inlineMath", blockId, mathInlineId, tex: math.tex, quote: `$${math.tex}$` };
+  }
+
+  if (target.text !== undefined) {
+    const resolved = resolveTextTarget(document, { type: "text", blockId, text: target.text, occurrence: target.occurrence });
+    const children = "children" in block && Array.isArray(block.children) ? block.children as InlineNode[] : [];
+    const math = collectInlineMathInRange(children, resolved.from, resolved.to);
+    return {
+      type: "textRange",
+      start: { blockId, offset: resolved.from },
+      end: { blockId, offset: resolved.to },
+      quote: resolved.quote,
+      ...(math.ids.length > 0 ? { mathInlineIds: math.ids, mathTex: math.tex } : {}),
+    };
+  }
+
+  return { type: "block", blockId, quote: blockToReferenceText(block) };
+}
+
+function collectInlineMathInRange(
+  children: readonly InlineNode[],
+  from: number,
+  to: number,
+): { ids: string[]; tex: string[] } {
+  const ids: string[] = [];
+  const tex: string[] = [];
+  let offset = 0;
+  for (const child of children) {
+    const length = child.type === "text" ? child.text.length : child.tex.length + 2;
+    if (child.type === "mathInline" && offset < to && offset + length > from) {
+      ids.push(child.id);
+      tex.push(child.tex);
+    }
+    offset += length;
+  }
+  return { ids, tex };
+}
+
+function commentThreadTouchesId(thread: SigmaCommentThread, id: string): boolean {
+  const anchor = thread.anchor;
+  if (anchor.type === "block" || anchor.type === "inlineMath") return anchor.blockId === id;
+  if (anchor.type === "textRange") return anchor.start.blockId === id || anchor.end.blockId === id;
+  if (anchor.type === "overlayShape") return anchor.shapeIds.includes(id);
+  return anchor.shapeId === id;
+}
+
+function summarizeCommentThread(document: SigmaDocument, thread: SigmaCommentThread): Record<string, unknown> {
+  return {
+    threadId: thread.id,
+    resolved: thread.resolved === true,
+    orphaned: isCommentAnchorOrphan(document, thread.anchor),
+    anchor: { ...thread.anchor, label: getCommentAnchorLabel(thread.anchor, document), quote: getCommentAnchorQuote(thread.anchor) },
+    createdAt: thread.createdAt,
+    messages: thread.messages.map((message) => ({
+      messageId: message.id,
+      author: message.authorName ?? null,
+      agent: message.agent ?? null,
+      text: inlineNodesToCommentText(message.body),
+      createdAt: message.createdAt,
+    })),
+  };
+}
+
+/**
+ * コメント用のツール。承認ドラフトには積まず即時に反映するので、`makeWriteTool` の
+ * 「人の承認を待つ」案内は付けない。
+ */
+function makeCommentTool(name: string, description: string, inputSchema: Record<string, unknown>, execute: WebMcpToolDefinition["execute"]): WebMcpToolDefinition {
+  return {
+    name,
+    description: `${description} Comments annotate the document without changing any content, so they apply immediately and never occupy the pending edit draft.`,
+    inputSchema,
+    annotations: WRITE_ANNOTATIONS,
+    execute,
+  };
+}
+
 export function createSigmaWebMcpTools(
   ports: SigmaWebMcpPorts,
   options: { catalog?: "public" | "implementation" } = {},
@@ -485,20 +682,46 @@ export function createSigmaWebMcpTools(
   let baseRevision: number | null = null;
   let baseLiveDocument: SigmaDocument | null = null;
   let operationOrder: AiEditSessionOperationOrderEntry[] = [];
+  // コメントは文書の revision を進めるが、本文の前提は動かさない。エージェントへ見せる
+  // revision からコメントぶんを差し引き、「コメントを書いたら expectedRevision が使えなくなる」
+  // 事故を防ぐ。人がパネルからコメントしたぶんも、内容が同じなら同じように吸収する。
+  let commentRevisionDrift = 0;
+  let lastSeenLiveDocument: SigmaDocument | null = null;
+  let lastSeenLiveRevision: number | null = null;
+
+  const absorbCommentRevisionDrift = (): void => {
+    const live = ports.getDocument();
+    const revision = ports.getRevision();
+    if (lastSeenLiveDocument && lastSeenLiveRevision !== null && revision > lastSeenLiveRevision) {
+      // **コメントが実際に変わったときだけ**吸収する。内容が偶然同じだけの差し替えは
+      // 従来どおり前提が動いたものとして扱う (どこが変わったか説明できないため)。
+      const changed = changedDocumentTargets(lastSeenLiveDocument, live);
+      if (changed.includes("comments") && changed.every((id) => id === "comments" || id === "updatedAt")) {
+        commentRevisionDrift += revision - lastSeenLiveRevision;
+      }
+    }
+    lastSeenLiveDocument = live;
+    lastSeenLiveRevision = revision;
+  };
+  /** エージェントが `expectedRevision` に渡す番号。コメントでは進まない。 */
+  const contentRevision = (): number => {
+    absorbCommentRevisionDrift();
+    return ports.getRevision() - commentRevisionDrift;
+  };
+  const agentRevision = (): number => baseRevision ?? contentRevision();
 
   const activeDocument = (): SigmaDocument => session?.draftDocument ?? ports.getDocument();
   const clearDraft = (): void => { session = null; baseRevision = null; baseLiveDocument = null; operationOrder = []; };
   const assertFresh = (revision: number): void => {
+    const currentRevision = contentRevision();
     if (session) {
-      const currentRevision = ports.getRevision();
-      const conflicts = changedDocumentTargets(baseLiveDocument ?? session.baseDocument, ports.getDocument());
+      const conflicts = contentChangedTargets(baseLiveDocument ?? session.baseDocument, ports.getDocument());
       if (baseRevision !== currentRevision || conflicts.length > 0) {
         throw formatStaleError(conflicts.length > 0 ? conflicts : ["document"]);
       }
       if (baseRevision !== revision) throw new Error(`REVISION_MISMATCH: expected ${baseRevision}, received ${revision}. Reuse the draft's base revision or withdraw it.`);
       return;
     }
-    const currentRevision = ports.getRevision();
     if (revision !== currentRevision) throw new Error(`REVISION_MISMATCH: expected ${revision}, current revision is ${currentRevision}. Read inspect_document again.`);
   };
   const ensureSession = (revision: number): SigmaDocAgentSession => {
@@ -556,12 +779,14 @@ export function createSigmaWebMcpTools(
       baseRevision: capturedRevision,
       previewDraft,
       apply: (current) => {
-        const liveRevision = ports.getRevision();
-        const conflicts = changedDocumentTargets(capturedBaseLiveDocument, current);
+        const liveRevision = contentRevision();
+        const conflicts = contentChangedTargets(capturedBaseLiveDocument, current);
         if (liveRevision !== capturedRevision || conflicts.length > 0) {
           throw formatStaleError(conflicts.length > 0 ? conflicts : ["document"]);
         }
-        const nextDocument = SigmaDocumentSchema.parse(reviewedDocument);
+        // ドラフトは開始時のスナップショットから育つので、そのあいだに付いたコメントを
+        // 持っていない。**いま画面にあるコメントをそのまま持ち越す** (承認でコメントが消えない)。
+        const nextDocument = SigmaDocumentSchema.parse({ ...reviewedDocument, comments: current.comments });
         const selectedBlockId = blockIds.at(-1) ?? current.content[0]?.id ?? END_OF_DOCUMENT_TARGET;
         if (session === capturedSession && baseRevision === capturedRevision) clearDraft();
         return { document: nextDocument, selectedBlockId };
@@ -594,6 +819,24 @@ export function createSigmaWebMcpTools(
     return publish(result);
   };
 
+  /**
+   * コメントを文書へ書き込む。エディタは書き込みを断ることがある (AI が本文を
+   * 書いている最中など) が、その場合も例外は飛ばないので、**文書が入れ替わったかで**
+   * 成否を見る (`commitDocumentChange` は不変更新なので参照比較で足りる)。
+   */
+  const commitComments = (mutate: (document: SigmaDocument) => SigmaDocument): SigmaDocument => {
+    if (!ports.commitComments) throw new Error("COMMENTS_UNAVAILABLE: This page does not accept comments.");
+    contentRevision();
+    const before = ports.getDocument();
+    ports.commitComments(mutate);
+    const after = ports.getDocument();
+    if (after === before) {
+      throw new Error("COMMENT_REJECTED: The editor did not accept the comment. It is busy writing an AI edit; retry once that settles.");
+    }
+    contentRevision();
+    return after;
+  };
+
   const implementationTools: WebMcpToolDefinition[] = [
     makeReadTool("get_agent_instructions", "Return the person's Web agent instructions plus SigmaDoc editing guidance. Call this before the first edit.", EMPTY_OBJECT_SCHEMA, () => toolResult({
       ok: true,
@@ -608,36 +851,36 @@ export function createSigmaWebMcpTools(
       const targetId = typeof args.targetId === "string" ? args.targetId : selection.blockId ?? selection.overlayShapes[0]?.id ?? null;
       const targetBlock = targetId ? findBlock(document, targetId) : null;
       const targetShape = targetId ? shapes(document).find((shape) => shape.id === targetId) ?? null : null;
-      return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), selection, target: targetBlock ? summarizeToolBlock(targetBlock) : targetShape, context: targetBlock ? collectNeighborBlocks(document, targetBlock.id) : null, pageLayout: document.pageLayout ?? null, overlayShapes: shapes(document), outline: collectOutline(document, { includeBodyBlocks: true }) });
+      return toolResult({ ok: true, revision: agentRevision(), selection, target: targetBlock ? summarizeToolBlock(targetBlock) : targetShape, context: targetBlock ? collectNeighborBlocks(document, targetBlock.id) : null, pageLayout: document.pageLayout ?? null, overlayShapes: shapes(document), outline: collectOutline(document, { includeBodyBlocks: true }) });
     }),
     makeReadTool("get_document_outline", "Return the current revision, page layout, body outline, block rectangles when available, and all complete overlay shapes.", EMPTY_OBJECT_SCHEMA, () => {
       const document = activeDocument();
-      return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), title: resolveDocumentTitle(document), pageLayout: document.pageLayout ?? null, outline: collectOutline(document, { includeBodyBlocks: true }), overlayShapes: shapes(document) });
+      return toolResult({ ok: true, revision: agentRevision(), title: resolveDocumentTitle(document), pageLayout: document.pageLayout ?? null, outline: collectOutline(document, { includeBodyBlocks: true }), overlayShapes: shapes(document) });
     }),
     makeReadTool("get_block", "Return one complete body or problem-area block by ID.", {
       type: "object", properties: { blockId: { type: "string" } }, required: ["blockId"], additionalProperties: false,
     }, (input) => {
       const id = requiredString(objectInput(input).blockId, "blockId"); const block = findBlock(activeDocument(), id);
-      if (!block) throw new Error(`Block not found: ${id}`); return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), block });
+      if (!block) throw new Error(`Block not found: ${id}`); return toolResult({ ok: true, revision: agentRevision(), block });
     }),
     makeReadTool("get_blocks", "Return multiple complete body or problem-area blocks by ID.", {
       type: "object", properties: { blockIds: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } } }, required: ["blockIds"], additionalProperties: false,
     }, (input) => {
       const ids = requiredStringArray(objectInput(input).blockIds, "blockIds"); const document = activeDocument();
-      return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), blocks: ids.map((id) => { const block = findBlock(document, id); if (!block) throw new Error(`Block not found: ${id}`); return block; }) });
+      return toolResult({ ok: true, revision: agentRevision(), blocks: ids.map((id) => { const block = findBlock(document, id); if (!block) throw new Error(`Block not found: ${id}`); return block; }) });
     }),
     makeReadTool("search_document", "Search body text, TeX, table cells, and overlay text. Use results to choose IDs before reading or editing.", {
       type: "object", properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 50 } }, required: ["query"], additionalProperties: false,
-    }, (input) => { const args = objectInput(input); return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), ...searchSigmaDocument(activeDocument(), requiredString(args.query, "query"), { limit: typeof args.limit === "number" ? args.limit : undefined }) }); }),
+    }, (input) => { const args = objectInput(input); return toolResult({ ok: true, revision: agentRevision(), ...searchSigmaDocument(activeDocument(), requiredString(args.query, "query"), { limit: typeof args.limit === "number" ? args.limit : undefined }) }); }),
     makeReadTool("read_document", "Read the open document. detail='summary' avoids full content; use detail='full' only when the whole canonical SigmaDoc is needed.", {
       type: "object", properties: { detail: { type: "string", enum: ["summary", "full"], default: "summary" } }, additionalProperties: false,
     }, (input) => {
       const detail = objectInput(input).detail ?? "summary"; const document = activeDocument();
-      return toolResult(detail === "full" ? { ok: true, revision: baseRevision ?? ports.getRevision(), document } : { ok: true, revision: baseRevision ?? ports.getRevision(), document: { docId: document.docId, title: resolveDocumentTitle(document), version: document.version, metadata: document.metadata, pageLayout: document.pageLayout, topLevelBlockCount: document.content.length, overlayShapeCount: shapes(document).length } });
+      return toolResult(detail === "full" ? { ok: true, revision: agentRevision(), document } : { ok: true, revision: agentRevision(), document: { docId: document.docId, title: resolveDocumentTitle(document), version: document.version, metadata: document.metadata, pageLayout: document.pageLayout, topLevelBlockCount: document.content.length, overlayShapeCount: shapes(document).length } });
     }),
     makeReadTool("validate_document", "Validate the current document or accumulated pending draft without changing it.", EMPTY_OBJECT_SCHEMA, () => {
       const result = SigmaDocumentSchema.safeParse(activeDocument());
-      return toolResult(result.success ? { ok: true, valid: true, revision: baseRevision ?? ports.getRevision() } : { ok: false, valid: false, issues: result.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })).slice(0, 20) });
+      return toolResult(result.success ? { ok: true, valid: true, revision: agentRevision() } : { ok: false, valid: false, issues: result.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })).slice(0, 20) });
     }),
     makeReadTool("get_pending_proposal", "Return the one accumulated draft, its ordered operation summaries, changed targets, and base revision.", EMPTY_OBJECT_SCHEMA, () => {
       if (!session) return toolResult({ ok: true, pending: false });
@@ -903,6 +1146,119 @@ export function createSigmaWebMcpTools(
       if (current.type !== "graph3dShape") throw new Error(`update_graph3d target is ${current.type}, not graph3dShape.`);
       return runDraft("draft_update_graph3d", args, { ...stripControlArgs(args), shapeId });
     }),
+    makeReadTool("list_comments", "List the comment threads on the document: where each is pinned, who wrote it, and whether it is resolved. Call this before commenting so you do not repeat a point that is already raised.", {
+      type: "object",
+      properties: {
+        includeResolved: { type: "boolean", default: false, description: "Include threads a person already marked resolved." },
+        targetId: { type: "string", description: "Only threads pinned to this body block or overlay shape." },
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+      },
+      additionalProperties: false,
+    }, (input) => {
+      const args = objectInput(input);
+      // コメントは live 文書にしか無い (ドラフトは開始時のスナップショットから育つ)。
+      const document = ports.getDocument();
+      const targetId = typeof args.targetId === "string" ? args.targetId : null;
+      const limit = typeof args.limit === "number" ? args.limit : 50;
+      const threads = (document.comments ?? [])
+        .filter((thread) => args.includeResolved === true || thread.resolved !== true)
+        .filter((thread) => !targetId || commentThreadTouchesId(thread, targetId));
+      return toolResult({
+        ok: true,
+        revision: agentRevision(),
+        total: threads.length,
+        threads: threads.slice(0, limit).map((thread) => summarizeCommentThread(document, thread)),
+      });
+    }),
+    makeCommentTool("add_comment", "Pin a new comment thread to any place in the document: a whole block, an exact phrase inside it, one inline formula, or one or more figures. State who you are in author so the reader sees which AI wrote it. The target must exist in the document as it stands; content that only exists inside the pending edit draft cannot be commented on until a person applies it.", {
+      type: "object",
+      properties: {
+        author: COMMENT_AUTHOR_SCHEMA,
+        target: COMMENT_TARGET_SCHEMA,
+        text: { type: "string", minLength: 1, description: "Comment body. $...$ becomes math and **bold** / *italic* are honoured." },
+      },
+      required: ["author", "target", "text"],
+      additionalProperties: false,
+    }, (input) => {
+      const args = objectInput(input);
+      const author = commentAuthor(args.author);
+      const body = commentBody(args.text, "text");
+      const anchor = resolveCommentAnchorInput(ports.getDocument(), args.target);
+      // 配列で受けるのは narrowing 対策ではなく、コールバック内の代入を型に残すため。
+      const created: { threadId: string; messageId: string }[] = [];
+      commitComments((document) => {
+        const result = createCommentThread(document, {
+          anchor,
+          authorName: author.name,
+          agent: author.agent,
+          body,
+          color: DEFAULT_COMMENT_COLOR,
+        }, COMMENT_MUTATION_PORTS);
+        created.push({ threadId: result.threadId, messageId: result.messageId });
+        return result.document;
+      });
+      const thread = created[0];
+      if (!thread) throw new Error("COMMENT_REJECTED: The comment was not created.");
+      return toolResult({
+        ok: true,
+        status: "posted",
+        revision: agentRevision(),
+        threadId: thread.threadId,
+        messageId: thread.messageId,
+        anchor,
+      });
+    }),
+    makeCommentTool("reply_comment", "Reply inside an existing comment thread. Use this to answer a person's question or to follow up on your own comment instead of pinning a second thread to the same place.", {
+      type: "object",
+      properties: {
+        author: COMMENT_AUTHOR_SCHEMA,
+        threadId: { type: "string", description: "Thread ID from list_comments or add_comment." },
+        text: { type: "string", minLength: 1 },
+      },
+      required: ["author", "threadId", "text"],
+      additionalProperties: false,
+    }, (input) => {
+      const args = objectInput(input);
+      const author = commentAuthor(args.author);
+      const threadId = requiredString(args.threadId, "threadId");
+      const body = commentBody(args.text, "text");
+      if (!(ports.getDocument().comments ?? []).some((thread) => thread.id === threadId)) {
+        throw new Error(`Comment thread not found: ${threadId}`);
+      }
+      const posted: string[] = [];
+      commitComments((document) => {
+        const result = appendCommentMessage(document, {
+          threadId,
+          authorName: author.name,
+          agent: author.agent,
+          body,
+        }, COMMENT_MUTATION_PORTS);
+        if (!result.matched) throw new Error(`Comment thread not found: ${threadId}`);
+        posted.push(result.messageId);
+        return result.document;
+      });
+      return toolResult({ ok: true, status: "posted", revision: agentRevision(), threadId, messageId: posted[0] ?? null });
+    }),
+    makeCommentTool("resolve_comment", "Mark a comment thread resolved, or reopen one. Resolve only threads whose point is actually settled.", {
+      type: "object",
+      properties: {
+        threadId: { type: "string" },
+        resolved: { type: "boolean", default: true },
+      },
+      required: ["threadId"],
+      additionalProperties: false,
+    }, (input) => {
+      const args = objectInput(input);
+      const threadId = requiredString(args.threadId, "threadId");
+      const resolved = args.resolved === undefined ? true : args.resolved === true;
+      const thread = (ports.getDocument().comments ?? []).find((candidate) => candidate.id === threadId);
+      if (!thread) throw new Error(`Comment thread not found: ${threadId}`);
+      if ((thread.resolved === true) === resolved) {
+        return toolResult({ ok: true, status: "unchanged", revision: agentRevision(), threadId, resolved });
+      }
+      commitComments((document) => setCommentThreadResolved(document, { threadId, resolved }, COMMENT_MUTATION_PORTS).document);
+      return toolResult({ ok: true, status: resolved ? "resolved" : "reopened", revision: agentRevision(), threadId, resolved });
+    }),
   ];
 
   if (options.catalog === "implementation") {
@@ -1110,6 +1466,10 @@ export function createSigmaWebMcpTools(
     directTool("update_graph"),
     directTool("insert_graph3d"),
     directTool("update_graph3d"),
+    directTool("list_comments"),
+    directTool("add_comment"),
+    directTool("reply_comment"),
+    directTool("resolve_comment"),
   ];
 
   if (publicTools.map((tool) => tool.name).join("|") !== SIGMA_WEB_MCP_TOOL_NAMES.join("|")) {

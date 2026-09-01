@@ -89,8 +89,10 @@ export function CommentDock({ document, open, panel, onOpenChange }: CommentDock
         <div className="comment-dock-motion is-expanded">
           <section className="comment-dock" aria-label={t("comment.dockPanel")}>
             <header className="comment-dock-header">
-              <span className="comment-dock-title">{t("comment.toggle")}</span>
-              {unresolvedCount > 0 && <span className="comment-dock-count">{unresolvedCount}</span>}
+              <span className="comment-dock-heading">
+                <span className="comment-dock-title">{t("comment.toggle")}</span>
+                {unresolvedCount > 0 && <span className="comment-dock-count">{unresolvedCount}</span>}
+              </span>
               <button
                 type="button"
                 className="comment-dock-add"

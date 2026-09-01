@@ -320,7 +320,11 @@ function joinParagraphLines(lines: readonly string[]): string {
   return lines.join(" ");
 }
 
-function parseInlineMarkdown(text: string, marks: readonly TextMark[] = []): InlineNode[] {
+/**
+ * 1 行ぶんのインライン Markdown (太字・斜体・`$...$` の数式・エスケープ) を
+ * SigmaDoc のインラインノード列へ変換する。ブロック構造は解釈しない。
+ */
+export function parseInlineMarkdown(text: string, marks: readonly TextMark[] = []): InlineNode[] {
   const nodes: InlineNode[] = [];
   let plainText = "";
   let index = 0;

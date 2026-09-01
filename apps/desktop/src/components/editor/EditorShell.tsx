@@ -160,7 +160,7 @@ import { AiEditPanel } from "@/components/editor/AiEditPanel";
 import { AiTaskDock } from "@/components/editor/AiTaskDock";
 import { CommentDock } from "@/components/editor/CommentDock";
 import { WebMcpBridge, type WebMcpBridgeHandle } from "@/components/editor/webmcp/WebMcpBridge";
-import { AiEditWebPlaceholder } from "@/components/editor/AiEditWebPlaceholder";
+import type { WebMcpHistoryEntry } from "@/components/editor/webmcp/webmcp-history";
 import {
   AI_INLINE_ANCHOR_OFFSET_Y,
   AI_INLINE_DEFAULT_LEFT_PX,
@@ -285,6 +285,7 @@ import {
   isInlineBodyEmpty,
   visibleCommentThreads,
 } from "@/lib/comments";
+import { getCommentAgentForProviderName } from "@/lib/comment-agents";
 import { DEFAULT_DOCUMENT_TITLE, documentTitleInputValue, isDocumentTitleExplicit, resolveDocumentTitle, resolveDocumentTitleContent } from "@/lib/document-title";
 import type { Graph2DPreset } from "@/lib/graph2d";
 import { createId } from "@/lib/id";
@@ -1304,6 +1305,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   const [overlayActionRequest, setOverlayActionRequest] = useState<OverlayActionRequest | null>(null);
   const [overlaySelection, setOverlaySelection] = useState<OverlaySelectionSummary>(EMPTY_OVERLAY_SELECTION);
   const [webMcpPreviewGroups, setWebMcpPreviewGroups] = useState<AiEditPreviewState[]>([]);
+  const [webMcpHistory, setWebMcpHistory] = useState<WebMcpHistoryEntry[]>([]);
   const webMcpBridgeRef = useRef<WebMcpBridgeHandle | null>(null);
   const visibleAiEditPreviewGroups = useMemo(
     () => [...aiEditPreviewGroups, ...webMcpPreviewGroups],
@@ -1520,6 +1522,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     useCallback(() => Boolean(getDesktopBridge()), []),
     useCallback(() => false, []),
   );
+  /** Web版 = ブラウザで直接開かれたアプリ。Electronでも埋め込みSDKでもないときだけ
+   * WebMCPのツール登録とAI面 (キャンバス左上のdock) を出す。 */
+  const webMcpEnabled = !isDesktopApp && !isEmbedded;
   const [desktopSettingsOpen, setDesktopSettingsOpen] = useState(false);
   const [desktopSettingsUpdateCheckRequest, setDesktopSettingsUpdateCheckRequest] = useState(0);
   /**
@@ -2903,10 +2908,13 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, [commitDocumentChange, setActiveCommentThreadId, setStatusMessage]);
 
   // AI 名義の返信メッセージをスレッド末尾に追加する (返信ドラフトを参照しない点が replyToCommentThread と異なる)。
+  // `agent` を必ず載せる: これがコメント欄で提供元ロゴに変わり、「人が書いたのか AI が書いたのか」を
+  // 名前を読まずに見分けられるようにする。
   const appendAiReplyMessage = useCallback((threadId: string, authorName: string, body: InlineNode[]): string => {
     const result = appendCommentMessage(documentRef.current, {
       threadId,
       authorName,
+      agent: getCommentAgentForProviderName(authorName),
       body,
     }, COMMENT_MUTATION_PORTS);
     commitDocumentChange(result.document);
@@ -7460,6 +7468,11 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, []);
 
   const openAiInline = useCallback((anchor: { left: number; top: number } | null) => {
+    // Web版にAIチャット面は無い (AI面はキャンバス左上のAiTaskDock一本)。⌘Kや
+    // コマンドパレットからこの経路に入っても、空のパネルを開かせない。
+    if (!isDesktopApp) {
+      return;
+    }
     // Reset the anchor unconditionally: a null anchor (⌘K with no selection) must
     // fall back to the CSS default position rather than reuse a stale selection rect.
     setAiInlineAnchor(anchor);
@@ -7469,13 +7482,16 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     // re-showing a prior turn's result) each time it is opened.
     setAiInlineSessionId((current) => current + 1);
     applyAiSurface(openInline());
-  }, [applyAiSurface]);
+  }, [applyAiSurface, isDesktopApp]);
 
   const promoteAiToSidebar = useCallback(() => {
+    if (!isDesktopApp) {
+      return;
+    }
     setAiInlineRunAnchor(null);
     setAiInlineRunAnchorCanvas(null);
     applyAiSurface(promoteToSidebar());
-  }, [applyAiSurface]);
+  }, [applyAiSurface, isDesktopApp]);
 
   // R2: clicking an in-body AI run-anchor widget for a background room should
   // bring that room's log into view — promote to the docked sidebar (works
@@ -8259,7 +8275,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, []);
 
   const renderAiHost = () => {
-    if (isEmbedded) {
+    // AIチャット面はデスクトップだけ。Web版の接続状態と指示欄はAiTaskDockの中にある。
+    if (isEmbedded || !isDesktopApp) {
       return null;
     }
 
@@ -8337,50 +8354,46 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
               </button>
             </div>
           )}
-          {isDesktopApp ? (
-            <AiEditPanel
-              document={document}
-              documentIdentityKey={activeFileId}
-              documentWorkspaceId={activeDocumentMetadata?.workspaceId ?? null}
-              selectedId={selectedId}
-              selectedBlock={selectedBlock}
-              reference={aiEditReference}
-              pinnedReferences={aiEditPinnedReferences}
-              pinnedReferencePreviews={aiEditPinnedReferencePreviews}
-              onRemovePinnedReference={removeAiPinnedReference}
-              overlaySelection={overlaySelection}
-              variant={aiDisplayMode}
-              inlineSessionId={aiInlineSessionId}
-              inlineOpen={aiInlineOpen}
-              inlineAnchor={aiInlineAnchor}
-              inlineRunAnchor={aiInlineRunAnchor}
-              inlineRunAnchorCanvas={aiInlineRunAnchorCanvas}
-              inlineRunPortalTarget={aiInlineRunPortal}
-              previewClearRequest={aiEditPreviewClearRequest}
-              previewGroups={aiEditPreviewGroups}
-              busy={mcpPreviewBusy}
-              onApplyGroup={applyAiEditPreviewGroup}
-              onDismissGroup={dismissAiEditPreviewGroup}
-              staleProposalGroups={staleProposalGroups}
-              sourceReferencesByTurnId={sourceReferencesByTurnId}
-              insertedShapePreviewsByTurnId={insertedShapePreviewsByTurnId}
-              appliedChangesByTurnId={appliedChangesByTurnId}
-              onRevertAppliedChange={revertAppliedProposals}
-              restorableProposalsByTurnId={restorableProposalsByTurnId}
-              onRestoreProposal={restoreProposalFromHistory}
-              onOpenSourceDocument={openSourceReferenceDocument}
-              onDiscardStaleProposals={discardStaleProposals}
-              onRebaseStaleProposals={rebaseStaleProposals}
-              onForceApplyStaleProposals={forceApplyStaleProposals}
-              onOpenAiSettings={() => setAiSettingsOpen(true)}
-              onCloseInline={closeAiSurface}
-              onPromoteToSidebar={promoteAiToSidebar}
-              onInlineRunAnchorChange={handleInlineRunAnchorChange}
-              focusRoomRequest={aiFocusRoomRequest}
-            />
-          ) : (
-            <AiEditWebPlaceholder key={document.docId} instructionScopeId={document.docId} />
-          )}
+          <AiEditPanel
+            document={document}
+            documentIdentityKey={activeFileId}
+            documentWorkspaceId={activeDocumentMetadata?.workspaceId ?? null}
+            selectedId={selectedId}
+            selectedBlock={selectedBlock}
+            reference={aiEditReference}
+            pinnedReferences={aiEditPinnedReferences}
+            pinnedReferencePreviews={aiEditPinnedReferencePreviews}
+            onRemovePinnedReference={removeAiPinnedReference}
+            overlaySelection={overlaySelection}
+            variant={aiDisplayMode}
+            inlineSessionId={aiInlineSessionId}
+            inlineOpen={aiInlineOpen}
+            inlineAnchor={aiInlineAnchor}
+            inlineRunAnchor={aiInlineRunAnchor}
+            inlineRunAnchorCanvas={aiInlineRunAnchorCanvas}
+            inlineRunPortalTarget={aiInlineRunPortal}
+            previewClearRequest={aiEditPreviewClearRequest}
+            previewGroups={aiEditPreviewGroups}
+            busy={mcpPreviewBusy}
+            onApplyGroup={applyAiEditPreviewGroup}
+            onDismissGroup={dismissAiEditPreviewGroup}
+            staleProposalGroups={staleProposalGroups}
+            sourceReferencesByTurnId={sourceReferencesByTurnId}
+            insertedShapePreviewsByTurnId={insertedShapePreviewsByTurnId}
+            appliedChangesByTurnId={appliedChangesByTurnId}
+            onRevertAppliedChange={revertAppliedProposals}
+            restorableProposalsByTurnId={restorableProposalsByTurnId}
+            onRestoreProposal={restoreProposalFromHistory}
+            onOpenSourceDocument={openSourceReferenceDocument}
+            onDiscardStaleProposals={discardStaleProposals}
+            onRebaseStaleProposals={rebaseStaleProposals}
+            onForceApplyStaleProposals={forceApplyStaleProposals}
+            onOpenAiSettings={() => setAiSettingsOpen(true)}
+            onCloseInline={closeAiSurface}
+            onPromoteToSidebar={promoteAiToSidebar}
+            onInlineRunAnchorChange={handleInlineRunAnchorChange}
+            focusRoomRequest={aiFocusRoomRequest}
+          />
         </aside>
       </>
     );
@@ -8857,7 +8870,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     >
       <WebMcpBridge
         ref={webMcpBridgeRef}
-        enabled={!isDesktopApp && !isEmbedded}
+        enabled={webMcpEnabled}
         instructionScopeId={document.docId}
         getDocument={getWebMcpDocument}
         getRevision={getWebMcpRevision}
@@ -8866,6 +8879,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         commitDocumentChange={commitDocumentChange}
         navigateToTarget={navigateToWebMcpTarget}
         onPreviewGroupsChange={setWebMcpPreviewGroups}
+        onHistoryChange={setWebMcpHistory}
       />
       {/* 図形を選んでいる間、フォーカスを失った本文の選択を描き直す帯。
           「本文も図形も同時に選ばれている」ことが画面から読めないと混在コピーは事故になる。 */}
@@ -9000,7 +9014,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           {/* 「AIが今何をやっているか」を常時確認できるcockpitの入口。折りたたみ時は
               canvas左上のアイコン1つだけ (バッジで実行中/要対応を示す)。開閉はUIローカル
               stateなので、旧: メニューの開閉トグルは廃止した (redundant)。 */}
-          {(isDesktopApp || webMcpPreviewGroups.length > 0) && workspaceReady && !activeDocumentOpenFailure && (
+          {(isDesktopApp || webMcpEnabled) && workspaceReady && !activeDocumentOpenFailure && (
             <AiTaskDock
               documentIdentityKey={isDesktopApp ? activeFileId : document.docId}
               document={document}
@@ -9016,6 +9030,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
               onRestoreProposal={restoreProposalFromHistory}
               onFocusSession={focusAiSession}
               resolvedProposals={resolvedMcpEditProposals}
+              webMcpInstructionScopeId={webMcpEnabled ? document.docId : null}
+              webMcpHistory={webMcpEnabled ? webMcpHistory : undefined}
             />
           )}
           {workspaceReady && isWhiteboardDocument && (

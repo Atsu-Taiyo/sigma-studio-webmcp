@@ -9,6 +9,7 @@ import {
   AiTaskDock,
   AiTaskDockPanel,
   buildTaskRows,
+  buildWebMcpHistoryRows,
   countAiTaskBadge,
   excerptForBlock,
   hasActiveAiTaskRun,
@@ -484,5 +485,71 @@ describe("AiTaskDockPanel (expanded panel content)", () => {
     const anchorMissingHtml = renderConflict("anchor-missing");
     expect(anchorMissingHtml).toContain("提案の再生成が必要です");
     expect(anchorMissingHtml).not.toContain("AIの提案で上書き");
+  });
+});
+
+
+describe("buildWebMcpHistoryRows (Web版の結果行)", () => {
+  it("keeps applied and discarded drafts visible with no revert or repropose affordance", () => {
+    const rows = buildWebMcpHistoryRows(
+      [
+        { id: "draft_2", status: "rejected", operationCount: 2, targetIds: ["p1"], resolvedAt: 2 },
+        { id: "draft_1", status: "applied", operationCount: 1, targetIds: ["p1"], resolvedAt: 1 },
+      ],
+      makeDocument(),
+    );
+
+    expect(rows.map((row) => row.status)).toEqual(["rejected", "applied"]);
+    expect(rows.map((row) => row.key)).toEqual(["webmcp-history:draft_2", "webmcp-history:draft_1"]);
+    expect(rows[0]!.anchorExcerpt).toBe("二次関数のグラフを描く問題です");
+    // Webには承認バッチも巻き戻し判定も無い。押せるボタンを生やさないこと。
+    expect(rows.every((row) => row.revertibleProposalIds.length === 0)).toBe(true);
+    expect(rows.every((row) => row.restorableProposalId === null)).toBe(true);
+    expect(rows.every((row) => row.roomId === null)).toBe(true);
+    // 決着済みなので、たたんだアイコンのバッジは動かさない。
+    expect(countAiTaskBadge(rows)).toBe(0);
+  });
+
+  it("still renders a row when the changed block is already gone", () => {
+    const rows = buildWebMcpHistoryRows(
+      [{ id: "draft_1", status: "applied", operationCount: 1, targetIds: ["removed"], resolvedAt: 1 }],
+      makeDocument(),
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.anchorExcerpt).toBeNull();
+  });
+});
+
+describe("AiTaskDockPanel (Web版のWebMCP区画)", () => {
+  const noop = () => {};
+  const applySuccess = async () => ({ ok: true as const });
+  const noopAsync = async () => ({ ok: true as const });
+
+  const render = (webMcpInstructionScopeId?: string) => renderToStaticMarkup(
+    createElement(AiTaskDockPanel, {
+      rows: [],
+      busy: false,
+      onApplyGroup: applySuccess,
+      onDismissGroup: noop,
+      onRebaseGroup: noopAsync,
+      onRevertProposal: noop,
+      webMcpInstructionScopeId,
+    }),
+  );
+
+  it("shows the connection state and the agent instructions inside the dock on web", () => {
+    const html = render("doc_1");
+
+    expect(html).toContain("ai-task-dock-webmcp");
+    expect(html).toContain("エージェントへの指示");
+    expect(html).toContain("ai-task-dock-webmcp-input");
+  });
+
+  it("shows nothing web-specific on desktop", () => {
+    const html = render();
+
+    expect(html).not.toContain("ai-task-dock-webmcp");
+    expect(html).not.toContain("エージェントへの指示");
   });
 });

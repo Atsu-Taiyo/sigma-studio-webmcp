@@ -1,5 +1,6 @@
 import type {
   InlineNode,
+  SigmaCommentAgent,
   SigmaCommentAnchor,
   SigmaDocument,
 } from "../model";
@@ -22,6 +23,8 @@ export interface CommentMutationResult {
 export interface CreateCommentThreadInput {
   anchor: SigmaCommentAnchor;
   authorName: string;
+  /** AI が書いた場合だけ渡す。人が書いたコメントには付けない。 */
+  agent?: SigmaCommentAgent;
   body: readonly InlineNode[];
   color: string;
 }
@@ -35,6 +38,8 @@ export interface CreateCommentThreadResult extends CommentMutationResult {
 export interface AppendCommentMessageInput {
   threadId: string;
   authorName: string;
+  /** AI が書いた場合だけ渡す。人が書いた返信には付けない。 */
+  agent?: SigmaCommentAgent;
   body: readonly InlineNode[];
 }
 
@@ -94,6 +99,7 @@ export function createCommentThread(
         messages: [{
           id: messageId,
           authorName: input.authorName,
+          ...(input.agent ? { agent: input.agent } : {}),
           body,
           createdAt: now,
         }],
@@ -138,6 +144,7 @@ export function appendCommentMessage(
         {
           id: messageId,
           authorName: input.authorName,
+          ...(input.agent ? { agent: input.agent } : {}),
           body,
           createdAt: now,
         },

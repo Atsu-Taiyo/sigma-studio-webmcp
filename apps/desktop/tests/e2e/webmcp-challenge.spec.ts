@@ -12,7 +12,7 @@ test("single agent draft reports a stale guard after a human edits the document"
   });
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(22);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(26);
 
   await page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;

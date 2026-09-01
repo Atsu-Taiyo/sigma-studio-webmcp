@@ -15,10 +15,38 @@ export interface SigmaCommentThread {
 export interface SigmaCommentMessage {
   id: string;
   authorName?: string;
+  /**
+   * 差出人が AI の場合の素性。**人が書いたコメントには付けない** (欠けていること
+   * そのものが「人が書いた」の意味になる)。表示側はここを見てベンダーのロゴを出す。
+   */
+  agent?: SigmaCommentAgent;
   body: InlineNode[];
   reactions?: SigmaCommentReaction[];
   createdAt: string;
   updatedAt?: string;
+}
+
+/**
+ * コメントを書いた AI の提供元。ロゴを持つのは `openai` / `anthropic` / `google` /
+ * `microsoft` の 4 つで、それ以外は汎用の AI バッジで描く (`comment-agents.ts`)。
+ */
+export const SIGMA_COMMENT_AGENT_VENDORS = [
+  "openai",
+  "anthropic",
+  "google",
+  "microsoft",
+  "meta",
+  "xai",
+  "mistral",
+  "other",
+] as const;
+
+export type SigmaCommentAgentVendor = typeof SIGMA_COMMENT_AGENT_VENDORS[number];
+
+export interface SigmaCommentAgent {
+  vendor: SigmaCommentAgentVendor;
+  /** モデル名など、ベンダーより細かい表示 (例: "GPT-5")。表示は名前の下の小さな行。 */
+  model?: string;
 }
 
 export interface SigmaCommentReaction {

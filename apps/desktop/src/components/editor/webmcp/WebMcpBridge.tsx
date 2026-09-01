@@ -1,12 +1,13 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { SigmaDocument } from "@/features/document";
 import type { AiProposalApplyOutcome } from "@/features/ai-edit/application/proposal-action-model";
 import type { AiEditPreviewState } from "@/features/ai-edit/model/preview";
 import { useT } from "@/lib/i18n/react";
 import { SigmaDocumentSchema } from "@/lib/sigma-doc-schema";
+import { WEBMCP_HISTORY_LIMIT, type WebMcpHistoryEntry } from "@/components/editor/webmcp/webmcp-history";
 import {
   createSigmaWebMcpTools,
   getWebMcpAgentInstructionsStorageKey,
@@ -42,6 +43,9 @@ export interface WebMcpBridgeProps {
   getSelection: NonNullable<SigmaWebMcpPorts["getSelection"]>;
   navigateToTarget(target: { kind: "block" | "shape"; id: string }): void;
   onPreviewGroupsChange(groups: AiEditPreviewState[]): void;
+  /** 決着したドラフトの記録。ページを開いているあいだだけのメモリ保持で、
+   * 左上のAIタスクdockに「適用済み / 破棄」の結果行として出る。 */
+  onHistoryChange(entries: WebMcpHistoryEntry[]): void;
 }
 export interface WebMcpBridgeHandle {
   applyProposalIds(proposalIds: string[]): Promise<AiProposalApplyOutcome | null>;
@@ -58,11 +62,22 @@ export const WebMcpBridge = forwardRef<WebMcpBridgeHandle, WebMcpBridgeProps>(fu
   const t = useT("editor");
   const [proposal, setProposal] = useState<PendingDraft | null>(null);
   const [registration, setRegistration] = useState<{ state: WebMcpRegistrationState; toolCount: number; failedToolNames: string[] }>({ state: "loading", toolCount: 0, failedToolNames: [] });
-  const { enabled, instructionScopeId, commitDocumentChange, getDocument, getRevision, getSelectedBlockId, getSelection, navigateToTarget, onPreviewGroupsChange } = props;
+  const [history, setHistory] = useState<WebMcpHistoryEntry[]>([]);
+  const { enabled, instructionScopeId, commitDocumentChange, getDocument, getRevision, getSelectedBlockId, getSelection, navigateToTarget, onPreviewGroupsChange, onHistoryChange } = props;
   const previewGroups = useMemo<AiEditPreviewState[]>(() => proposal ? [{ targetId: proposal.previewDraft.operations[0]?.targetId ?? proposal.targetId, draft: proposal.previewDraft, createdAt: proposal.createdAt, proposalIds: [proposal.id], baseRevision: proposal.baseRevision, providers: ["chatgpt"], sessionLabel: "WebMCP", lockTargets: false }] : [], [proposal]);
 
   useEffect(() => { onPreviewGroupsChange(previewGroups); return () => onPreviewGroupsChange([]); }, [onPreviewGroupsChange, previewGroups]);
+  useEffect(() => { onHistoryChange(history); return () => onHistoryChange([]); }, [history, onHistoryChange]);
   useEffect(() => { publishStatus({ state: registration.state, registeredToolCount: registration.toolCount, failedToolNames: registration.failedToolNames, operationCount: proposal?.operationCount ?? 0, changedIds: [...(proposal?.targetIds ?? [])] }); }, [proposal, registration]);
+
+  // コメントは本文を書き換えないので提案ドラフトへ積まず、その場で文書へ入れる。
+  // `commitDocumentChange` は EditorShell 側で作り直されうるので ref 越しに呼ぶ
+  // (依存に入れるとツール登録がやり直しになり、登録済みツールが一瞬消える)。
+  const commitDocumentChangeRef = useRef(commitDocumentChange);
+  useLayoutEffect(() => { commitDocumentChangeRef.current = commitDocumentChange; }, [commitDocumentChange]);
+  const commitComments = useCallback((mutate: (current: SigmaDocument) => SigmaDocument) => {
+    commitDocumentChangeRef.current(mutate);
+  }, []);
 
   const proposeDocumentChange = useCallback((next: SigmaWebMcpProposal) => {
     setProposal((current) => ({ ...next, createdAt: current?.createdAt ?? Date.now() }));
@@ -72,6 +87,12 @@ export const WebMcpBridge = forwardRef<WebMcpBridgeHandle, WebMcpBridgeProps>(fu
     else if (shapeId) window.requestAnimationFrame(() => navigateToTarget({ kind: "shape", id: shapeId }));
   }, [navigateToTarget]);
   const withdrawDocumentChange = useCallback(() => setProposal(null), []);
+  const recordHistory = useCallback((resolved: PendingDraft, status: WebMcpHistoryEntry["status"]) => {
+    setHistory((current) => [
+      { id: resolved.id, status, operationCount: resolved.operationCount, targetIds: [...resolved.targetIds], resolvedAt: Date.now() },
+      ...current,
+    ].slice(0, WEBMCP_HISTORY_LIMIT));
+  }, []);
 
   useEffect(() => {
     if (!enabled) return;
@@ -81,7 +102,7 @@ export const WebMcpBridge = forwardRef<WebMcpBridgeHandle, WebMcpBridgeProps>(fu
     setRegistration({ state: "loading", toolCount: 0, failedToolNames: [] });
     const storageKey = getWebMcpAgentInstructionsStorageKey(instructionScopeId);
     const getAgentInstructions = () => window.localStorage.getItem(storageKey) ?? "";
-    const tools = createSigmaWebMcpTools({ getDocument, getRevision, getSelectedBlockId, getSelection, getAgentInstructions, proposeDocumentChange, withdrawDocumentChange });
+    const tools = createSigmaWebMcpTools({ getDocument, getRevision, getSelectedBlockId, getSelection, getAgentInstructions, proposeDocumentChange, withdrawDocumentChange, commitComments });
     void Promise.allSettled(tools.map(async (tool) => {
       // Keep this explicit: WebMCP clients and challenge review inspect the browser API directly.
       await modelContext.registerTool(tool, { signal: controller.signal });
@@ -105,12 +126,13 @@ export const WebMcpBridge = forwardRef<WebMcpBridgeHandle, WebMcpBridgeProps>(fu
       });
     }
     return () => { controller.abort(); };
-  }, [enabled, getDocument, getRevision, getSelectedBlockId, getSelection, instructionScopeId, proposeDocumentChange, withdrawDocumentChange]);
+  }, [commitComments, enabled, getDocument, getRevision, getSelectedBlockId, getSelection, instructionScopeId, proposeDocumentChange, withdrawDocumentChange]);
 
   const applyProposalIds = useCallback(async (ids: string[]): Promise<AiProposalApplyOutcome | null> => {
     if (!proposal || !ids.includes(proposal.id)) return null;
     try {
       commitDocumentChange((current) => SigmaDocumentSchema.parse(proposal.apply(current).document));
+      recordHistory(proposal, "applied");
       setProposal(null);
       return { ok: true };
     } catch (error) {
@@ -118,13 +140,14 @@ export const WebMcpBridge = forwardRef<WebMcpBridgeHandle, WebMcpBridgeProps>(fu
       const message = t("webMcpProposal.applyFailed");
       return { ok: false, reason: message };
     }
-  }, [commitDocumentChange, proposal, t]);
+  }, [commitDocumentChange, proposal, recordHistory, t]);
   const dismissProposalIds = useCallback((ids: string[]): boolean => {
     if (!proposal || !ids.includes(proposal.id)) return false;
     proposal.dismiss();
+    recordHistory(proposal, "rejected");
     setProposal(null);
     return true;
-  }, [proposal]);
+  }, [proposal, recordHistory]);
   useImperativeHandle(ref, () => ({ applyProposalIds, dismissProposalIds }), [applyProposalIds, dismissProposalIds]);
 
   if (!enabled) return null;

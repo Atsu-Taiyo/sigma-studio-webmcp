@@ -278,7 +278,9 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
   );
 
   const aiMenu = (
-    !isEmbedded && (
+    // Web版のAI面はキャンバス左上のAiTaskDock一本 (チャットもAI設定も無い)。
+    // メニューを残すと空のパネルを開ける経路になるので、まるごと出さない。
+    !isEmbedded && isDesktopApp && (
       <div className="app-menu-anchor">
         <button ref={aiMenuButtonRef} type="button" className={`app-menu-button ${activeMenu === "ai" ? "active" : ""}`} aria-haspopup="menu" aria-expanded={activeMenu === "ai"} onClick={() => toggleMenu("ai")}>
           {t("appMenu.ai.label")}
@@ -298,12 +300,10 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
             </button>
             {/* AIタスクの状態は常時表示のcanvas左上アイコン (AiTaskDock) に一本化した
                 ので、ここに専用の開閉メニュー項目は不要 (旧: 開閉トグル)。 */}
-            {isDesktopApp && (
-              <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); setAiSettingsOpen(true); }}>
-                <SlidersHorizontal size={16} />
-                <span>{t("appMenu.ai.settings")}</span>
-              </button>
-            )}
+            <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); setAiSettingsOpen(true); }}>
+              <SlidersHorizontal size={16} />
+              <span>{t("appMenu.ai.settings")}</span>
+            </button>
         </ToolbarPopover>
       </div>
     )

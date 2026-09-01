@@ -9,10 +9,6 @@ export const ai = {
     desktopCodexRequired: "Run AI edits from Codex Agent in the desktop app.",
   },
   webPlaceholder: {
-    badge: "Web AI editing",
-    title: "Connect an AI agent",
-    description: "A WebMCP-enabled agent can read this material and build one reviewable draft.",
-    connectionTitle: "WebMCP connection",
     loading: "Registering editing tools.",
     connected: "Connected — {{tools}} editing tools registered",
     partial: "Some editing tools could not be registered. {{tools}} registered; unavailable: {{failedTools}}",
@@ -23,9 +19,6 @@ export const ai = {
     instructionsDescription: "Add instructions for agents that edit this material in the web app.",
     instructionsPlaceholder: "Example: Use concise Japanese explanations. Preserve existing notation and update tables cell by cell.",
     savedLocally: "Saved in this browser for this material. Agents can read it with get_agent_instructions.",
-    draftTitle: "Working draft",
-    draftSummary: "{{operations}} operations across {{targets}} targets",
-    noDraft: "No pending AI draft",
   },
   chat: {
     historyLoadFailed: "Could not load the AI chat history.",

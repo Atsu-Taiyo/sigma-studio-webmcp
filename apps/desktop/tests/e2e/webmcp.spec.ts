@@ -25,7 +25,7 @@ test("WebMCP converts Markdown math, previews it, and applies one draft", async 
   await installWebMcpMock(page);
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(22);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(26);
 
   const result = await page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
@@ -55,7 +55,7 @@ test("WebMCP graph labels survive a human settings edit", async ({ page }) => {
   await expect(page.locator(".startup-splash")).toBeHidden();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }
-  ).__sigmaWebMcpTools.size)).toBe(22);
+  ).__sigmaWebMcpTools.size)).toBe(26);
 
   const result = await page.evaluate(async () => {
     const tools = (window as unknown as {
@@ -115,37 +115,40 @@ test("WebMCP graph labels survive a human settings edit", async ({ page }) => {
   await expect(labels).toContainText(["X軸", "Y軸", "O", "P", "注記", "f"]);
 });
 
-test("web AI panel stores instructions and the web selection has no AI reference wand", async ({ page }) => {
+test("the top-left dock owns the whole web AI surface: instructions, apply, and the result row", async ({ page }) => {
   await installWebMcpMock(page);
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(22);
+  // ツールの本数はこのテストの関心ではない (registration が終わったことだけを待つ)。
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBeGreaterThan(0);
 
-  await page.evaluate(async () => {
-    const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
-    const context = await tools.get("inspect_document")!.execute({}) as { revision: number };
-    await tools.get("insert_markdown")!.execute({
-      expectedRevision: context.revision,
-      targetId: "END_OF_DOCUMENT",
-      markdown: "Web AI panel reference",
-    });
-  });
-  await expect(page.locator(".webmcp-proposal-dock")).toHaveCount(0);
+  // 提案がまだ無くても、デスクトップと同じように常駐している。
   const taskDock = page.locator(".ai-task-dock-root");
-  await taskDock.getByRole("button", { name: /AIタスク/ }).hover();
-  await expect(taskDock.locator(".ai-task-dock")).toBeVisible();
-  await taskDock.getByRole("button", { name: "適用", exact: true }).click();
-  const paragraph = page.locator("[data-sigma-doc-id]").filter({ hasText: "Web AI panel reference" }).last();
-  await expect(paragraph).toContainText("Web AI panel reference");
+  const dockToggle = taskDock.getByRole("button", { name: /AIタスク/ });
+  // 指示欄にフォーカスが残っているあいだ dock は開いたままになる (入力が飛ばないように)。
+  // 開いているときに hover し直すと、広がったパネル自身がトグルを覆って動かない。
+  const openDock = async () => {
+    if (!await taskDock.locator(".ai-task-dock").isVisible()) {
+      await dockToggle.hover();
+    }
+    await expect(taskDock.locator(".ai-task-dock")).toBeVisible();
+  };
+  await expect(dockToggle).toBeVisible();
+  await openDock();
 
-  await page.getByRole("button", { name: /^AI$/ }).first().click();
-  await page.getByRole("menuitem", { name: "AIチャットを開く" }).click();
-  const panel = page.locator(".ai-web-placeholder");
-  await expect(panel).toContainText("WebMCP");
+  // 接続状態と指示欄はdockの中。右上の独自カードも右のAIパネルも作らない。
+  const dockPanel = taskDock.locator(".ai-task-dock-webmcp");
+  await expect(dockPanel).toContainText("接続済み");
   await expect(page.locator(".webmcp-proposal-dock")).toHaveCount(0);
-  await expect(panel.getByText("作業ドラフト", { exact: true })).toHaveCount(0);
-  const instructions = panel.getByLabel("Web版でこの教材を編集するエージェントへ、守ってほしい指示を入力します。");
+  await expect(page.locator(".ai-web-placeholder")).toHaveCount(0);
+  await expect(page.locator(".ai-sidebar-panel")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^AI$/ })).toHaveCount(0);
+
+  const instructions = dockPanel.getByLabel("Web版でこの教材を編集するエージェントへ、守ってほしい指示を入力します。");
   await instructions.fill("既存の記号と日本語の文体を保つ。");
+  // 入力中にポインタがdockから外れても畳まない (textareaがこの中にあるため)。
+  await page.mouse.move(10, 400);
+  await expect(taskDock.locator(".ai-task-dock")).toBeVisible();
   await expect.poll(() => page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
     const result = await tools.get("inspect_document")!.execute({ detail: "full" }) as { document: { docId: string } };
@@ -158,16 +161,92 @@ test("web AI panel stores instructions and the web selection has no AI reference
   expect(instructionResult).toMatchObject({ userInstructions: "既存の記号と日本語の文体を保つ。", trust: { userInstructions: "untrusted_user_content" } });
   expect(await page.evaluate(() => (window as unknown as { __sigmaWebMcpContexts: Array<{ instructions: string }> }).__sigmaWebMcpContexts.some((context) => context.instructions.includes("既存の記号")))).toBe(false);
 
+  const insertMarkdown = (markdown: string) => page.evaluate(async (body) => {
+    const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
+    const context = await tools.get("inspect_document")!.execute({}) as { revision: number };
+    await tools.get("insert_markdown")!.execute({ expectedRevision: context.revision, targetId: "END_OF_DOCUMENT", markdown: body });
+  }, markdown);
+
+  await insertMarkdown("Web AI panel reference");
+  await openDock();
+  await taskDock.getByRole("button", { name: "適用", exact: true }).click();
+  const paragraph = page.locator("[data-sigma-doc-id]").filter({ hasText: "Web AI panel reference" }).last();
+  await expect(paragraph).toContainText("Web AI panel reference");
+
+  // ストリームは無いので、残るのは結果だけ。行ごと消えない。
+  await openDock();
+  await expect(taskDock.locator(".ai-task-dock-chip--applied")).toHaveCount(1);
+  await expect(taskDock.locator(".ai-task-dock-row").filter({ hasText: "WebMCP" }).first()).toContainText("適用済み");
+  // 巻き戻しの裏付けがWebには無いので、そのボタンは出さない (取り消しは⌘Z)。
+  await expect(taskDock.getByRole("button", { name: "元に戻す" })).toHaveCount(0);
+  await expect(taskDock.getByRole("button", { name: "再提案" })).toHaveCount(0);
+
+  await insertMarkdown("Web AI panel discarded draft");
+  await openDock();
+  await taskDock.getByRole("button", { name: "破棄", exact: true }).click();
+  await expect(page.locator("[data-sigma-doc-id]").filter({ hasText: "Web AI panel discarded draft" })).toHaveCount(0);
+  await openDock();
+  await expect(taskDock.locator(".ai-task-dock-chip--rejected")).toHaveCount(1);
+  await expect(taskDock.locator(".ai-task-dock-chip--applied")).toHaveCount(1);
+
   await paragraph.dblclick();
   await expect(page.getByRole("button", { name: "AIに追加" })).toHaveCount(0);
 });
 
-test("web AI panel reports a partially registered tool set", async ({ page }) => {
+test("an agent pins a comment, names which AI it is, and the panel shows that vendor's logo", async ({ page }) => {
+  await installWebMcpMock(page);
+  await page.goto("/");
+  await expect(page.locator(".startup-splash")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }
+  ).__sigmaWebMcpTools.size)).toBe(26);
+
+  const posted = await page.evaluate(async () => {
+    const tools = (window as unknown as {
+      __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }>;
+    }).__sigmaWebMcpTools;
+    const context = await tools.get("inspect_document")!.execute({}) as { outline: Array<{ id: string; type: string }> };
+    const paragraph = context.outline.find((item) => item.type === "paragraph")!;
+    const created = await tools.get("add_comment")!.execute({
+      author: { name: "ChatGPT", vendor: "openai", model: "gpt-5" },
+      target: { blockId: paragraph.id },
+      text: "ここは $x^2$ の定義を先に置くと読みやすいです。",
+    }) as { threadId: string };
+    await tools.get("reply_comment")!.execute({
+      author: { name: "Claude", vendor: "anthropic" },
+      threadId: created.threadId,
+      text: "同意です。",
+    });
+    return { ...created, listed: await tools.get("list_comments")!.execute({}) };
+  });
+  expect(posted.listed).toMatchObject({ total: 1 });
+
+  // コメントは提案ドラフトを通らない: AIタスクの承認待ちは増えない。
+  const taskDock = page.locator(".ai-task-dock-root");
+  await taskDock.getByRole("button", { name: /AIタスク/ }).hover();
+  await expect(taskDock.getByRole("button", { name: "適用", exact: true })).toHaveCount(0);
+
+  // 本文レイアウトのコメント欄は紙面右のガター。ホワイトボードでは同じパネルがdockに入る。
+  const card = page.locator(".page-comment-gutter .comment-thread-card").first();
+  await expect(card).toContainText("ChatGPT");
+  await expect(card).toContainText("gpt-5");
+  await expect(card).toContainText("ここは");
+  await expect(card.locator('.inline-math-node[data-tex="x^2"]').first()).toBeVisible();
+  // どのAIが書いたかはロゴで分かる (人のコメントは頭文字のまま)。
+  await expect(card.locator(".comment-author-avatar.agent svg").first()).toBeVisible();
+  await expect(card.getByRole("img", { name: "ChatGPT（OpenAIのAI）のアイコン" })).toBeVisible();
+  await expect(card.locator(".comment-reply-avatars .comment-author-avatar")).toHaveCount(1);
+
+  await card.getByRole("button", { name: "解決", exact: true }).click();
+  await expect(page.locator(".comment-thread-card.resolved")).toHaveCount(1);
+});
+
+test("the dock reports a partially registered tool set", async ({ page }) => {
   await installWebMcpMock(page, "update_overlay");
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
-  await page.getByRole("button", { name: /^AI$/ }).first().click();
-  await page.getByRole("menuitem", { name: "AIチャットを開く" }).click();
-  await expect(page.locator(".ai-web-placeholder")).toContainText("一部の編集ツールを登録できませんでした");
-  await expect(page.locator(".ai-web-placeholder")).toContainText("update_overlay");
+  const taskDock = page.locator(".ai-task-dock-root");
+  await taskDock.getByRole("button", { name: /AIタスク/ }).hover();
+  await expect(taskDock.locator(".ai-task-dock-webmcp")).toContainText("一部の編集ツールを登録できませんでした");
+  await expect(taskDock.locator(".ai-task-dock-webmcp")).toContainText("update_overlay");
 });

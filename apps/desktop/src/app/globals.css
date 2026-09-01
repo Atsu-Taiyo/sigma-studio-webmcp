@@ -9223,7 +9223,6 @@ code {
   background: transparent;
 }
 
-
 .overlay-shape.selected {
   z-index: 2;
 }
@@ -9964,7 +9963,6 @@ code {
   bottom: 0;
 }
 
-
 .overlay-image-frame.cropping {
   cursor: move;
 }
@@ -10013,7 +10011,6 @@ code {
 
 /* Inside figures, inline math hugs its glyphs with no surrounding padding so
    the auto-sized bounding box stays flush with the formula. */
-
 
 .overlay-text-shape.embedded-callout,
 .overlay-text-shape.embedded-callout .ProseMirror {
@@ -11658,7 +11655,6 @@ code {
   margin: 0;
 }
 
-
 .chart-settings-series-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -12974,7 +12970,6 @@ button.ai-source-ref-chip--document:focus-visible {
   border: 0;
   background: transparent;
 }
-
 
 .ai-inline-preview-content {
   padding: 0;
@@ -14458,134 +14453,6 @@ button.ai-source-ref-chip--document:focus-visible {
 .ai-chat-empty-preset {
   width: 100%;
   justify-content: flex-start;
-}
-
-.ai-web-placeholder {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 22px 16px 24px;
-  overflow-y: auto;
-}
-
-.ai-web-placeholder-headline {
-  display: grid;
-  gap: 8px;
-}
-
-.ai-web-placeholder-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  width: fit-content;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.ai-web-placeholder-headline h3 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1.4;
-}
-
-.ai-web-placeholder-headline p {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.ai-web-placeholder-download {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 11px 14px;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #ffffff;
-  font-size: 13px;
-  font-weight: 700;
-  text-decoration: none;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
-  transition: filter 0.12s ease, transform 0.12s ease;
-}
-
-.ai-web-placeholder-download:hover,
-.ai-web-placeholder-download:focus-visible {
-  filter: brightness(1.05);
-  outline: none;
-  transform: translateY(-0.5px);
-}
-
-.ai-web-placeholder-vendors {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: var(--surface-soft);
-}
-
-.ai-web-placeholder-vendors-title {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.ai-web-placeholder-vendor-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.ai-web-placeholder-vendor {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  padding: 9px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--background);
-}
-
-.ai-web-placeholder-vendor-logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-}
-
-.ai-web-placeholder-vendor-logo svg {
-  width: 100%;
-  height: 100%;
-}
-
-.ai-web-placeholder-vendor-name {
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.ai-web-placeholder-footnote {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.55;
 }
 
 .ai-edit-panel[data-gated="true"] {
@@ -18010,134 +17877,6 @@ button.ai-source-ref-chip--document:focus-visible {
   }
 }
 
-.ai-web-placeholder {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 22px 16px 24px;
-  overflow-y: auto;
-}
-
-.ai-web-placeholder-headline {
-  display: grid;
-  gap: 8px;
-}
-
-.ai-web-placeholder-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  width: fit-content;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.ai-web-placeholder-headline h3 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1.4;
-}
-
-.ai-web-placeholder-headline p {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.ai-web-placeholder-download {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 11px 14px;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #ffffff;
-  font-size: 13px;
-  font-weight: 700;
-  text-decoration: none;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
-  transition: filter 0.12s ease, transform 0.12s ease;
-}
-
-.ai-web-placeholder-download:hover,
-.ai-web-placeholder-download:focus-visible {
-  filter: brightness(1.05);
-  outline: none;
-  transform: translateY(-0.5px);
-}
-
-.ai-web-placeholder-vendors {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: var(--surface-soft);
-}
-
-.ai-web-placeholder-vendors-title {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.ai-web-placeholder-vendor-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.ai-web-placeholder-vendor {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  padding: 9px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--background);
-}
-
-.ai-web-placeholder-vendor-logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-}
-
-.ai-web-placeholder-vendor-logo svg {
-  width: 100%;
-  height: 100%;
-}
-
-.ai-web-placeholder-vendor-name {
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.ai-web-placeholder-footnote {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.55;
-}
-
 .inline-math-template-palette {
   margin-top: 10px;
   overflow: hidden;
@@ -18802,25 +18541,52 @@ button.ai-source-ref-chip--document:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid rgba(203, 213, 225, 0.85);
-  border-radius: 7px;
-  color: #1f2937;
-  background: rgba(255, 255, 255, 0.94);
-  font-size: 13px;
-  font-weight: 700;
 }
 
-.comment-thread-panel-footer {
-  font-weight: 600;
-}
-
-.comment-thread-panel-footer label {
+/* 未解決 / すべて の切り替え。チェックボックスより現在の絞り込みが読み取りやすく、
+   件数もその場に出せる (Figma のコメントサイドバーと同じ形)。 */
+.comment-filter-switch {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: #334155;
-  font-size: 12px;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 16px rgba(15, 23, 42, 0.07);
+}
+
+.comment-filter-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border: 0;
+  border-radius: 999px;
+  color: #64748b;
+  background: transparent;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.comment-filter-switch button:hover,
+.comment-filter-switch button:focus-visible {
+  color: #1f2937;
+  background: #f1f5f9;
+  outline: none;
+}
+
+.comment-filter-switch button.is-active {
+  color: #ffffff;
+  background: #1f2937;
+}
+
+.comment-filter-switch button em {
+  color: inherit;
+  font-style: normal;
+  font-weight: 700;
+  opacity: 0.65;
 }
 
 .comment-thread-panel-body {
@@ -18828,32 +18594,37 @@ button.ai-source-ref-chip--document:focus-visible {
   min-height: inherit;
 }
 
+/* Figma のコメントカードに合わせる: 角丸は大きめ、境界は極薄、影で浮かせる。
+   選択していないカードを灰色地にすると「無効」に見えるので、地は常に白のまま
+   影の強さだけで前後関係を出す。 */
 .comment-compose-card,
 .comment-thread-card {
   position: absolute;
   left: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
-  padding: 14px 16px;
-  border: 1px solid rgba(203, 213, 225, 0.85);
-  border-radius: 8px;
+  padding: 12px 13px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 13px;
   background: #ffffff;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.09);
   overflow: visible;
   animation: comment-card-enter 180ms ease-out;
+  transition: box-shadow 140ms ease, border-color 140ms ease;
 }
 
 .comment-compose-card.pending {
-  border-color: rgba(203, 213, 225, 0.9);
+  border-color: rgba(37, 99, 235, 0.28);
   background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1), 0 10px 28px rgba(15, 23, 42, 0.14);
 }
 
 .comment-thread-card.active {
   z-index: 3;
-  border-color: rgba(37, 99, 235, 0.45);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14), 0 8px 18px rgba(15, 23, 42, 0.12);
+  border-color: rgba(37, 99, 235, 0.34);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1), 0 10px 28px rgba(15, 23, 42, 0.14);
 }
 
 .comment-thread-card:hover,
@@ -18862,8 +18633,11 @@ button.ai-source-ref-chip--document:focus-visible {
 }
 
 .comment-thread-card:not(.active) {
-  background: #f1f5f9;
-  box-shadow: none;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.07);
+}
+
+.comment-thread-card:not(.active):hover {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 22px rgba(15, 23, 42, 0.11);
 }
 
 .comment-thread-card.resolved {
@@ -18881,23 +18655,64 @@ button.ai-source-ref-chip--document:focus-visible {
   justify-content: space-between;
 }
 
+/* 解決の丸ボタンはカード右上に固定 (Figma と同じ位置)。**隠さない**: 押せる場所が
+   ホバーで現れる作りにすると、ポインタを乗せるまで存在が分からず、クリック判定も
+   ホバー状態に依存する。ふだんは薄く置いておき、注目したときだけ濃くする。 */
+.comment-thread-resolve-button {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 999px;
+  color: #475569;
+  background: #ffffff;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.comment-thread-card:hover .comment-thread-resolve-button,
+.comment-thread-card:focus-within .comment-thread-resolve-button,
+.comment-thread-card.active .comment-thread-resolve-button,
+.comment-thread-card.resolved .comment-thread-resolve-button {
+  opacity: 1;
+}
+
+.comment-thread-resolve-button:hover,
+.comment-thread-resolve-button:focus-visible {
+  color: #047857;
+  border-color: rgba(4, 120, 87, 0.35);
+  background: #ecfdf5;
+  outline: none;
+}
+
+.comment-thread-resolve-button.is-resolved {
+  color: #047857;
+  border-color: rgba(4, 120, 87, 0.35);
+  background: #ecfdf5;
+}
+
 .comment-author-line {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
 .comment-author-avatar {
+  position: relative;
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
   place-items: center;
   border-radius: 999px;
   color: #ffffff;
   background: #78909c;
-  font-size: 15px;
+  font-size: 12px;
   font-weight: 760;
 }
 
@@ -18906,28 +18721,70 @@ button.ai-source-ref-chip--document:focus-visible {
   background-size: cover;
 }
 
+/* AI が書いたコメントのアバター。地色は提供元の色 (インラインstyle) で、
+   Microsoft のように白地のロゴもあるので薄い輪郭を必ず引く。 */
+.comment-author-avatar.agent {
+  border: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+.comment-author-avatar.agent svg {
+  display: block;
+}
+
+.comment-author-avatar-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: grid;
+  width: 13px;
+  height: 13px;
+  place-items: center;
+  border: 1.5px solid #ffffff;
+  border-radius: 999px;
+  color: #ffffff;
+  background: #7c3aed;
+}
+
 .comment-author-meta {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  gap: 1px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
 }
 
 .comment-author-meta strong {
   min-width: 0;
   overflow: hidden;
-  color: #1f2937;
-  font-size: 13px;
+  color: #111827;
+  font-size: 12.5px;
   font-weight: 760;
   letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* モデル名。ブランド名の一部なので翻訳しない小さな添え字。 */
+.comment-author-model {
+  overflow: hidden;
+  max-width: 96px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: #4c1d95;
+  background: rgba(124, 58, 237, 0.1);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .comment-author-meta span {
-  color: #64748b;
+  margin-left: auto;
+  color: #94a3b8;
   font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .comment-thread-menu-root {
@@ -19007,28 +18864,46 @@ button.ai-source-ref-chip--document:focus-visible {
   color: #b91c1c;
 }
 
+/* 「何に付いたコメントか」のチップ。Figma には無い情報だが、この製品の
+   コメントは本文・数式・図形のどれにも刺さるので、対象の種別は必ず見せる。 */
 .comment-anchor-label {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 650;
+  margin-top: -2px;
+}
+
+.comment-anchor-label > span {
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #475569;
+  background: #f1f5f9;
+  font-size: 10.5px;
+  font-weight: 700;
 }
 
 .comment-anchor-label em {
-  color: #64748b;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #047857;
+  background: #ecfdf5;
+  font-size: 10.5px;
   font-style: normal;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .comment-anchor-quote {
+  display: -webkit-box;
+  overflow: hidden;
   margin: 0;
-  padding: 0;
-  border-left: 0;
-  color: #475569;
+  padding: 0 0 0 8px;
+  border-left: 2px solid rgba(148, 163, 184, 0.55);
+  color: #64748b;
   background: transparent;
-  font-size: 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .comment-message-list {
@@ -19052,9 +18927,12 @@ button.ai-source-ref-chip--document:focus-visible {
 
 .comment-message p {
   margin: 0;
+  overflow-wrap: anywhere;
   color: #111827;
   font-size: 13px;
   line-height: 1.55;
+  /* AI が書いたコメントは複数行で届く。改行をそのまま見せないと箇条書きが1行に潰れる。 */
+  white-space: pre-wrap;
 }
 
 .comment-message-edit {
@@ -19167,16 +19045,44 @@ button.ai-source-ref-chip--document:focus-visible {
   width: fit-content;
   max-width: 100%;
   align-items: center;
-  gap: 5px;
+  gap: 7px;
   margin-top: -2px;
-  padding: 0;
+  padding: 4px 9px 4px 5px;
   border: 0;
+  border-radius: 999px;
   color: #2563eb;
-  background: transparent;
+  background: #f1f5f9;
   font-size: 12px;
   font-weight: 760;
   text-align: left;
   cursor: pointer;
+}
+
+/* 折りたたんだ返信行の重ねアバター。誰が返したかを開かずに読めるようにする。 */
+.comment-reply-avatars {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.comment-reply-avatars .comment-author-avatar {
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid #ffffff;
+  font-size: 10px;
+}
+
+.comment-reply-avatars .comment-author-avatar + .comment-author-avatar {
+  margin-left: -7px;
+}
+
+.comment-reply-avatars .comment-author-avatar svg {
+  width: 11px;
+  height: 11px;
+}
+
+.comment-reply-avatars .comment-author-avatar-badge {
+  display: none;
 }
 
 .comment-reply-summary em {
@@ -19196,8 +19102,8 @@ button.ai-source-ref-chip--document:focus-visible {
 .comment-reply-summary:hover,
 .comment-reply-summary:focus-visible {
   color: #1d4ed8;
+  background: #e2e8f0;
   outline: none;
-  text-decoration: underline;
 }
 
 .comment-reply-composer .comment-author-line {
@@ -19424,12 +19330,14 @@ button.ai-source-ref-chip--document:focus-visible {
 
 .comment-rich-text-shell {
   min-height: 56px;
-  border: 0;
-  border-radius: 18px;
-  background: #f8fafc;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: #f1f5f9;
+  transition: background 120ms ease, border-color 120ms ease;
 }
 
 .comment-rich-text-shell:focus-within {
+  border-color: rgba(37, 99, 235, 0.35);
   background: #ffffff;
 }
 
@@ -19458,6 +19366,18 @@ button.ai-source-ref-chip--document:focus-visible {
   justify-content: flex-end;
 }
 
+.comment-composer-actions .button {
+  min-height: 28px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.comment-composer-actions .button.primary:disabled {
+  opacity: 0.45;
+}
+
 .comment-empty-state {
   position: absolute;
   left: 0;
@@ -19468,11 +19388,12 @@ button.ai-source-ref-chip--document:focus-visible {
   flex-direction: column;
   justify-content: center;
   gap: 6px;
-  padding: 14px;
-  border-radius: 8px;
-  background: #f1f5f9;
+  padding: 18px 14px;
+  border: 1px dashed rgba(15, 23, 42, 0.12);
+  border-radius: 13px;
+  background: #ffffff;
   color: #64748b;
-  font-size: 13px;
+  font-size: 12.5px;
   text-align: center;
 }
 
@@ -19483,17 +19404,19 @@ button.ai-source-ref-chip--document:focus-visible {
 .comment-empty-state button,
 .comment-dock-add {
   display: inline-flex;
-  min-height: 30px;
+  min-height: 28px;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--background);
-  color: var(--text-primary);
+  margin-top: 4px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #ffffff;
   font: inherit;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
   cursor: pointer;
 }
 
@@ -19501,8 +19424,8 @@ button.ai-source-ref-chip--document:focus-visible {
 .comment-empty-state button:focus-visible,
 .comment-dock-add:hover,
 .comment-dock-add:focus-visible {
-  border-color: var(--text-muted);
-  background: var(--surface-muted);
+  background: #1d4ed8;
+  outline: none;
 }
 
 /* --- Reduced motion --- */
@@ -19574,316 +19497,6 @@ button.ai-source-ref-chip--document:focus-visible {
   align-items: flex-start;
 }
 
-/* WebMCP writes remain proposals until the person editing the document accepts
-   them. This dock is independent from the desktop AI runtime and uses the same
-   compact editor chrome tokens as the task and comment docks. */
-.webmcp-proposal-dock {
-  position: fixed;
-  inset-block-start: 112px;
-  inset-inline-end: var(--space-md);
-  z-index: 140;
-  display: flex;
-  width: min(380px, calc(100vw - 32px));
-  max-height: min(68vh, 620px);
-  flex-direction: column;
-  border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  background: var(--background);
-  box-shadow: 0 20px 48px -20px rgb(15 23 42 / 0.35);
-  overflow: hidden;
-}
-
-.webmcp-proposal-header {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--space-sm);
-  padding: 12px 14px;
-  border-block-end: 1px solid var(--border-subtle);
-}
-
-.webmcp-proposal-header h2,
-.webmcp-proposal-header p {
-  margin: 0;
-}
-
-.webmcp-proposal-header h2 {
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.webmcp-proposal-header p {
-  margin-block-start: 2px;
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.webmcp-proposal-mark {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border-radius: var(--radius-round);
-  background: var(--surface-soft);
-  color: var(--text-primary);
-}
-
-.webmcp-proposal-count {
-  display: grid;
-  min-width: 22px;
-  height: 22px;
-  padding-inline: 6px;
-  place-items: center;
-  border-radius: var(--radius-round);
-  background: var(--text-primary);
-  color: var(--background);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.webmcp-proposal-list {
-  display: grid;
-  gap: var(--space-sm);
-  padding: var(--space-sm);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.webmcp-proposal-apply-all {
-  appearance: none;
-  display: inline-flex;
-  min-height: 34px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin: var(--space-sm) var(--space-sm) 0;
-  padding-inline: 12px;
-  border: 1px solid var(--text-primary);
-  border-radius: 9px;
-  background: var(--text-primary);
-  color: var(--background);
-  font-size: 11px;
-  font-weight: 650;
-  cursor: pointer;
-  transition-property: transform, opacity;
-  transition-duration: 120ms;
-  transition-timing-function: ease-out;
-}
-
-.webmcp-proposal-apply-all:hover {
-  opacity: 0.88;
-}
-
-.webmcp-proposal-apply-all:active {
-  transform: scale(0.96);
-}
-
-.webmcp-proposal-card {
-  display: grid;
-  gap: var(--space-sm);
-  padding: 10px;
-  border-radius: 10px;
-  background: var(--surface-soft);
-}
-
-.webmcp-proposal-target {
-  appearance: none;
-  display: inline-flex;
-  width: fit-content;
-  min-height: 24px;
-  align-items: center;
-  gap: 5px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.webmcp-proposal-target:hover:not(:disabled) {
-  color: var(--text-primary);
-  text-decoration: underline;
-}
-
-.webmcp-proposal-target:disabled {
-  color: var(--text-muted);
-  cursor: default;
-}
-
-.webmcp-proposal-target:focus-visible,
-.webmcp-proposal-actions button:focus-visible,
-.webmcp-proposal-apply-all:focus-visible,
-.webmcp-proposal-history button:focus-visible {
-  outline: 2px solid var(--text-primary);
-  outline-offset: 2px;
-}
-
-.webmcp-proposal-diff {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-  max-height: 180px;
-  overflow: auto;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.webmcp-proposal-diff del,
-.webmcp-proposal-diff ins {
-  display: block;
-  padding: 6px 8px;
-  border-radius: 6px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  text-decoration: none;
-}
-
-.webmcp-proposal-diff del {
-  background: color-mix(in srgb, var(--danger, #b42318) 9%, transparent);
-  color: var(--text-secondary);
-}
-
-.webmcp-proposal-diff del::before {
-  content: "− ";
-  color: var(--danger, #b42318);
-  font-weight: 700;
-}
-
-.webmcp-proposal-diff ins {
-  background: color-mix(in srgb, var(--success, #157347) 10%, transparent);
-  color: var(--text-primary);
-}
-
-.webmcp-proposal-diff ins::before {
-  content: "+ ";
-  color: var(--success, #157347);
-  font-weight: 700;
-}
-
-.webmcp-proposal-error {
-  margin: 10px 12px 0;
-  color: var(--danger, #b42318);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.webmcp-proposal-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-sm);
-  padding: 10px 12px;
-}
-
-.webmcp-proposal-actions button {
-  appearance: none;
-  display: inline-flex;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding-inline: 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 650;
-  cursor: pointer;
-  transition-property: transform, background-color;
-  transition-duration: 120ms;
-  transition-timing-function: ease-out;
-}
-
-.webmcp-proposal-actions button:active {
-  transform: scale(0.96);
-}
-
-.webmcp-proposal-reject {
-  background: var(--background);
-  color: var(--text-primary);
-}
-
-.webmcp-proposal-reject:hover {
-  background: var(--surface-strong);
-}
-
-.webmcp-proposal-actions .webmcp-proposal-apply {
-  border-color: var(--text-primary);
-  background: var(--text-primary);
-  color: var(--background);
-}
-
-.webmcp-proposal-apply:hover {
-  background: #000000;
-}
-
-.webmcp-proposal-history {
-  display: grid;
-  gap: 6px;
-  padding: 10px 12px 12px;
-  border-block-start: 1px solid var(--border-subtle);
-}
-
-.webmcp-proposal-history h3 {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.webmcp-proposal-history ul {
-  display: grid;
-  gap: 4px;
-  max-height: 116px;
-  padding: 0;
-  margin: 0;
-  overflow-y: auto;
-  list-style: none;
-}
-
-.webmcp-proposal-history li {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-sm);
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.webmcp-proposal-history [data-status="applied"]::before {
-  content: "✓ ";
-}
-
-.webmcp-proposal-history [data-status="rejected"]::before {
-  content: "× ";
-}
-
-.webmcp-proposal-history button {
-  appearance: none;
-  display: inline-flex;
-  min-height: 24px;
-  align-items: center;
-  gap: 4px;
-  padding: 0 2px;
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.webmcp-proposal-history button:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
-}
-
 .webmcp-edit-target {
   border-radius: 4px;
   outline: 2px solid color-mix(in srgb, var(--accent, #2563eb) 62%, transparent);
@@ -19923,71 +19536,6 @@ button.ai-source-ref-chip--document:focus-visible {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-.ai-web-placeholder-vendors-title,
-.ai-web-placeholder-footnote {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.ai-web-instructions-input {
-  width: 100%;
-  min-height: 10rem;
-  resize: vertical;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  padding: 10px 12px;
-  color: var(--text-primary);
-  background: var(--surface-primary);
-  font: inherit;
-  line-height: 1.5;
-}
-
-.ai-web-instructions-input:focus-visible {
-  outline: 2px solid var(--focus-ring-color, #2563eb);
-  outline-offset: 2px;
-}
-
-.ai-web-proposal-surface:empty {
-  display: none;
-}
-
-.webmcp-proposal-panel {
-  display: grid;
-  gap: 0;
-  min-width: 0;
-  margin-block-start: 4px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--background);
-  overflow: hidden;
-}
-
-@media (max-width: 640px) {
-  .webmcp-proposal-dock {
-    inset-block: auto calc(var(--space-md) + env(safe-area-inset-bottom));
-    inset-inline: var(--space-sm);
-    width: auto;
-    max-height: min(56vh, 520px);
-  }
-
-  .webmcp-proposal-apply-all {
-    min-height: 40px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .webmcp-proposal-actions button,
-  .webmcp-proposal-apply-all {
-    transition: none;
-  }
-
-  .webmcp-proposal-actions button:active,
-  .webmcp-proposal-apply-all:active {
-    transform: none;
-  }
 }
 
 .ai-task-dock-hover-bridge {
@@ -20115,50 +19663,62 @@ button.ai-source-ref-chip--document:focus-visible {
 
 .comment-dock {
   display: flex;
-  width: min(340px, calc(100vw - 32px));
-  max-height: min(68vh, 560px);
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(70vh, 600px);
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
-  background: var(--background);
-  box-shadow: var(--shadow-floating);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), 0 20px 48px rgba(15, 23, 42, 0.16);
 }
 
 .comment-dock-header {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-lg);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: 10px 10px 10px var(--space-lg);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.comment-dock-heading {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
 }
 
 .comment-dock-title {
-  flex: 1 1 auto;
   color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 13.5px;
+  font-weight: 760;
 }
 
 .comment-dock-count {
-  color: var(--text-muted);
-  font-size: 11px;
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 10.5px;
+  font-weight: 700;
 }
 
 .comment-dock-add {
-  border-color: var(--text-primary);
-  background: var(--text-primary);
-  color: var(--background);
   white-space: nowrap;
 }
 
 .comment-dock-target-hint {
   margin: 0;
   padding: 8px var(--space-lg);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-soft);
-  color: var(--text-muted);
-  font-size: 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 11.5px;
   line-height: 1.45;
 }
 
@@ -20195,9 +19755,10 @@ button.ai-source-ref-chip--document:focus-visible {
   min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: 10px;
   overflow-y: auto;
-  padding: var(--space-lg);
+  padding: 12px;
+  background: #f8fafc;
 }
 
 .comment-dock .comment-compose-card,
@@ -20214,11 +19775,21 @@ button.ai-source-ref-chip--document:focus-visible {
   top: auto;
   flex: 0 0 auto;
   margin: 0;
-  padding: var(--space-sm) var(--space-lg);
+  padding: 8px 12px;
   border: 0;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
   border-radius: 0;
-  background: var(--surface-soft);
+  background: #ffffff;
+}
+
+.comment-dock .comment-filter-switch {
+  width: 100%;
+  box-shadow: none;
+}
+
+.comment-dock .comment-filter-switch button {
+  flex: 1 1 0;
+  justify-content: center;
 }
 
 @keyframes comment-dock-expand {
@@ -20232,7 +19803,6 @@ button.ai-source-ref-chip--document:focus-visible {
     transform: translateY(0) scale(1);
   }
 }
-
 
 .ai-task-dock-badge {
   position: absolute;
@@ -20393,6 +19963,70 @@ button.ai-source-ref-chip--document:focus-visible {
   background: var(--surface-soft);
   color: var(--text-primary);
   outline: none;
+}
+
+/* Web版だけ dock の中に入るWebMCP区画: エージェントとの接続状態と、教材ごとの
+   自由記述指示。デスクトップとSDK埋め込みでは webMcpInstructionScopeId が渡らない
+   ので描かれない。list より先に置き、縮まないようにして list 側だけをスクロールさせる。 */
+.ai-task-dock-webmcp {
+  display: grid;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ai-task-dock-webmcp-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ai-task-dock-webmcp-status svg {
+  flex: 0 0 auto;
+  margin-block-start: 2px;
+}
+
+.ai-task-dock-webmcp-status[data-state="partial"],
+.ai-task-dock-webmcp-status[data-state="failed"],
+.ai-task-dock-webmcp-status[data-state="unavailable"] {
+  color: var(--text-muted);
+}
+
+.ai-task-dock-webmcp-title {
+  margin: 6px 0 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ai-task-dock-webmcp-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: var(--text-primary);
+  background: var(--background);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-task-dock-webmcp-input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  outline-offset: 1px;
+}
+
+.ai-task-dock-webmcp-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .ai-task-dock-list {

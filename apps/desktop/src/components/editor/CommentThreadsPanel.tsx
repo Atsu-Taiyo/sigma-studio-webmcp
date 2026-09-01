@@ -4,6 +4,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Check, MessageSquarePlus, MoreHorizontal, Pencil, Reply, RotateCcw, Search, Smile, Trash2 } from "lucide-react";
 
+import { CommentAuthorAvatar } from "@/components/editor/CommentAuthorAvatar";
 import { CommentRichTextEditor } from "@/components/editor/CommentRichTextEditor";
 import { renderInlineContent } from "@/features/rendering/adapters/react";
 import {
@@ -22,7 +23,7 @@ import {
 } from "@/lib/comments";
 import type { AppLocale } from "@/lib/i18n";
 import { useAppLocale, useT } from "@/lib/i18n/react";
-import type { SigmaCommentAnchor, SigmaCommentReaction, SigmaCommentThread, SigmaDocument, InlineNode } from "@/features/document";
+import type { SigmaCommentAgent, SigmaCommentAnchor, SigmaCommentMessage, SigmaCommentReaction, SigmaCommentThread, SigmaDocument, InlineNode } from "@/features/document";
 
 const COMMENT_CARD_GAP_PX = 12;
 const COMMENT_EMPTY_STATE_HEIGHT_PX = 150;
@@ -37,6 +38,8 @@ interface CommentReactionTarget {
 export interface CommentPanelAuthor {
   avatarUrl?: string | null;
   name: string;
+  /** AI が書いたときだけ入る。アバターを提供元のロゴに差し替える根拠。 */
+  agent?: SigmaCommentAgent | null;
 }
 
 export interface CommentThreadsPanelProps {
@@ -256,10 +259,7 @@ export function CommentThreadsPanel({
           const repliesExpanded = expandedReplyThreadIds.has(thread.id);
           const replyCount = getReplyCount(thread);
           const firstMessage = thread.messages[0];
-          const cardAuthor = {
-            ...author,
-            name: firstMessage?.authorName || author.name,
-          };
+          const cardAuthor = getMessageAuthor(firstMessage, author);
           return (
             <section
               key={thread.id}
@@ -283,6 +283,23 @@ export function CommentThreadsPanel({
             >
               <div className="comment-thread-card-header">
                 <CommentAuthorLine author={cardAuthor} timestamp={firstMessage?.createdAt} />
+                <button
+                  type="button"
+                  className={`comment-thread-resolve-button${thread.resolved ? " is-resolved" : ""}`}
+                  title={thread.resolved ? t("comment.reopen") : t("comment.resolve")}
+                  aria-label={thread.resolved ? t("comment.reopen") : t("comment.resolve")}
+                  aria-pressed={Boolean(thread.resolved)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (thread.resolved) {
+                      onReopenThread(thread.id);
+                    } else {
+                      onResolveThread(thread.id);
+                    }
+                  }}
+                >
+                  {thread.resolved ? <RotateCcw size={14} /> : <Check size={15} />}
+                </button>
               </div>
               <div className="comment-anchor-label">
                 <span>{getCommentAnchorLabel(thread.anchor, document, t)}</span>
@@ -291,7 +308,7 @@ export function CommentThreadsPanel({
               <CommentQuote anchor={thread.anchor} />
               <div className="comment-message-list">
                 {(repliesExpanded ? thread.messages : thread.messages.slice(0, 1)).map((message, index) => {
-                  const messageAuthor = getMessageAuthor(message.authorName, author);
+                  const messageAuthor = getMessageAuthor(message, author);
                   const messageKey = getMessageTargetKey(thread.id, message.id);
                   const editDraft = editDrafts[messageKey] ?? message.body;
                   const editing = editingMessageKey === messageKey;
@@ -352,9 +369,7 @@ export function CommentThreadsPanel({
                         quickEmojis={quickReactionEmojis}
                         recentEmojis={recentReactionEmojis}
                         reactionSearchQuery={reactionSearchQuery}
-                        resolved={Boolean(thread.resolved)}
                         showMenu
-                        showResolve={index === 0}
                         onDelete={() => {
                           if (index === 0) {
                             onDeleteThread(thread.id);
@@ -376,13 +391,6 @@ export function CommentThreadsPanel({
                         }}
                         onReactionSearchChange={setReactionSearchQuery}
                         onToggleReaction={(emoji) => toggleReaction(thread.id, message.id, emoji)}
-                        onResolveToggle={() => {
-                          if (thread.resolved) {
-                            onReopenThread(thread.id);
-                          } else {
-                            onResolveThread(thread.id);
-                          }
-                        }}
                       />
                       <CommentMessageBody body={message.body} mathFractionSizing={mathFractionSizing} />
                       <CommentReactionBar
@@ -411,7 +419,20 @@ export function CommentThreadsPanel({
                     setExpandedReplyThreadIds((current) => toggleSetValue(current, thread.id));
                   }}
                 >
-                  <Reply size={13} />
+                  {replyCount > 0
+                    ? (
+                      <span className="comment-reply-avatars" aria-hidden="true">
+                        {getReplyAuthors(thread, author).map((replyAuthor, replyIndex) => (
+                          <CommentAuthorAvatar
+                            key={`${replyAuthor.name}:${replyIndex}`}
+                            agent={replyAuthor.agent}
+                            avatarUrl={replyAuthor.avatarUrl}
+                            name={replyAuthor.name}
+                          />
+                        ))}
+                      </span>
+                    )
+                    : <Reply size={13} />}
                   <span>{replyCount > 0 ? t("comment.replyCount", { replies: replyCount }) : t("comment.reply")}</span>
                   {replyCount > 0 && <em>{getLatestReplyLabel(thread, locale)}</em>}
                 </button>
@@ -467,14 +488,26 @@ export function CommentThreadsPanel({
 
       {resolvedCount > 0 && (
         <div className="comment-thread-panel-footer">
-          <label>
-            <input
-              type="checkbox"
-              checked={showResolved}
-              onChange={(event) => onShowResolvedChange(event.target.checked)}
-            />
-            <span>{t("comment.showResolved")}</span>
-          </label>
+          <div className="comment-filter-switch" role="group" aria-label={t("comment.filterAria")}>
+            <button
+              type="button"
+              className={showResolved ? "" : "is-active"}
+              aria-pressed={!showResolved}
+              onClick={() => onShowResolvedChange(false)}
+            >
+              <span>{t("comment.filterOpen")}</span>
+              <em>{unresolvedCount}</em>
+            </button>
+            <button
+              type="button"
+              className={showResolved ? "is-active" : ""}
+              aria-pressed={showResolved}
+              onClick={() => onShowResolvedChange(true)}
+            >
+              <span>{t("comment.filterAll")}</span>
+              <em>{allThreads.length}</em>
+            </button>
+          </div>
         </div>
       )}
     </aside>
@@ -488,15 +521,12 @@ function CommentMessageToolbar({
   quickEmojis,
   reactionSearchQuery,
   recentEmojis,
-  resolved,
   showMenu,
-  showResolve,
   onDelete,
   onEdit,
   onMenuToggle,
   onPickerToggle,
   onReactionSearchChange,
-  onResolveToggle,
   onToggleReaction,
 }: {
   frequentEmojis: string[];
@@ -505,15 +535,12 @@ function CommentMessageToolbar({
   quickEmojis: string[];
   reactionSearchQuery: string;
   recentEmojis: string[];
-  resolved: boolean;
   showMenu: boolean;
-  showResolve: boolean;
   onDelete: () => void;
   onEdit: () => void;
   onMenuToggle: () => void;
   onPickerToggle: () => void;
   onReactionSearchChange: (query: string) => void;
-  onResolveToggle: () => void;
   onToggleReaction: (emoji: string) => void;
 }) {
   const t = useT("editor");
@@ -574,27 +601,6 @@ function CommentMessageToolbar({
           />
         )}
       </div>
-      {showResolve && (
-        <button
-          type="button"
-          className="comment-toolbar-icon-button"
-          title={resolved ? t("comment.reopen") : t("comment.resolve")}
-          aria-label={resolved ? t("comment.reopen") : t("comment.resolve")}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onResolveToggle();
-          }}
-          onClick={(event) => {
-            event.stopPropagation();
-            if (event.detail === 0) {
-              onResolveToggle();
-            }
-          }}
-        >
-          {resolved ? <RotateCcw size={15} /> : <Check size={16} />}
-        </button>
-      )}
       {showMenu && (
         <div className={`comment-thread-menu-root ${menuOpen ? "open" : ""}`}>
           <button
@@ -767,24 +773,18 @@ function CommentReactionPickerButton({
   );
 }
 
+/**
+ * 差出人の 1 行。**名前と時刻は同じ行に置く** (Figma と同じ)。縦積みにすると
+ * 1 スレッドあたりの高さが増え、右のガターに並ぶカード数が目に見えて減る。
+ */
 function CommentAuthorLine({ author, timestamp }: { author: CommentPanelAuthor; timestamp?: string }) {
-  const t = useT("editor");
   const locale = useAppLocale();
-  const initial = getAuthorInitial(author.name);
   return (
     <div className="comment-author-line">
-      {author.avatarUrl ? (
-        <span
-          className="comment-author-avatar image"
-          role="img"
-          aria-label={t("comment.avatarAria", { name: author.name })}
-          style={{ backgroundImage: `url(${author.avatarUrl})` }}
-        />
-      ) : (
-        <span className="comment-author-avatar" aria-hidden="true">{initial}</span>
-      )}
+      <CommentAuthorAvatar agent={author.agent} avatarUrl={author.avatarUrl} name={author.name} />
       <div className="comment-author-meta">
         <strong>{author.name}</strong>
+        {author.agent?.model && <em className="comment-author-model">{author.agent.model}</em>}
         {timestamp && <span>{formatCommentTimestamp(timestamp, locale)}</span>}
       </div>
     </div>
@@ -980,15 +980,12 @@ function getPositionedCommentItems({
   };
 }
 
-function getAuthorInitial(name: string): string {
-  const trimmed = name.trim();
-  return (trimmed[0] ?? "G").toUpperCase();
-}
-
-function getMessageAuthor(authorName: string | undefined, currentAuthor: CommentPanelAuthor): CommentPanelAuthor {
-  const name = authorName || currentAuthor.name;
+function getMessageAuthor(message: SigmaCommentMessage | undefined, currentAuthor: CommentPanelAuthor): CommentPanelAuthor {
+  const name = message?.authorName || currentAuthor.name;
+  // AI の差出人は現在のユーザーではないので、ユーザー画像を貸さない。
   return {
-    avatarUrl: name === currentAuthor.name ? currentAuthor.avatarUrl : null,
+    avatarUrl: !message?.agent && name === currentAuthor.name ? currentAuthor.avatarUrl : null,
+    agent: message?.agent ?? null,
     name,
   };
 }
@@ -1057,6 +1054,25 @@ function getReactionGroups(
 
 function getReplyCount(thread: SigmaCommentThread): number {
   return Math.max(0, thread.messages.length - 1);
+}
+
+/** 折りたたんだ返信行に重ねる差出人アイコン。同じ差出人は 1 つにまとめ、先頭 3 人まで。 */
+function getReplyAuthors(thread: SigmaCommentThread, currentAuthor: CommentPanelAuthor): CommentPanelAuthor[] {
+  const seen = new Set<string>();
+  const authors: CommentPanelAuthor[] = [];
+  for (const message of thread.messages.slice(1)) {
+    const author = getMessageAuthor(message, currentAuthor);
+    const key = `${author.name}:${author.agent?.vendor ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    authors.push(author);
+    if (authors.length === 3) {
+      break;
+    }
+  }
+  return authors;
 }
 
 function getLatestReplyLabel(thread: SigmaCommentThread, locale: AppLocale): string {

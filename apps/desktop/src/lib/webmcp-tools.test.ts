@@ -53,6 +53,8 @@ function createHarness(initial = baseDocument(), catalog: "public" | "implementa
     getAgentInstructions: () => "Keep explanations concise.",
     proposeDocumentChange: (next) => { proposal = next; proposalUpdates.push(next); },
     withdrawDocumentChange: () => { proposal = null; },
+    // 本物と同じく、コメントは提案を経由せず即座に文書へ入り revision を進める。
+    commitComments: (mutate) => { document = mutate(document); revision += 1; },
   };
   const tools = createSigmaWebMcpTools(ports, { catalog });
   const tool = (name: string): WebMcpToolDefinition => {
@@ -99,12 +101,13 @@ describe("Sigma WebMCP desktop-parity tools", () => {
 
   it("keeps the public catalog compact and task-oriented while preserving all major editing domains", () => {
     const { tools } = createHarness(baseDocument(), "public");
-    expect(tools).toHaveLength(22);
+    expect(tools).toHaveLength(26);
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       "inspect_document", "insert_markdown", "edit_text", "edit_problem", "organize_blocks",
       "update_layout", "create_overlay", "update_overlay", "arrange_overlay", "delete_overlay",
       "insert_table", "update_table", "insert_graph", "update_graph",
       "insert_graph3d", "update_graph3d",
+      "list_comments", "add_comment", "reply_comment", "resolve_comment",
     ]));
     expect(tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
       "get_block", "get_blocks", "insert_shape", "update_shape",
@@ -614,15 +617,21 @@ describe("Sigma WebMCP desktop-parity tools", () => {
   });
 
   it.each([
-    ["comments", (document: SigmaDocument) => ({ ...document, comments: [{ id: "comment_1", anchor: { type: "block", blockId: "p_second" }, resolved: false, messages: [], createdAt: "2026-08-30T00:30:00.000Z" }] })],
     ["outputProfiles", (document: SigmaDocument) => ({ ...document, outputProfiles: { ...document.outputProfiles, student: { ...document.outputProfiles.student, showHints: true } } })],
-    ["updatedAt", (document: SigmaDocument) => ({ ...document, updatedAt: "2026-08-30T01:00:00.000Z" })],
   ] as const)("rejects approval after a %s-only live document change", async (field, update) => {
     const harness = createHarness();
     await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
     const pending = harness.getProposal()!;
     harness.humanEdit(update(harness.getDocument()) as SigmaDocument);
     expect(() => pending.apply(harness.getDocument())).toThrow(new RegExp(`STALE_DRAFT.*${field}`));
+  });
+
+  it("rejects approval after an updatedAt-only live document change", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({ ...harness.getDocument(), updatedAt: "2026-08-30T01:00:00.000Z" });
+    expect(() => pending.apply(harness.getDocument())).toThrow(/STALE_DRAFT/);
   });
 
   it("rejects approval whenever the live revision changes even if content is structurally equal", async () => {
@@ -655,5 +664,124 @@ describe("Sigma WebMCP desktop-parity tools", () => {
     const firstDocument = firstProposal.apply(harness.getDocument()).document;
     expect(blockToReferenceText(findBlock(firstDocument, "p_existing")!)).toBe("First draft");
     expect(blockToReferenceText(findBlock(firstDocument, "p_second")!)).toBe("Second paragraph");
+  });
+
+  it("pins an AI comment to an exact phrase, records who wrote it, and applies without approval", async () => {
+    const harness = createHarness(baseDocument(), "public");
+    const result = parseResult(await harness.tool("add_comment").execute({
+      author: { name: "ChatGPT", vendor: "openai", model: "gpt-5" },
+      target: { blockId: "p_existing", text: "Original" },
+      text: "ここは $x^2$ の説明に寄せた方が読みやすいです。",
+    }));
+
+    expect(result).toMatchObject({ ok: true, status: "posted" });
+    expect(harness.getProposal()).toBeNull();
+    const thread = harness.getDocument().comments?.[0];
+    expect(thread?.anchor).toEqual({
+      type: "textRange",
+      start: { blockId: "p_existing", offset: 0 },
+      end: { blockId: "p_existing", offset: 8 },
+      quote: "Original",
+    });
+    expect(thread?.messages[0]).toMatchObject({ authorName: "ChatGPT", agent: { vendor: "openai", model: "gpt-5" } });
+    expect(thread?.messages[0]?.body).toEqual([
+      { type: "text", text: "ここは " },
+      expect.objectContaining({ type: "mathInline", tex: "x^2" }),
+      { type: "text", text: " の説明に寄せた方が読みやすいです。" },
+    ]);
+  });
+
+  it("normalizes a product name into the vendor whose logo is drawn", async () => {
+    const harness = createHarness(baseDocument(), "public");
+    await harness.tool("add_comment").execute({
+      author: { name: "Claude", vendor: "Claude Opus" },
+      target: { blockId: "p_second" },
+      text: "図を1つ足すと伝わりやすいです。",
+    });
+    expect(harness.getDocument().comments?.[0]?.messages[0]?.agent).toEqual({ vendor: "anthropic" });
+  });
+
+  it("anchors to a whole block, an inline formula, and an overlay shape", async () => {
+    const shape: OverlayShape = { id: "shape_note", type: "geo", x: 20, y: 30, rotation: 0, props: { w: 120, h: 80, geo: "rectangle", fill: "none", color: "#111827", labelColor: "#111827", dash: "solid", size: "m" } };
+    const document = baseDocument([shape]);
+    const harness = createHarness({
+      ...document,
+      content: [
+        { type: "paragraph", id: "p_math", children: [{ type: "text", text: "式 " }, { type: "mathInline", id: "m_1", tex: "x^2", display: "inline" }] },
+        ...document.content,
+      ],
+    }, "public");
+
+    await harness.tool("add_comment").execute({ author: { name: "ChatGPT", vendor: "openai" }, target: { blockId: "p_math" }, text: "全体への指摘" });
+    await harness.tool("add_comment").execute({ author: { name: "ChatGPT", vendor: "openai" }, target: { blockId: "p_math", mathInlineId: "m_1" }, text: "数式への指摘" });
+    await harness.tool("add_comment").execute({ author: { name: "ChatGPT", vendor: "openai" }, target: { shapeIds: ["shape_note"] }, text: "図形への指摘" });
+
+    expect(harness.getDocument().comments?.map((thread) => thread.anchor.type)).toEqual(["block", "inlineMath", "overlayShape"]);
+    expect(harness.getDocument().comments?.[1]?.anchor).toMatchObject({ type: "inlineMath", blockId: "p_math", mathInlineId: "m_1", tex: "x^2" });
+  });
+
+  it("rejects a comment whose target is not in the document", async () => {
+    const harness = createHarness(baseDocument(), "public");
+    expect(() => harness.tool("add_comment").execute({
+      author: { name: "ChatGPT", vendor: "openai" },
+      target: { blockId: "p_existing", text: "not present" },
+      text: "…",
+    })).toThrow(/Text not found/);
+    expect(harness.getDocument().comments ?? []).toHaveLength(0);
+  });
+
+  it("replies, resolves, and lists threads with the author on each message", async () => {
+    const harness = createHarness(baseDocument(), "public");
+    const created = parseResult(await harness.tool("add_comment").execute({
+      author: { name: "ChatGPT", vendor: "openai" },
+      target: { blockId: "p_second" },
+      text: "この段落は結論が先の方がよいです。",
+    })) as { threadId: string };
+
+    await harness.tool("reply_comment").execute({ author: { name: "Claude", vendor: "anthropic" }, threadId: created.threadId, text: "同意です。" });
+    expect(parseResult(await harness.tool("resolve_comment").execute({ threadId: created.threadId }))).toMatchObject({ status: "resolved", resolved: true });
+    expect(parseResult(await harness.tool("resolve_comment").execute({ threadId: created.threadId }))).toMatchObject({ status: "unchanged" });
+
+    expect(parseResult(await harness.tool("list_comments").execute({}))).toMatchObject({ total: 0 });
+    const listed = parseResult(await harness.tool("list_comments").execute({ includeResolved: true })) as { threads: Array<Record<string, unknown>> };
+    expect(listed.threads[0]).toMatchObject({
+      resolved: true,
+      messages: [
+        { author: "ChatGPT", agent: { vendor: "openai" } },
+        { author: "Claude", agent: { vendor: "anthropic" }, text: "同意です。" },
+      ],
+    });
+  });
+
+  it("lets an agent comment while its own edit draft is pending, and carries the comment through approval", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
+
+    await harness.tool("add_comment").execute({
+      author: { name: "ChatGPT", vendor: "openai" },
+      target: { blockId: "p_second" },
+      text: "こちらは次の推敲で直します。",
+    });
+
+    // コメントで revision が進んでも、エージェントが握っている本文の前提は動かない。
+    expect(parseResult(await harness.tool("get_document_outline").execute({}))).toMatchObject({ revision: 0 });
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_second", expectedContent: "Second paragraph", text: "Agent edit 2" });
+
+    harness.apply();
+    expect(blockToReferenceText(findBlock(harness.getDocument(), "p_existing")!)).toBe("Agent edit");
+    expect(harness.getDocument().comments).toHaveLength(1);
+  });
+
+  it("keeps a human comment made while a draft is pending", async () => {
+    const harness = createHarness();
+    await harness.tool("update_rich_content").execute({ expectedRevision: 0, blockId: "p_existing", expectedContent: "Original text", text: "Agent edit" });
+    const pending = harness.getProposal()!;
+    harness.humanEdit({
+      ...harness.getDocument(),
+      comments: [{ id: "comment_human", anchor: { type: "block", blockId: "p_second" }, messages: [{ id: "msg_human", authorName: "ゲスト", body: [{ type: "text", text: "確認しました" }], createdAt: "2026-08-30T00:30:00.000Z" }], createdAt: "2026-08-30T00:30:00.000Z" }],
+    });
+    const applied = pending.apply(harness.getDocument()).document;
+    expect(applied.comments?.map((thread) => thread.id)).toEqual(["comment_human"]);
+    expect(blockToReferenceText(findBlock(applied, "p_existing")!)).toBe("Agent edit");
   });
 });

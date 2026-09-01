@@ -16,10 +16,6 @@ export const ai = {
     desktopCodexRequired: "AI編集はデスクトップ版のCodex Agentから実行してください。",
   },
   webPlaceholder: {
-    badge: "Web AI編集",
-    title: "AIエージェントを接続",
-    description: "WebMCP対応のエージェントが教材を読み、確認可能な1つの作業ドラフトを作成できます。",
-    connectionTitle: "WebMCP接続",
     loading: "編集ツールを登録しています。",
     connected: "接続済み — 編集ツール{{tools}}個を登録",
     partial: "一部の編集ツールを登録できませんでした。登録済み{{tools}}個、未登録: {{failedTools}}",
@@ -30,9 +26,6 @@ export const ai = {
     instructionsDescription: "Web版でこの教材を編集するエージェントへ、守ってほしい指示を入力します。",
     instructionsPlaceholder: "例：簡潔な日本語で説明する。既存の記号を保ち、表はセル単位で更新する。",
     savedLocally: "この教材向けの指示としてブラウザに保存され、get_agent_instructionsからエージェントへ渡されます。",
-    draftTitle: "作業ドラフト",
-    draftSummary: "{{targets}}箇所に{{operations}}操作",
-    noDraft: "確認待ちのAIドラフトはありません",
   },
   /**
    * 実行中の進捗ラベル。

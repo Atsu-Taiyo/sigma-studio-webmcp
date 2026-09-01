@@ -5,6 +5,7 @@ import {
   prepareOverlaySnapshotForValidation,
   recoverOverlaySnapshot,
   isOverlayAsset,
+  SIGMA_COMMENT_AGENT_VENDORS,
   type BoxBlockChildBlock,
   type BoxBlockNode,
   type InlineNode,
@@ -159,9 +160,15 @@ const CommentReactionSchema = z.object({
   createdAt: z.string(),
 });
 
+const CommentAgentSchema = z.object({
+  vendor: z.enum(SIGMA_COMMENT_AGENT_VENDORS),
+  model: z.string().min(1).optional(),
+});
+
 const CommentMessageSchema = z.object({
   id: z.string().min(1),
   authorName: z.string().optional(),
+  agent: CommentAgentSchema.optional(),
   body: z.array(InlineNodeSchema),
   reactions: z.array(CommentReactionSchema).optional(),
   createdAt: z.string(),

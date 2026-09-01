@@ -31,7 +31,7 @@ export {
   TABLE_FORMULA_ERROR_COLOR,
 } from "./model/table-formula";
 export { getTableCellMatrix } from "./model/table-grid";
-export { getCommentAnchorCandidateKey, getCommentAnchorKey } from "./model/comments";
+export { getCommentAnchorCandidateKey, getCommentAnchorKey, SIGMA_COMMENT_AGENT_VENDORS } from "./model/comments";
 export { inlineNodesToPlainText } from "./model/rich-text";
 export * from "./overlay-graph-migration";
 export * from "./overlay-group-normalization";
