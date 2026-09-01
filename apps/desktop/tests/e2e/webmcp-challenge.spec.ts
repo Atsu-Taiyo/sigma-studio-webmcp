@@ -12,11 +12,11 @@ test("single agent draft reports a stale guard after a human edits the document"
   });
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(18);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(22);
 
   await page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
-    const context = JSON.parse(await tools.get("inspect_document")!.execute({}) as string) as { revision: number };
+    const context = await tools.get("inspect_document")!.execute({}) as { revision: number };
     await tools.get("insert_markdown")!.execute({
       expectedRevision: context.revision,
       targetId: "END_OF_DOCUMENT",
@@ -34,7 +34,7 @@ test("single agent draft reports a stale guard after a human edits the document"
 
   const proposalRevision = await page.evaluate(async (blockId) => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
-    const context = JSON.parse(await tools.get("inspect_document")!.execute({ targetId: blockId }) as string) as { revision: number };
+    const context = await tools.get("inspect_document")!.execute({ targetId: blockId }) as { revision: number };
     await tools.get("edit_text")!.execute({
       expectedRevision: context.revision,
       operations: [{ op: "replace_text", target: { type: "block", blockId }, replacement: "AIが提案した説明です。" }],

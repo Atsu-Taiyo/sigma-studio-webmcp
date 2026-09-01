@@ -18,7 +18,7 @@ browser agent
 
 WebMCP用の別文書はありません。SigmaDocが唯一の正本です。読み取りは現在の文書を参照し、書き込みは共有実行層の `SigmaDocAgentSession` に操作を追加します。エージェントが複数回write toolを呼んでも独立した変更案は増えず、1つの作業ドラフトが更新されます。紙面上の既存AI差分カードでライブプレビューし、デスクトップ版と共通のキャンバス左上「AIタスク」をホバー展開して適用または破棄します。適用は `commitDocumentChange` を1回だけ通るため、1回のUndoで戻せます。
 
-ドラフト開始時のWeb revisionとSigmaDocを保持します。次のwriteまたは人間の適用時に本文ブロック、問題内ブロック、overlay図形、ページ設定を比較し、前提が変わっていれば `STALE_DRAFT` と変更IDを返します。`edit_text` の引用・範囲と、`update_overlay` の完全な `expectedShape` も対象単位で照合します。エージェントは再読取後に `withdraw_pending_proposal` で古いドラフトを破棄して作り直します。
+ドラフト開始時のWeb revisionとSigmaDocを保持します。次のwriteまたは人間の適用時に本文ブロック、問題内ブロック、overlay図形、ページ設定を比較し、前提が変わっていれば `STALE_DRAFT` と変更IDを返します。`edit_text` の引用・範囲と、各overlay更新ツールの完全な `expectedShape` も対象単位で照合します。エージェントは再読取後に `withdraw_pending_proposal` で古いドラフトを破棄して作り直します。
 
 主な実装箇所:
 
@@ -32,7 +32,7 @@ WebMCP用の別文書はありません。SigmaDocが唯一の正本です。読
 
 ## Registered tools
 
-ブラウザへ公開するのは、従来の粒度別ツールを目的別に集約した16ツールに、3Dグラフの専用2ツールを加えた18ツールです。全write toolは `expectedRevision` を必須とし、初回編集前に `get_agent_instructions` と `inspect_document` を呼ぶようdescriptionで案内します。座標はページ左上基準の絶対px、回転と弧角度は度、用紙と余白はmmです。update系は未指定fieldを保持します。
+ブラウザへ公開するのは22ツールです。通常図形、表、2Dグラフ、3Dグラフは入力単位と更新規則が異なるため、それぞれ一意の専用入口を持ちます。全write toolは `expectedRevision` を必須とし、初回編集前に `get_agent_instructions` と `inspect_document` を呼ぶようdescriptionで案内します。座標はページ左上基準の絶対px、回転と弧角度は度、用紙と余白はmmです。update系は未指定fieldを保持します。tool callbackはJavaScriptオブジェクトを返し、WebMCPブラウザにJSONシリアライズを任せます。
 
 | Tool | Mode | Purpose |
 |---|---|---|
@@ -48,10 +48,14 @@ WebMCP用の別文書はありません。SigmaDocが唯一の正本です。読
 | `edit_problem` | proposal | lead/prompt/answer/solution/hintsを持つ問題を作成・部分更新 |
 | `organize_blocks` | proposal | 本文ブロックを移動・削除 |
 | `update_layout` | proposal | 用紙・余白・文書全体または局所段組みを目的指定で更新 |
-| `create_overlay` | proposal | `objectType`で通常図形・テキスト・表・2D/3Dグラフを作成 |
-| `update_overlay` | proposal | 完全な`expectedShape`を鮮度ガードにしてoverlayをその場で部分更新 |
+| `create_overlay` | proposal | 通常図形・テキスト・吹き出しを作成 |
+| `update_overlay` | proposal | 通常図形・テキスト・吹き出しをその場で部分更新 |
 | `arrange_overlay` | proposal | 複数overlayを整列・等間隔配置 |
 | `delete_overlay` | proposal | 通常図形・テキスト・表・グラフを削除 |
+| `insert_table` | proposal | 通常表または増減表を作成 |
+| `update_table` | proposal | セル・罫線・行列設定をIDと未指定fieldを保って部分更新 |
+| `insert_graph` | proposal | 2D関数グラフ・座標平面・数直線を作成し所有ラベルを同期 |
+| `update_graph` | proposal | 2Dグラフと所有ラベルをID・位置・未指定fieldを保って部分更新 |
 | `insert_graph3d` | proposal | preset起点またはGraph3DSpecで3Dグラフを挿入（zUp・rotationはラジアン） |
 | `update_graph3d` | proposal | 3D specの指定fieldだけをその場で更新。ID・位置・サイズ・未指定fieldは保持 |
 
@@ -69,7 +73,7 @@ WebMCP用の別文書はありません。SigmaDocが唯一の正本です。読
 
 対応範囲は、空行区切りの段落、ATX見出し、箇条書き・番号付きリストとその入れ子、`**太字**`、`*斜体*`、fenced code、`$...$` / `$$...$$` です。Markdownの表、リンク、画像、blockquote、inline codeはまだ構造変換しません。paginationは同じ呼び出しの`pagination`、囲み枠は`container`で指定します。段組みは`update_layout`を使います。
 
-表の1セルだけを直すときは削除して作り直さず、`update_overlay.cellPatches`を使います。2Dグラフと通常図形も同じ`update_overlay`が`expectedShape.type`から処理を選び、未指定fieldを保持します。3Dグラフは外部契約を維持した専用の`update_graph3d`でも、`update_overlay`の3D分岐でも更新できます。
+表の1セルだけを直すときは削除して作り直さず、`update_table.cellPatches`を使います。2Dグラフは`update_graph`、3Dグラフは`update_graph3d`、通常図形は`update_overlay`を使います。どの更新も完全な`expectedShape`で対象の鮮度を確認し、ID・位置・サイズ・未指定fieldを保持します。
 
 ## Single-agent UI and instructions
 

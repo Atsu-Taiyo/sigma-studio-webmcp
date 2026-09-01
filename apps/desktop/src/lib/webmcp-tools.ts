@@ -69,6 +69,10 @@ export const SIGMA_WEB_MCP_TOOL_NAMES = [
   "update_overlay",
   "arrange_overlay",
   "delete_overlay",
+  "insert_table",
+  "update_table",
+  "insert_graph",
+  "update_graph",
   "insert_graph3d",
   "update_graph3d",
 ] as const;
@@ -290,7 +294,7 @@ export const WEBMCP_APPLICATION_GUIDANCE = [
   "After a stale error, discard assumptions, read the current revision and target again, then retry.",
 ].join("\n");
 
-function jsonResult(value: unknown): string { return JSON.stringify(value); }
+function toolResult<T>(value: T): T { return value; }
 function objectInput(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Tool input must be a JSON object.");
   return input as Record<string, unknown>;
@@ -521,7 +525,7 @@ export function createSigmaWebMcpTools(
     const mutations = summarizeSigmaDocMutationOps(generated.draft.mutationOperations ?? []);
     return operationOrder.map((entry) => entry.kind === "operation" ? operations[entry.index] : mutations[entry.index]).filter((entry) => entry !== undefined);
   };
-  const publish = (result: SigmaDocAgentToolResult): string => {
+  const publish = (result: SigmaDocAgentToolResult): Record<string, unknown> => {
     if (!session || baseRevision === null) throw new Error("No pending draft was created.");
     if (!result.ok) throw new Error(result.message);
     const generated = getSigmaDocAgentSessionDraft(session, {
@@ -566,7 +570,7 @@ export function createSigmaWebMcpTools(
         if (session === capturedSession && baseRevision === capturedRevision) clearDraft();
       },
     });
-    return jsonResult({
+    return toolResult({
       ok: true,
       status: "pending_approval",
       proposalId: WEB_MCP_PROPOSAL_ID,
@@ -575,14 +579,14 @@ export function createSigmaWebMcpTools(
       message: result.message,
     });
   };
-  const runDraft = (name: SigmaDocAgentDraftToolName, input: Record<string, unknown>, args: Record<string, unknown>): string => {
+  const runDraft = (name: SigmaDocAgentDraftToolName, input: Record<string, unknown>, args: Record<string, unknown>): Record<string, unknown> => {
     const current = ensureSession(expectedRevision(input));
     const beforeOperations = current.operations.length; const beforeMutations = current.mutationOperations.length;
     const result = executeSigmaDocAgentDraftTool(current, name, args);
     if (result.ok) recordNewOperationOrder(current, beforeOperations, beforeMutations);
     return publish(result);
   };
-  const runMutation = (input: Record<string, unknown>, operation: Record<string, unknown>): string => {
+  const runMutation = (input: Record<string, unknown>, operation: Record<string, unknown>): Record<string, unknown> => {
     const current = ensureSession(expectedRevision(input));
     const beforeOperations = current.operations.length; const beforeMutations = current.mutationOperations.length;
     const result = commitSigmaDocMutation(current, operation);
@@ -591,7 +595,7 @@ export function createSigmaWebMcpTools(
   };
 
   const implementationTools: WebMcpToolDefinition[] = [
-    makeReadTool("get_agent_instructions", "Return the person's Web agent instructions plus SigmaDoc editing guidance. Call this before the first edit.", EMPTY_OBJECT_SCHEMA, () => jsonResult({
+    makeReadTool("get_agent_instructions", "Return the person's Web agent instructions plus SigmaDoc editing guidance. Call this before the first edit.", EMPTY_OBJECT_SCHEMA, () => toolResult({
       ok: true,
       userInstructions: ports.getAgentInstructions?.() ?? "",
       builtInGuidance: WEBMCP_APPLICATION_GUIDANCE,
@@ -604,45 +608,45 @@ export function createSigmaWebMcpTools(
       const targetId = typeof args.targetId === "string" ? args.targetId : selection.blockId ?? selection.overlayShapes[0]?.id ?? null;
       const targetBlock = targetId ? findBlock(document, targetId) : null;
       const targetShape = targetId ? shapes(document).find((shape) => shape.id === targetId) ?? null : null;
-      return jsonResult({ ok: true, revision: baseRevision ?? ports.getRevision(), selection, target: targetBlock ? summarizeToolBlock(targetBlock) : targetShape, context: targetBlock ? collectNeighborBlocks(document, targetBlock.id) : null, pageLayout: document.pageLayout ?? null, overlayShapes: shapes(document), outline: collectOutline(document, { includeBodyBlocks: true }) });
+      return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), selection, target: targetBlock ? summarizeToolBlock(targetBlock) : targetShape, context: targetBlock ? collectNeighborBlocks(document, targetBlock.id) : null, pageLayout: document.pageLayout ?? null, overlayShapes: shapes(document), outline: collectOutline(document, { includeBodyBlocks: true }) });
     }),
     makeReadTool("get_document_outline", "Return the current revision, page layout, body outline, block rectangles when available, and all complete overlay shapes.", EMPTY_OBJECT_SCHEMA, () => {
       const document = activeDocument();
-      return jsonResult({ ok: true, revision: baseRevision ?? ports.getRevision(), title: resolveDocumentTitle(document), pageLayout: document.pageLayout ?? null, outline: collectOutline(document, { includeBodyBlocks: true }), overlayShapes: shapes(document) });
+      return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), title: resolveDocumentTitle(document), pageLayout: document.pageLayout ?? null, outline: collectOutline(document, { includeBodyBlocks: true }), overlayShapes: shapes(document) });
     }),
     makeReadTool("get_block", "Return one complete body or problem-area block by ID.", {
       type: "object", properties: { blockId: { type: "string" } }, required: ["blockId"], additionalProperties: false,
     }, (input) => {
       const id = requiredString(objectInput(input).blockId, "blockId"); const block = findBlock(activeDocument(), id);
-      if (!block) throw new Error(`Block not found: ${id}`); return jsonResult({ ok: true, revision: baseRevision ?? ports.getRevision(), block });
+      if (!block) throw new Error(`Block not found: ${id}`); return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), block });
     }),
     makeReadTool("get_blocks", "Return multiple complete body or problem-area blocks by ID.", {
       type: "object", properties: { blockIds: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } } }, required: ["blockIds"], additionalProperties: false,
     }, (input) => {
       const ids = requiredStringArray(objectInput(input).blockIds, "blockIds"); const document = activeDocument();
-      return jsonResult({ ok: true, revision: baseRevision ?? ports.getRevision(), blocks: ids.map((id) => { const block = findBlock(document, id); if (!block) throw new Error(`Block not found: ${id}`); return block; }) });
+      return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), blocks: ids.map((id) => { const block = findBlock(document, id); if (!block) throw new Error(`Block not found: ${id}`); return block; }) });
     }),
     makeReadTool("search_document", "Search body text, TeX, table cells, and overlay text. Use results to choose IDs before reading or editing.", {
       type: "object", properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 50 } }, required: ["query"], additionalProperties: false,
-    }, (input) => { const args = objectInput(input); return jsonResult({ ok: true, revision: baseRevision ?? ports.getRevision(), ...searchSigmaDocument(activeDocument(), requiredString(args.query, "query"), { limit: typeof args.limit === "number" ? args.limit : undefined }) }); }),
+    }, (input) => { const args = objectInput(input); return toolResult({ ok: true, revision: baseRevision ?? ports.getRevision(), ...searchSigmaDocument(activeDocument(), requiredString(args.query, "query"), { limit: typeof args.limit === "number" ? args.limit : undefined }) }); }),
     makeReadTool("read_document", "Read the open document. detail='summary' avoids full content; use detail='full' only when the whole canonical SigmaDoc is needed.", {
       type: "object", properties: { detail: { type: "string", enum: ["summary", "full"], default: "summary" } }, additionalProperties: false,
     }, (input) => {
       const detail = objectInput(input).detail ?? "summary"; const document = activeDocument();
-      return jsonResult(detail === "full" ? { ok: true, revision: baseRevision ?? ports.getRevision(), document } : { ok: true, revision: baseRevision ?? ports.getRevision(), document: { docId: document.docId, title: resolveDocumentTitle(document), version: document.version, metadata: document.metadata, pageLayout: document.pageLayout, topLevelBlockCount: document.content.length, overlayShapeCount: shapes(document).length } });
+      return toolResult(detail === "full" ? { ok: true, revision: baseRevision ?? ports.getRevision(), document } : { ok: true, revision: baseRevision ?? ports.getRevision(), document: { docId: document.docId, title: resolveDocumentTitle(document), version: document.version, metadata: document.metadata, pageLayout: document.pageLayout, topLevelBlockCount: document.content.length, overlayShapeCount: shapes(document).length } });
     }),
     makeReadTool("validate_document", "Validate the current document or accumulated pending draft without changing it.", EMPTY_OBJECT_SCHEMA, () => {
       const result = SigmaDocumentSchema.safeParse(activeDocument());
-      return jsonResult(result.success ? { ok: true, valid: true, revision: baseRevision ?? ports.getRevision() } : { ok: false, valid: false, issues: result.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })).slice(0, 20) });
+      return toolResult(result.success ? { ok: true, valid: true, revision: baseRevision ?? ports.getRevision() } : { ok: false, valid: false, issues: result.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })).slice(0, 20) });
     }),
     makeReadTool("get_pending_proposal", "Return the one accumulated draft, its ordered operation summaries, changed targets, and base revision.", EMPTY_OBJECT_SCHEMA, () => {
-      if (!session) return jsonResult({ ok: true, pending: false });
+      if (!session) return toolResult({ ok: true, pending: false });
       const generated = getSigmaDocAgentSessionDraft(session, { summary: "WebMCP pending draft", plan: ["Review and apply or discard"] });
-      return jsonResult({ ok: true, pending: true, proposalId: WEB_MCP_PROPOSAL_ID, baseRevision, operationCount: session.operations.length + session.mutationOperations.length, changedIds: generated.changedIds, operations: orderedOperationSummaries(generated) });
+      return toolResult({ ok: true, pending: true, proposalId: WEB_MCP_PROPOSAL_ID, baseRevision, operationCount: session.operations.length + session.mutationOperations.length, changedIds: generated.changedIds, operations: orderedOperationSummaries(generated) });
     }),
     makeWriteTool("withdraw_pending_proposal", "Withdraw the agent's one pending draft. This does not modify the document.", EMPTY_OBJECT_SCHEMA, () => {
-      if (!session) return jsonResult({ ok: true, withdrawn: false, message: "No pending draft." });
-      ports.withdrawDocumentChange?.(WEB_MCP_PROPOSAL_ID); clearDraft(); return jsonResult({ ok: true, withdrawn: true });
+      if (!session) return toolResult({ ok: true, withdrawn: false, message: "No pending draft." });
+      ports.withdrawDocumentChange?.(WEB_MCP_PROPOSAL_ID); clearDraft(); return toolResult({ ok: true, withdrawn: true });
     }),
     makeWriteTool("insert_body_content", "Insert Markdown or structured SigmaDoc body content. Prefer one markdown string: headings, lists, fenced code, bold, italic, $...$ math, $$...$$ math, and escaped \\$ are converted automatically. Pass exactly one of markdown or blocks; pagination is available through structured blocks.", {
       type: "object", properties: { ...EXPECTED_REVISION_PROPERTY, targetId: { type: "string", description: `Insert after this ID, or ${END_OF_DOCUMENT_TARGET}.` }, area: { type: "string", enum: ["lead", "prompt", "solution", "hints"] }, markdown: { type: "string", minLength: 1, description: "Markdown to convert into canonical SigmaDoc blocks. Use $...$ for math and \\$ for a literal dollar." }, blocks: { type: "array", minItems: 1, items: RICH_BLOCK_SCHEMA } }, required: ["expectedRevision"], additionalProperties: false,
@@ -747,7 +751,10 @@ export function createSigmaWebMcpTools(
       type: "object", properties: { ...EXPECTED_REVISION_PROPERTY, shapeId: { type: "string" }, expectedShape: COMPLETE_SHAPE_SCHEMA, ...SHAPE_PROPERTIES, locked: { type: "boolean" }, hidden: { type: "boolean" } }, required: ["expectedRevision", "shapeId", "expectedShape"], additionalProperties: false,
     }, (input) => {
       const args = objectInput(input); const shapeId = requiredString(args.shapeId, "shapeId"); const current = assertExpectedShape(activeDocument(), args.expectedShape, shapeId);
-      if (current.type === "tableShape" || current.type === "graph2dShape") throw new Error(`Use update_${current.type === "tableShape" ? "table" : "graph"} for ${shapeId}.`);
+      if (current.type === "tableShape" || current.type === "graph2dShape" || current.type === "graph3dShape") {
+        const tool = current.type === "tableShape" ? "update_table" : current.type === "graph2dShape" ? "update_graph" : "update_graph3d";
+        throw new Error(`Use ${tool} for ${shapeId}.`);
+      }
       const raw = convertShapeArgs(stripControlArgs(args, ["targetId", "area", "id", "kind", "placement", "startAngleDeg", "endAngleDeg", "r", "rx", "ry"]));
       const { x, y, rotation, opacity, stackLayer, locked, hidden, reserveSpace, points, start, end, closed, tailBaseStart, tailBaseEnd, tailTip, cornerRadius, ...rawProps } = raw;
       const geometry = points !== undefined || start !== undefined || end !== undefined || closed !== undefined ? normalizeAiShapeGeometryPatch(current, { points: points as never, start: start as never, end: end as never, closed: closed as never }) : { props: {} as Record<string, unknown> };
@@ -1056,52 +1063,26 @@ export function createSigmaWebMcpTools(
       const scope = args.action === "document_columns" ? "document" : args.action === "wrap_blocks" ? "blocks" : "section";
       return callImplementation("update_column_layout", { ...delegated, scope, ...(args.action === "unwrap_section" ? { unwrap: true } : {}) });
     }),
-    makeWriteTool("create_overlay", "Create one native overlay object: a drawable shape/text/callout, a semantic table, a 2D graph, or a 3D graph. Use semantic placement relative to a block when possible; use absolute page coordinates only for deliberate composition.", {
+    makeWriteTool("create_overlay", "Create one drawable overlay shape, text object, or callout. Tables and graphs use their dedicated insert tools. Use semantic placement relative to a block when possible; use absolute page coordinates only for deliberate composition.", {
       type: "object",
       properties: {
         ...EXPECTED_REVISION_PROPERTY,
-        objectType: { type: "string", enum: ["shape", "table", "graph", "graph3d"] },
-        ...SHAPE_PROPERTIES, ...TABLE_PROPERTIES, ...GRAPH_PROPERTIES, ...GRAPH3D_PROPERTIES,
-        kind: { type: "string", enum: ["rectangle", "circle", "ellipse", "triangle", "diamond", "pentagon", "blockArrow", "arc", "sector", "arrow", "line", "polyline", "curve", "freehand", "highlight", "text", "callout", "plain", "variation", "cartesian", "numberLine"] },
+        ...SHAPE_PROPERTIES,
       },
-      required: ["expectedRevision", "objectType"],
+      required: ["expectedRevision", "kind"],
       additionalProperties: false,
-    }, (input) => {
-      const args = objectInput(input);
-      const delegated = withoutKeys(args, ["objectType"]);
-      const name = args.objectType === "table"
-        ? "insert_table"
-        : args.objectType === "graph"
-          ? "insert_graph"
-          : args.objectType === "graph3d"
-            ? "insert_graph3d"
-            : "insert_shape";
-      return callImplementation(name, delegated);
-    }),
-    makeWriteTool("update_overlay", "Partially update an existing shape, text, callout, table, 2D graph, or 3D graph in place. The current complete expectedShape is required as a freshness guard; unspecified fields remain unchanged.", {
+    }, (input) => callImplementation("insert_shape", input)),
+    makeWriteTool("update_overlay", "Partially update an existing drawable shape, text object, or callout in place. Tables and graphs use their dedicated update tools. The current complete expectedShape is required as a freshness guard; unspecified fields remain unchanged.", {
       type: "object",
       properties: {
         ...EXPECTED_REVISION_PROPERTY,
         shapeId: { type: "string" }, expectedShape: COMPLETE_SHAPE_SCHEMA,
-        ...SHAPE_PROPERTIES, ...TABLE_PROPERTIES, ...GRAPH_PROPERTIES, ...GRAPH3D_PROPERTIES,
-        kind: { type: "string", enum: ["rectangle", "circle", "ellipse", "triangle", "diamond", "pentagon", "blockArrow", "arc", "sector", "arrow", "line", "polyline", "curve", "freehand", "highlight", "text", "callout", "plain", "variation", "cartesian", "numberLine"] },
+        ...SHAPE_PROPERTIES,
         autoSize: { type: "boolean" }, locked: { type: "boolean" }, hidden: { type: "boolean" },
-        cellPatches: { type: "array", minItems: 1, items: { type: "object", additionalProperties: true } },
       },
       required: ["expectedRevision", "shapeId", "expectedShape"],
       additionalProperties: false,
-    }, (input) => {
-      const args = objectInput(input);
-      const expected = args.expectedShape as { type?: unknown } | undefined;
-      const name = expected?.type === "tableShape"
-        ? "update_table"
-        : expected?.type === "graph2dShape"
-          ? "update_graph"
-          : expected?.type === "graph3dShape"
-            ? "update_graph3d"
-            : "update_shape";
-      return callImplementation(name, args);
-    }),
+    }, (input) => callImplementation("update_shape", input)),
     makeWriteTool("arrange_overlay", "Align or evenly distribute two or more existing overlay objects as one composition operation.", {
       type: "object",
       properties: {
@@ -1123,6 +1104,10 @@ export function createSigmaWebMcpTools(
       required: ["expectedRevision", "shapeIds", "expectedShapes"],
       additionalProperties: false,
     }, (input) => callImplementation("delete_shapes", input)),
+    directTool("insert_table"),
+    directTool("update_table"),
+    directTool("insert_graph"),
+    directTool("update_graph"),
     directTool("insert_graph3d"),
     directTool("update_graph3d"),
   ];

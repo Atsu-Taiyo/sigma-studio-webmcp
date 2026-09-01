@@ -77,8 +77,8 @@ function createHarness(initial = baseDocument(), catalog: "public" | "implementa
 }
 
 function parseResult(result: unknown): Record<string, unknown> {
-  expect(typeof result).toBe("string");
-  return JSON.parse(result as string) as Record<string, unknown>;
+  expect(result).toEqual(expect.any(Object));
+  return result as Record<string, unknown>;
 }
 
 function currentShape(document: SigmaDocument, id: string): OverlayShape {
@@ -99,14 +99,15 @@ describe("Sigma WebMCP desktop-parity tools", () => {
 
   it("keeps the public catalog compact and task-oriented while preserving all major editing domains", () => {
     const { tools } = createHarness(baseDocument(), "public");
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(22);
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       "inspect_document", "insert_markdown", "edit_text", "edit_problem", "organize_blocks",
       "update_layout", "create_overlay", "update_overlay", "arrange_overlay", "delete_overlay",
+      "insert_table", "update_table", "insert_graph", "update_graph",
       "insert_graph3d", "update_graph3d",
     ]));
     expect(tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
-      "get_block", "get_blocks", "insert_shape", "insert_table", "insert_graph", "update_shape",
+      "get_block", "get_blocks", "insert_shape", "update_shape",
     ]));
   });
 
@@ -138,7 +139,6 @@ describe("Sigma WebMCP desktop-parity tools", () => {
     const harness = createHarness(baseDocument(), "public");
     await harness.tool("create_overlay").execute({
       expectedRevision: 0,
-      objectType: "shape",
       targetId: "p_existing",
       kind: "rectangle",
       x: 40,
@@ -162,9 +162,8 @@ describe("Sigma WebMCP desktop-parity tools", () => {
 
   it("materializes every WebMCP graph label with recoverable ownership", async () => {
     const harness = createHarness(baseDocument(), "public");
-    await harness.tool("create_overlay").execute({
+    await harness.tool("insert_graph").execute({
       expectedRevision: 0,
-      objectType: "graph",
       targetId: "p_existing",
       id: "graph_with_labels",
       kind: "cartesian",

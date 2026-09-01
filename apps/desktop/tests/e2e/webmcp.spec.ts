@@ -25,18 +25,18 @@ test("WebMCP converts Markdown math, previews it, and applies one draft", async 
   await installWebMcpMock(page);
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(18);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(22);
 
   const result = await page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
-    const context = JSON.parse(await tools.get("inspect_document")!.execute({}) as string) as { revision: number };
+    const context = await tools.get("inspect_document")!.execute({}) as { revision: number };
     return tools.get("insert_markdown")!.execute({
       expectedRevision: context.revision,
       targetId: "END_OF_DOCUMENT",
       markdown: "式 $x^2+y^2=1$ を考える。金額は \\$5。",
     });
   });
-  expect(JSON.parse(result as string)).toMatchObject({ ok: true, status: "pending_approval", operationCount: 1 });
+  expect(result).toMatchObject({ ok: true, status: "pending_approval", operationCount: 1 });
   const preview = page.locator(".ai-inline-preview-dialog").filter({ hasText: "式" });
   const liveBlock = page.locator(".editor-canvas [data-sigma-doc-type=\"paragraph\"]")
     .filter({ hasText: "金額は $5" })
@@ -55,19 +55,18 @@ test("WebMCP graph labels survive a human settings edit", async ({ page }) => {
   await expect(page.locator(".startup-splash")).toBeHidden();
   await expect.poll(() => page.evaluate(() => (
     window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }
-  ).__sigmaWebMcpTools.size)).toBe(18);
+  ).__sigmaWebMcpTools.size)).toBe(22);
 
   const result = await page.evaluate(async () => {
     const tools = (window as unknown as {
       __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }>;
     }).__sigmaWebMcpTools;
-    const inspected = JSON.parse(await tools.get("inspect_document")!.execute({ detail: "full" }) as string) as {
+    const inspected = await tools.get("inspect_document")!.execute({ detail: "full" }) as {
       revision: number;
       document: { content: Array<{ id: string }> };
     };
-    return tools.get("create_overlay")!.execute({
+    return tools.get("insert_graph")!.execute({
       expectedRevision: inspected.revision,
-      objectType: "graph",
       targetId: inspected.document.content[0]!.id,
       id: "webmcp_graph_labels",
       kind: "cartesian",
@@ -78,7 +77,7 @@ test("WebMCP graph labels survive a human settings edit", async ({ page }) => {
       showFormulaLabels: true,
     });
   });
-  expect(JSON.parse(result as string)).toMatchObject({
+  expect(result).toMatchObject({
     ok: true,
     status: "pending_approval",
     operationCount: 7,
@@ -120,11 +119,11 @@ test("web AI panel stores instructions and the web selection has no AI reference
   await installWebMcpMock(page);
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(18);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(22);
 
   await page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
-    const context = JSON.parse(await tools.get("inspect_document")!.execute({}) as string) as { revision: number };
+    const context = await tools.get("inspect_document")!.execute({}) as { revision: number };
     await tools.get("insert_markdown")!.execute({
       expectedRevision: context.revision,
       targetId: "END_OF_DOCUMENT",
@@ -149,14 +148,14 @@ test("web AI panel stores instructions and the web selection has no AI reference
   await instructions.fill("既存の記号と日本語の文体を保つ。");
   await expect.poll(() => page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
-    const result = JSON.parse(await tools.get("inspect_document")!.execute({ detail: "full" }) as string) as { document: { docId: string } };
+    const result = await tools.get("inspect_document")!.execute({ detail: "full" }) as { document: { docId: string } };
     return localStorage.getItem(`sigma-studio:webmcp-agent-instructions:v2:${encodeURIComponent(result.document.docId)}`);
   })).toBe("既存の記号と日本語の文体を保つ。");
   const instructionResult = await page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
     return tools.get("get_agent_instructions")!.execute({});
   });
-  expect(JSON.parse(instructionResult as string)).toMatchObject({ userInstructions: "既存の記号と日本語の文体を保つ。", trust: { userInstructions: "untrusted_user_content" } });
+  expect(instructionResult).toMatchObject({ userInstructions: "既存の記号と日本語の文体を保つ。", trust: { userInstructions: "untrusted_user_content" } });
   expect(await page.evaluate(() => (window as unknown as { __sigmaWebMcpContexts: Array<{ instructions: string }> }).__sigmaWebMcpContexts.some((context) => context.instructions.includes("既存の記号")))).toBe(false);
 
   await paragraph.dblclick();
