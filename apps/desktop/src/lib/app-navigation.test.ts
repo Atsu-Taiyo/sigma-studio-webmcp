@@ -23,14 +23,14 @@ describe("app navigation", () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubGlobal("window", {
       location: {
-        href: "https://sigma-studio.example/",
+        href: "https://sigma-studio.example/sigma/index.html",
         protocol: "https:",
       },
     });
 
-    expect(getAppRouteHref("/workspace")).toBe("/workspace.html");
-    expect(getAppRouteHref("/print", { fileId: "file_1" })).toBe("/print.html?fileId=file_1");
-    expect(getAppRouteHref("/", { fileId: "file_1" })).toBe("/index.html?fileId=file_1");
+    expect(getAppRouteHref("/workspace")).toBe("https://sigma-studio.example/sigma/workspace.html");
+    expect(getAppRouteHref("/print", { fileId: "file_1" })).toBe("https://sigma-studio.example/sigma/print.html?fileId=file_1");
+    expect(getAppRouteHref("/", { fileId: "file_1" })).toBe("https://sigma-studio.example/sigma/index.html?fileId=file_1");
   });
 
   it("keeps extensionless routes for the development server", () => {

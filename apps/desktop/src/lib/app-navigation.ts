@@ -10,17 +10,13 @@ type RouteSearch = URLSearchParams | Record<string, string | number | boolean | 
 
 export function getAppRouteHref(route: AppRoute, search?: RouteSearch): string {
   const query = normalizeSearch(search);
-  if (typeof window !== "undefined" && window.location.protocol === "file:") {
+  if (
+    typeof window !== "undefined"
+    && (window.location.protocol === "file:" || process.env.NODE_ENV === "production")
+  ) {
     const url = new URL(STATIC_ROUTE_FILES[route], window.location.href);
     url.search = query;
     return url.toString();
-  }
-
-  // Next.js の静的 export は各 route を `workspace.html` / `print.html` として
-  // 出力する。Sites を含む静的ホストは `/workspace` を対応する HTML file へ
-  // 必ずしも補完しないため、本番では生成物の path を明示する。
-  if (process.env.NODE_ENV === "production") {
-    return `/${STATIC_ROUTE_FILES[route]}${query ? `?${query}` : ""}`;
   }
 
   return `${route}${query ? `?${query}` : ""}`;
