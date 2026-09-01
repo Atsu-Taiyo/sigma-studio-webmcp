@@ -31,9 +31,9 @@ export const INTENTIONAL_RUNTIME_JAPANESE: readonly IntentionalJapaneseRule[] = 
     reason: "Stable Japanese source examples and 問題/解答 parser tokens; locale-specific views resolve separate dictionaries.",
   },
   {
-    path: /^src\/lib\/classic-format(?:-import|\/.*)\.ts$/,
+    path: /^src\/lib\/studyaid-prt(?:-import|\/.*)\.ts$/,
     classification: "external format grammar",
-    reason: "EditorMath legacy parser tokens and source-format diagnostics are compatibility data.",
+    reason: "StudyAid PRT parser tokens and source-format diagnostics are compatibility data.",
   },
   {
     path: /^src\/lib\/inline-math-symbol-buttons\.ts$/,

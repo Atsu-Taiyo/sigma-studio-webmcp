@@ -2,7 +2,6 @@
 
 import { Bot, CircleAlert, CircleCheck, CircleHelp, FileText, LoaderCircle } from "lucide-react";
 import { useEffect, useId, useState } from "react";
-import type { RefCallback } from "react";
 
 import { WEBMCP_STATUS_EVENT, type WebMcpUiStatus } from "@/components/editor/webmcp/WebMcpBridge";
 import { getWebMcpAgentInstructionsStorageKey } from "@/lib/webmcp-tools";
@@ -10,7 +9,7 @@ import { useT } from "@/lib/i18n/react";
 
 const EMPTY_STATUS: WebMcpUiStatus = { state: "loading", registeredToolCount: 0, failedToolNames: [], operationCount: 0, changedIds: [] };
 
-export function AiEditWebPlaceholder({ instructionScopeId, proposalSurfaceRef }: { instructionScopeId: string; proposalSurfaceRef: RefCallback<HTMLDivElement> }) {
+export function AiEditWebPlaceholder({ instructionScopeId }: { instructionScopeId: string }) {
   const t = useT("ai");
   const instructionsId = useId();
   const storageKey = getWebMcpAgentInstructionsStorageKey(instructionScopeId);
@@ -52,11 +51,6 @@ export function AiEditWebPlaceholder({ instructionScopeId, proposalSurfaceRef }:
             {connectionStatus.text}
           </p>
           {status.state === "unavailable" && <p className="ai-web-placeholder-footnote">{t("webPlaceholder.enableSteps")}</p>}
-        </section>
-        <section className="ai-web-placeholder-vendors" aria-labelledby={`${instructionsId}-draft`}>
-          <h4 id={`${instructionsId}-draft`} className="ai-web-placeholder-vendors-title">{t("webPlaceholder.draftTitle")}</h4>
-          <p className="ai-web-placeholder-footnote">{status.operationCount > 0 ? t("webPlaceholder.draftSummary", { operations: status.operationCount, targets: status.changedIds.length }) : t("webPlaceholder.noDraft")}</p>
-          <div ref={proposalSurfaceRef} className="ai-web-proposal-surface" />
         </section>
         <section className="ai-web-placeholder-vendors" aria-labelledby={`${instructionsId}-instructions`}>
           <h4 id={`${instructionsId}-instructions`} className="ai-web-placeholder-vendors-title"><FileText size={15} aria-hidden="true" />{t("webPlaceholder.instructionsTitle")}</h4>

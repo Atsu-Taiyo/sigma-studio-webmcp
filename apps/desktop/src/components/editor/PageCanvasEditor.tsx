@@ -71,11 +71,17 @@ import {
   type TextPageBreakRequestDetail,
 } from "@/components/editor/TextFlowEditor";
 import { scrollElementIntoCanvasView } from "@/components/editor/text-flow/caret-scroll";
+import { mergeLargePasteDeferredBlockIds } from "@/components/editor/text-flow/large-text-paste";
 import {
+  cancelCaretKeeperWindow,
+  finishCaretKeeperWindow,
   flushPendingCaret,
   focusCaretAddress,
   requestCaret,
+  requestCaretKeeperReanchor,
   setFragmentTables,
+  startCaretKeeperWindow,
+  subscribeCaretKeeperTarget,
   subscribeCaretSurfaceMount,
 } from "@/components/editor/text-flow/caret-router";
 import { shouldRestoreTextFlowSelectionAfterChange } from "@/components/editor/text-flow/text-run-replacement";
@@ -97,6 +103,7 @@ import {
 } from "@/features/rendering/core";
 import {
   ensurePageLayout,
+  estimateBlockHeightPx,
   expandMarginsForRunningRegions,
   getPageMetrics,
   isWhiteboardPageLayout,
@@ -165,6 +172,7 @@ import { attachUnanchoredShapesToMeasuredBlocks } from "./overlay-canvas/reancho
 import { getShapeBounds, hitTestShape } from "@/features/drawing";
 import type { OverlayShapeDecoration } from "./overlay-canvas/editor-extension";
 import { OverlayShapeReadOnlyView } from "./OverlayCanvasEditorClient";
+import { createCameraDragAutoScrollPanBy } from "./drag-auto-scroll";
 import {
   createResolvedOverlayView,
   type OverlayIdentityCache,
@@ -421,6 +429,8 @@ const BODY_MODE_OPEN_STROKE_HIT_MARGIN = 14;
 const EMPTY_INLINE_CONTENT_BY_TARGET_ID = new Map<string, readonly PageCanvasInlineContent[]>();
 /** 初回描画で「前回のユニット」を指すための固定の空配列。 */
 const EMPTY_RENDER_UNITS: readonly RenderUnit[] = [];
+const LARGE_PASTE_UNITS_PER_FRAME = 1;
+const LARGE_PASTE_PRIORITY_UNIT_RADIUS = 1;
 /** Typing in any of these means the key belongs to the field, not to the selected block. */
 const BLOCK_SELECTION_KEY_IGNORE_SELECTOR = "input, textarea, select, math-field, [contenteditable='true']";
 /** Pressing the handle or its menu is part of the selection, not a click away from it. */
@@ -665,21 +675,30 @@ function PageCanvasEditorImpl({
   // docId を添えるのは、印刷プレビューのステージが同じインスタンスで別の教材を描くため
   // (テンプレート複製の教材はブロック id が一致しうる → 前の教材の境界が効いてしまう)。
   const previousChunksRef = useRef<DocumentChunkBoundaryState | null>(null);
+  const [largePasteHydration, setLargePasteHydration] = useState<{
+    deferredBlockIds: ReadonlySet<string>;
+    hydratedUnitIds: ReadonlySet<string>;
+  } | null>(null);
+  const largePasteCaretKeeperActiveRef = useRef(false);
   const units = useMemo(
     /* eslint-disable react-hooks/refs -- 前回の描画結果を引き継ぐための読み取り。書き込みは
        下の layout effect でのみ行う (レンダー中に書くと捨てられたレンダーの結果が残る)。 */
-    () => reconcileRenderUnits(
-      previousUnitsRef.current,
-      buildRenderUnits(
-        pageDocument.content,
-        carryChunkBoundaryState(previousChunksRef.current, pageDocument.docId),
-        // フォーカス中のユニットの境界は小チャンク併合で動かさない。跨ぎ選択の IME 合成は
-        // compositionstart で他ユニットの担当分だけ先に削除するため、前のチャンクが min を
-        // 割った併合が合成中のエディタの key を消し、unmount で IME セッションごと落ちる。
-        getFocusedTextRunUnitIds(),
-        pageDocument.metadata.headingNumbering,
-      ),
-    ),
+    () => {
+      const previousUnits = previousUnitsRef.current;
+      const nextUnits = reconcileRenderUnits(
+        previousUnits,
+        buildRenderUnits(
+          pageDocument.content,
+          carryChunkBoundaryState(previousChunksRef.current, pageDocument.docId),
+          // フォーカス中のユニットの境界は小チャンク併合で動かさない。跨ぎ選択の IME 合成は
+          // compositionstart で他ユニットの担当分だけ先に削除するため、前のチャンクが min を
+          // 割った併合が合成中のエディタの key を消し、unmount で IME セッションごと落ちる。
+          getFocusedTextRunUnitIds(),
+          pageDocument.metadata.headingNumbering,
+        ),
+      );
+      return nextUnits;
+    },
     /* eslint-enable react-hooks/refs */
     [pageDocument.content, pageDocument.docId, pageDocument.metadata.headingNumbering],
   );
@@ -713,6 +732,84 @@ function PageCanvasEditorImpl({
       ),
     };
   }, [pageDocument.docId, units]);
+  const hydrateLargePasteUnits = useCallback((unitIds: readonly string[]) => {
+    setLargePasteHydration((current) => {
+      if (!current) {
+        return current;
+      }
+      const pendingUnitIds = unitIds.filter((unitId) => !current.hydratedUnitIds.has(unitId));
+      if (pendingUnitIds.length === 0) {
+        return current;
+      }
+      countPerformanceEvent("PageCanvasEditor.largePaste.unitHydrated");
+      return {
+        ...current,
+        hydratedUnitIds: new Set([...current.hydratedUnitIds, ...pendingUnitIds]),
+      };
+    });
+  }, [setLargePasteHydration]);
+  const hydrateLargePasteUnit = useCallback((unitId: string) => {
+    hydrateLargePasteUnits([unitId]);
+  }, [hydrateLargePasteUnits]);
+  const prioritizeLargePasteCaretUnit = useCallback((blockId: string) => {
+    const targetIndex = units.findIndex((unit) => (
+      unit.type === "textFlow" && unit.blocks.some((block) => block.id === blockId)
+    ));
+    if (targetIndex < 0) {
+      return;
+    }
+    const priorityUnitIds = units
+      .slice(
+        Math.max(0, targetIndex - LARGE_PASTE_PRIORITY_UNIT_RADIUS),
+        targetIndex + LARGE_PASTE_PRIORITY_UNIT_RADIUS + 1,
+      )
+      .flatMap((unit) => unit.type === "textFlow" ? [unit.id] : []);
+    hydrateLargePasteUnits(priorityUnitIds);
+  }, [hydrateLargePasteUnits, units]);
+  useEffect(
+    () => subscribeCaretKeeperTarget(prioritizeLargePasteCaretUnit),
+    [prioritizeLargePasteCaretUnit],
+  );
+  useLayoutEffect(() => {
+    if (largePasteHydration) {
+      requestCaretKeeperReanchor();
+    }
+  }, [largePasteHydration]);
+  useEffect(() => {
+    if (!largePasteHydration) {
+      return;
+    }
+    const pendingUnitIds = units.flatMap((unit) => (
+      unit.type === "textFlow"
+      && !largePasteHydration.hydratedUnitIds.has(unit.id)
+      && unit.blocks.every((block) => largePasteHydration.deferredBlockIds.has(block.id))
+        ? [unit.id]
+        : []
+    ));
+    const frameId = window.requestAnimationFrame(() => {
+      if (pendingUnitIds.length === 0) {
+        setLargePasteHydration(null);
+        countPerformanceEvent("PageCanvasEditor.largePaste.hydrationComplete");
+        return;
+      }
+      for (const unitId of pendingUnitIds.slice(0, LARGE_PASTE_UNITS_PER_FRAME)) {
+        hydrateLargePasteUnit(unitId);
+      }
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [hydrateLargePasteUnit, largePasteHydration, units]);
+  useEffect(() => {
+    if (largePasteHydration !== null || !largePasteCaretKeeperActiveRef.current) {
+      return;
+    }
+    finishCaretKeeperWindow();
+  }, [largePasteHydration]);
+  useEffect(() => () => {
+    if (largePasteCaretKeeperActiveRef.current) {
+      largePasteCaretKeeperActiveRef.current = false;
+      cancelCaretKeeperWindow();
+    }
+  }, []);
   const inlineContentByTargetId = pageExtension?.inlineContentByTargetId
     ?? EMPTY_INLINE_CONTENT_BY_TARGET_ID;
   const inlineContentTargetIds = useMemo(
@@ -1044,6 +1141,9 @@ function PageCanvasEditorImpl({
     totalHeight,
     unitLayouts,
   } = layoutViewState;
+  useLayoutEffect(() => {
+    requestCaretKeeperReanchor();
+  }, [layoutViewState]);
   // ページ総数の真値はここ (layoutViewState) にしかない。Word風のステータスバーが
   // 「ページ N / M」を出すので上へ通知する。pageCount は数値なので、値が変わった
   // ときだけ発火する (毎レイアウトで呼ばない)。
@@ -3438,6 +3538,22 @@ function PageCanvasEditorImpl({
     activeBlockId?: string | null,
     context?: TextFlowChangeContext,
   ) => {
+    if (context?.deferredPasteBlockIds && context.deferredPasteBlockIds.length > 0) {
+      countPerformanceEvent("PageCanvasEditor.largePaste.started");
+      startCaretKeeperWindow();
+      largePasteCaretKeeperActiveRef.current = true;
+      const hydrationUnits = previousUnitsRef.current.flatMap((unit) => unit.type === "textFlow"
+        ? [{ id: unit.id, blockIds: unit.blocks.map((block) => block.id) }]
+        : []);
+      setLargePasteHydration((current) => ({
+        deferredBlockIds: mergeLargePasteDeferredBlockIds(
+          current,
+          hydrationUnits,
+          context.deferredPasteBlockIds ?? [],
+        ),
+        hydratedUnitIds: new Set(),
+      }));
+    }
     // 本文ユニットの id は先頭ブロックの id (`text-run-chunking.ts`)。打鍵で位置が動くのは
     // このユニット以降だけなので、次の計測はここから始めれば足りる。
     markUnitMeasureDirty(previousIds[0]);
@@ -3449,7 +3565,8 @@ function PageCanvasEditorImpl({
     // 載せると「配置の無いブロック」が 1〜2 フレーム描かれ、その間の打鍵でブラウザ自身の
     // キャレット追従が紙面を 1 ページ目の原点 (潰れた編集面 root) へ飛ばす。新しいブロック
     // が生まれる編集だけ、分割ブロックと同じく描く前にページ割りを取り直す。
-    const beforePaint = editTouchesPageSplitBlock(previousIds, nextBlocks, activeBlockId)
+    const beforePaint = context?.deferredPasteBlockIds !== undefined
+      || editTouchesPageSplitBlock(previousIds, nextBlocks, activeBlockId)
       || (isColumnFlow && hasNewTopLevelBlockIds(previousIds, nextBlocks));
     if (beforePaint) {
       paginateBeforePaintRef.current = true;
@@ -3457,7 +3574,7 @@ function PageCanvasEditorImpl({
     // 同期でページ割りを取り直す打鍵は、描画も遅らせない。transition に載せると
     // ProseMirror が書いた DOM だけが先に 1 フレーム描かれ、同期計測の意味が消える。
     onReplaceTextFlow(previousIds, nextBlocks, context, beforePaint ? { immediateRender: true } : undefined);
-  }, [editTouchesPageSplitBlock, isColumnFlow, markUnitMeasureDirty, onReplaceTextFlow]);
+  }, [editTouchesPageSplitBlock, isColumnFlow, markUnitMeasureDirty, onReplaceTextFlow, setLargePasteHydration]);
 
   const updateProblemAreaBlocks = useCallback((
     problemId: string,
@@ -4713,6 +4830,11 @@ function PageCanvasEditorImpl({
     onWhiteboardViewportChange?.(node);
   }, [onWhiteboardViewportChange, setCanvasRef]);
 
+  const whiteboardDragAutoScrollPanBy = useMemo(
+    () => onWhiteboardPanBy ? createCameraDragAutoScrollPanBy(onWhiteboardPanBy) : undefined,
+    [onWhiteboardPanBy],
+  );
+
   useEffect(() => {
     if (!isWhiteboard || !canvasElement) {
       return;
@@ -4817,6 +4939,8 @@ function PageCanvasEditorImpl({
                 pageHeightPx={20000}
                 pageGapPx={0}
                 showAnchorHandles={false}
+                autoScrollPanBy={whiteboardDragAutoScrollPanBy}
+                autoScrollViewportElement={canvasElement}
                 syncBlockAnchors={false}
                 verticalSnapGuides={[]}
                 commandRequest={runningRegionEditKind ? null : overlayCommandRequest}
@@ -5122,45 +5246,56 @@ function PageCanvasEditorImpl({
                   data-text-run-group={textRunGroupByUnitId.get(unit.id)?.groupId}
                   style={getFlowUnitStyle(unit, isColumnFlow, unitLayouts, metrics)}
                 >
-                  <TextFlowWithInlineContent
-                    blocks={unit.blocks}
-                    headingNumbers={unit.headingNumbers}
-                    selectedId={selectedId}
-                    textRunGroupId={textRunGroupByUnitId.get(unit.id)?.groupId}
-                    textRunOrder={textRunGroupByUnitId.get(unit.id)?.order}
-                    textRunUnitId={unit.id}
-                    textRunScopeId="document"
-                    mathFractionSizing={mathFractionSizing}
-                    commentThreads={displayedCommentThreads}
-                    activeCommentThreadId={activeCommentThreadId}
-                    highlightedCommentThreadId={highlightedCommentThreadId}
-                    historyRevision={historyRevision}
-                    breakGaps={isColumnFlow ? undefined : gaps}
-                    paginationBeforeIds={[
-                      ...(isColumnFlow ? [] : getPageBreakBeforeIds(unit.blocks)),
-                      ...getNestedPageBreakBeforeIds(unit.blocks),
-                    ]}
-                    paginationMarkerKind={resolvePageBreakMarkerKind(isColumnFlow)}
-                    paginationMarkerKinds={getNestedPageBreakBeforeKinds(unit.blocks)}
-                    columnFlowBlockLayouts={isColumnFlow ? getTextFlowColumnBlockLayouts(unit, textFlowBlockLayouts) : undefined}
-                    boxFragmentSourceLayouts={pickTextFlowBoxFragmentSourceLayouts(unit.blocks, boxFragmentSourceLayouts)}
-                    showPlaceholder={!isColumnFlow}
-                    onSelect={onSelect}
-                    onCommentThreadSelect={onCommentThreadSelect}
-                    onChange={handleTextFlowChange}
-                    onFocusChange={handleTextFlowFocusChange}
-                    onBoundaryDelete={handleTextFlowBoundaryDelete}
-                    materials={materials}
-                    onMaterialInsert={handleMaterialInsert}
-                    enableSelectionFormatMenu={false}
-                    enableProblemCommands
-                    onProblemCommand={onProblemCommand}
-                    onBodyBlockCommand={onBodyBlockCommand}
-                    enableHeadingCommands
-                    onHeadingCommand={onHeadingCommand}
-                    inlineContentByTargetId={flowInlineContentByTargetId}
-                    changeDecorationState={textFlowChangeDecorationState}
-                  />
+                  {largePasteHydration
+                    && !largePasteHydration.hydratedUnitIds.has(unit.id)
+                    && unit.blocks.every((block) => largePasteHydration.deferredBlockIds.has(block.id)) ? (
+                      <DeferredLargePasteTextFlowUnit
+                        blocks={unit.blocks}
+                        breakGapPx={isColumnFlow ? 0 : gaps[unit.blocks[0]?.id ?? ""] ?? 0}
+                        onVisible={hydrateLargePasteUnit}
+                        unitId={unit.id}
+                      />
+                    ) : (
+                      <TextFlowWithInlineContent
+                        blocks={unit.blocks}
+                        headingNumbers={unit.headingNumbers}
+                        selectedId={selectedId}
+                        textRunGroupId={textRunGroupByUnitId.get(unit.id)?.groupId}
+                        textRunOrder={textRunGroupByUnitId.get(unit.id)?.order}
+                        textRunUnitId={unit.id}
+                        textRunScopeId="document"
+                        mathFractionSizing={mathFractionSizing}
+                        commentThreads={displayedCommentThreads}
+                        activeCommentThreadId={activeCommentThreadId}
+                        highlightedCommentThreadId={highlightedCommentThreadId}
+                        historyRevision={historyRevision}
+                        breakGaps={isColumnFlow ? undefined : gaps}
+                        paginationBeforeIds={[
+                          ...(isColumnFlow ? [] : getPageBreakBeforeIds(unit.blocks)),
+                          ...getNestedPageBreakBeforeIds(unit.blocks),
+                        ]}
+                        paginationMarkerKind={resolvePageBreakMarkerKind(isColumnFlow)}
+                        paginationMarkerKinds={getNestedPageBreakBeforeKinds(unit.blocks)}
+                        columnFlowBlockLayouts={isColumnFlow ? getTextFlowColumnBlockLayouts(unit, textFlowBlockLayouts) : undefined}
+                        boxFragmentSourceLayouts={pickTextFlowBoxFragmentSourceLayouts(unit.blocks, boxFragmentSourceLayouts)}
+                        showPlaceholder={!isColumnFlow}
+                        onSelect={onSelect}
+                        onCommentThreadSelect={onCommentThreadSelect}
+                        onChange={handleTextFlowChange}
+                        onFocusChange={handleTextFlowFocusChange}
+                        onBoundaryDelete={handleTextFlowBoundaryDelete}
+                        materials={materials}
+                        onMaterialInsert={handleMaterialInsert}
+                        enableSelectionFormatMenu={false}
+                        enableProblemCommands
+                        onProblemCommand={onProblemCommand}
+                        onBodyBlockCommand={onBodyBlockCommand}
+                        enableHeadingCommands
+                        onHeadingCommand={onHeadingCommand}
+                        inlineContentByTargetId={flowInlineContentByTargetId}
+                        changeDecorationState={textFlowChangeDecorationState}
+                      />
+                    )}
                 </div>
               ) : unit.type === "layoutSection" || unit.type === "problemLayoutSection" ? (
                 <LayoutSectionFlowUnit
@@ -5781,6 +5916,58 @@ function PageCanvasEditorImpl({
 function hasNewTopLevelBlockIds(previousIds: readonly string[], nextBlocks: readonly TextFlowBlock[]): boolean {
   const known = new Set(previousIds);
   return nextBlocks.some((block) => !known.has(block.id));
+}
+
+/**
+ * 大量 paste の未 hydrate unit。40 個前後のブロックを 1 つの概算矩形として扱うので、
+ * 初回ページ割りが触る DOM は「全段落」ではなく「unit 数」に留まる。
+ */
+function DeferredLargePasteTextFlowUnit({
+  blocks,
+  breakGapPx,
+  onVisible,
+  unitId,
+}: {
+  blocks: TextFlowBlock[];
+  breakGapPx: number;
+  onVisible: (unitId: string) => void;
+  unitId: string;
+}) {
+  const elementRef = useRef<HTMLDivElement | null>(null);
+  const estimatedHeight = useMemo(
+    () => blocks.reduce((height, block) => height + estimateBlockHeightPx(block), 0),
+    [blocks],
+  );
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        onVisible(unitId);
+        observer.disconnect();
+      }
+    }, { rootMargin: "100% 0px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [onVisible, unitId]);
+
+  return (
+    <div
+      ref={elementRef}
+      id={unitId}
+      data-page-block={unitId}
+      data-sigma-doc-id={unitId}
+      data-large-paste-deferred="true"
+      aria-hidden="true"
+      style={{
+        height: `${Math.max(1, estimatedHeight)}px`,
+        marginTop: breakGapPx > 0 ? `${breakGapPx}px` : undefined,
+      }}
+    />
+  );
 }
 
 function TextFlowWithInlineContent({

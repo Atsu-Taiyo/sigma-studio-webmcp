@@ -4,7 +4,6 @@ import {
   resolveClickDragSelectionHead,
   resolveDoubleClickTextRange,
   resolveHorizontalExtensionTarget,
-  resolveTextRunAutoScrollStep,
   resolveTextRunSpanCollapsePoint,
   type TextRunClickDragHeadContext,
   type TextRunHorizontalExtensionContext,
@@ -176,31 +175,5 @@ describe("resolveClickDragSelectionHead", () => {
 
   it("falls back to the raw position when the initial click found no range (empty line)", () => {
     expect(resolveClickDragSelectionHead({ ...base, initialRange: { from: 4, to: 4 } })).toBe(22);
-  });
-});
-
-describe("resolveTextRunAutoScrollStep", () => {
-  it("does not scroll while the pointer stays inside the viewport", () => {
-    expect(resolveTextRunAutoScrollStep(400, 0, 800)).toBe(0);
-  });
-
-  it("scrolls down faster the deeper the pointer digs into the bottom edge", () => {
-    const shallow = resolveTextRunAutoScrollStep(772, 0, 800);
-    const deep = resolveTextRunAutoScrollStep(830, 0, 800);
-    expect(shallow).toBeGreaterThan(0);
-    expect(deep).toBeGreaterThan(shallow);
-  });
-
-  it("scrolls up when the pointer nears the top edge", () => {
-    expect(resolveTextRunAutoScrollStep(4, 0, 800)).toBeLessThan(0);
-  });
-
-  it("caps the speed at the maximum step", () => {
-    expect(resolveTextRunAutoScrollStep(2000, 0, 800)).toBe(32);
-    expect(resolveTextRunAutoScrollStep(-2000, 0, 800)).toBe(-32);
-  });
-
-  it("stays inert for a viewport too small to hold both edge bands", () => {
-    expect(resolveTextRunAutoScrollStep(10, 0, 40)).toBe(0);
   });
 });

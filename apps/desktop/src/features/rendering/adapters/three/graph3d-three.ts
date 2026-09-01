@@ -63,13 +63,33 @@ import {
   type Graph3DSceneAnnotation,
   type Graph3DSceneGeometry,
 } from "@/features/drawing";
-import { getArrowheadMarkerSpec, type ArrowheadMarkerSpec } from "@/features/rendering/core";
+import {
+  getArrowheadMarkerSpec,
+  graph3DAxisDashPattern,
+  graph3DAxisEndScale,
+  graph3DAxisEndShaftTrim,
+  graph3DDimensionDashPattern,
+  graph3DDimensionHeadLength,
+  graph3DDimensionRadius,
+  GRAPH3D_AXIS_ARROW_LENGTH_RATIO,
+  GRAPH3D_AXIS_LENGTH,
+  GRAPH3D_DEFAULT_BACKGROUND_COLOR,
+  GRAPH3D_DEFAULT_CONTOUR_COLOR,
+  GRAPH3D_DEFAULT_FOV_DEGREES,
+  GRAPH3D_DEFAULT_DIMENSION_COLOR,
+  GRAPH3D_DEFAULT_INTERSECTION_OPACITY,
+  GRAPH3D_DEFAULT_OBJECT_COLOR,
+  GRAPH3D_DEFAULT_OBJECT_OPACITY,
+  GRAPH3D_DEFAULT_WIREFRAME_COLOR,
+  GRAPH3D_GRID,
+  GRAPH3D_INTERSECTION_POINT_RADIUS,
+  GRAPH3D_LIGHTS,
+  GRAPH3D_NEAR_PLANE,
+  GRAPH3D_VIEW_HALF_HEIGHT,
+} from "@/features/rendering/core";
 
-const DEFAULT_OBJECT_COLOR = "#52677a";
-const DEFAULT_CONTOUR_COLOR = "#d97706";
-
-/** Flat arrow-head size, relative to the axis half-length. */
-const AXIS_ARROW_LENGTH_RATIO = 0.11;
+// The drawing conventions live in the core (`core/graph3d-style.ts`). Two renderers now put the
+// same figure on paper, and a constant tuned on one side only is invisible until someone prints.
 
 /**
  * Coloured coordinate axes with an arrow head on the positive end.
@@ -86,7 +106,7 @@ export function createThreeGraph3DAxes(
 ): Group {
   const group = new Group();
   group.name = "graph3d-axes";
-  const headLength = length * AXIS_ARROW_LENGTH_RATIO;
+  const headLength = length * GRAPH3D_AXIS_ARROW_LENGTH_RATIO;
 
   for (const axis of ["x", "y", "z"] as const) {
     const direction = new Vector3(
@@ -125,10 +145,7 @@ function createAxisEnd(
   if (style === "none") return null;
   const spec = getArrowheadMarkerSpec(style);
   if (!spec) return null;
-  // The head is sized off the axis, not off its own marker box, so that two shapes with different
-  // boxes read as the same size on the figure. `sizeRatio` is what puts the small variants back at
-  // their own size: without it, normalising the box would draw every size identically.
-  const scale = (length * spec.sizeRatio) / Math.max(spec.markerWidth, spec.markerHeight);
+  const scale = graph3DAxisEndScale(spec, length);
   const geometry = spec.geometry.kind === "circle"
     ? new CircleGeometry(spec.geometry.r * scale, 24).translate(
       (spec.geometry.cx - spec.tipX) * scale,
@@ -146,25 +163,8 @@ function createAxisEnd(
   keepFlatAxisEndFacingCamera(object, localDirection);
   return {
     object,
-    shaftTrim: axisShaftTrim(spec) * scale,
+    shaftTrim: graph3DAxisEndShaftTrim(spec) * scale,
   };
-}
-
-/**
- * How much of the axis the head replaces, in marker units.
- *
- * `lineStopX` is where a **stroked** line has to stop so its square end is hidden under the head's
- * own ink. This head has no pen: an open one is drawn as a bare outline and the axis is a hairline,
- * so stopping the axis where a wide line would end leaves a gap in front of it. An open head is
- * closed by the axis running into its vertex, which is where the outline itself meets the axis; a
- * filled one covers whatever runs under it.
- */
-function axisShaftTrim(spec: ArrowheadMarkerSpec): number {
-  const outline = spec.geometry;
-  const stopX = outline.kind === "polyline" && !outline.filled
-    ? Math.max(...outline.points.map((point) => point.x))
-    : spec.lineStopX;
-  return Math.max(0, spec.tipX - stopX);
 }
 
 function createFlatAxisEndGeometry(points: Vector2[], filled: boolean): BufferGeometry {
@@ -420,9 +420,9 @@ function pooledAxisLineMaterial(
   style: Graph3DAxisLineStyle,
   length: number,
 ): LineBasicMaterial | LineDashedMaterial {
-  if (style === "solid") return pooledLineMaterial(color);
-  const dashSize = style === "dotted" ? Math.max(0.025, length * 0.006) : Math.max(0.12, length * 0.045);
-  const gapSize = style === "dotted" ? Math.max(0.11, length * 0.028) : Math.max(0.08, length * 0.025);
+  const pattern = graph3DAxisDashPattern(style, length);
+  if (!pattern) return pooledLineMaterial(color);
+  const { dashSize, gapSize } = pattern;
   return pooled(`axis-line|${color}|${style}|${dashSize}|${gapSize}`, () => new LineDashedMaterial({
     color: new Color(color),
     dashSize,
@@ -437,9 +437,6 @@ function pooledPointsMaterial(color: string, size: number): PointsMaterial {
     sizeAttenuation: true,
   }));
 }
-
-/** Scene units, not pixels: the dot keeps its size in the figure however the camera moves. */
-const INTERSECTION_POINT_RADIUS = 0.07;
 
 function pooledBasicMaterial(color: string): MeshBasicMaterial {
   return pooled(`basic|${color}`, () => new MeshBasicMaterial({ color: new Color(color) }));
@@ -482,7 +479,7 @@ export function createThreeGraph3DGroup(scene: Graph3DSceneGeometry): Group {
           const contour = new LineLoop(
             new BufferGeometry().setFromPoints(loop.points3D.map(toVector3)),
             pooledLineMaterial(
-              cut.cut.section?.lineColor ?? DEFAULT_CONTOUR_COLOR,
+              cut.cut.section?.lineColor ?? GRAPH3D_DEFAULT_CONTOUR_COLOR,
               1,
               cut.cut.section?.lineWidth ?? 1.5,
             ),
@@ -538,7 +535,7 @@ export function createThreeGraph3DGroup(scene: Graph3DSceneGeometry): Group {
         for (const loop of target.section.loops) {
           const trail = new LineLoop(
             new BufferGeometry().setFromPoints(loop.points3D.map(toVector3)),
-            pooledLineMaterial(cut.cut.trail?.color ?? DEFAULT_CONTOUR_COLOR, cut.cut.trail?.opacity ?? 0.35),
+            pooledLineMaterial(cut.cut.trail?.color ?? GRAPH3D_DEFAULT_CONTOUR_COLOR, cut.cut.trail?.opacity ?? 0.35),
           );
           trail.name = `graph3d-section-trail:${cut.cutId}:${target.objectId}`;
           cutGroup.add(trail);
@@ -564,8 +561,8 @@ function createObjectGroup(item: Graph3DSceneGeometry["objects"][number]): Group
   const objectGroup = new Group();
   objectGroup.name = `graph3d-object-group:${item.objectId}`;
   const style = item.object.style;
-  const color = style?.color ?? DEFAULT_OBJECT_COLOR;
-  const opacity = style?.opacity ?? 0.72;
+  const color = style?.color ?? GRAPH3D_DEFAULT_OBJECT_COLOR;
+  const opacity = style?.opacity ?? GRAPH3D_DEFAULT_OBJECT_OPACITY;
   const meshGeometry = createIndexedGeometry(item.geometry);
 
   if (item.geometry.triangles.length > 0) {
@@ -597,7 +594,7 @@ function createObjectGroup(item: Graph3DSceneGeometry["objects"][number]): Group
         ? createLineSegmentsGeometry(item.geometry)
         : new WireframeGeometry(meshGeometry),
       pooledLineMaterial(
-        style.wireframeColor ?? style.color ?? "#1f2933",
+        style.wireframeColor ?? style.color ?? GRAPH3D_DEFAULT_WIREFRAME_COLOR,
         opacity < 0.8 ? Math.min(1, Math.max(0.2, opacity + 0.2)) : 1,
       ),
     );
@@ -696,7 +693,7 @@ function createIntersectionGroup(
   if (fill.mode === "none") return null;
   const group = new Group();
   group.name = `graph3d-intersection:${intersection.regionId}`;
-  const opacity = fill.opacity ?? 0.45;
+  const opacity = fill.opacity ?? GRAPH3D_DEFAULT_INTERSECTION_OPACITY;
   const edgeColor = intersection.region.edgeColor ?? fill.color;
   const showEdges = intersection.region.showEdges !== false;
 
@@ -769,7 +766,7 @@ function createIntersectionGroup(
       // A fresh geometry per dot, not a pooled one: `disposeThreeGraph3DGroup` frees every geometry
       // it finds, and a shared one would be freed out from under the next rebuild.
       const dot = new Mesh(
-        new SphereGeometry(INTERSECTION_POINT_RADIUS, 16, 12),
+        new SphereGeometry(GRAPH3D_INTERSECTION_POINT_RADIUS, 16, 12),
         pooledStandardMaterial({ color: edgeColor, opacity: 1, roughness: 0.5, depthWrite: true }),
       );
       dot.position.copy(toVector3(point));
@@ -1048,10 +1045,9 @@ function createCutPlaneMesh(
  * one pixel: an authored thickness, a dash pattern and an arrow head all need real geometry.
  */
 function createDimensionLines(annotation: Extract<Graph3DSceneAnnotation, { kind: "dimension" }>): Group {
-  const color = annotation.color ?? "#1f2937";
-  const lineWidth = clampDimensionWidth(annotation.lineWidth);
+  const color = annotation.color ?? GRAPH3D_DEFAULT_DIMENSION_COLOR;
   const endStyle = resolveGraph3DDimensionEndStyle(annotation.endStyle);
-  const radius = Math.max(0.004, lineWidth * DIMENSION_RADIUS_PER_WIDTH);
+  const radius = graph3DDimensionRadius(annotation.lineWidth);
   const start = toVector3(annotation.from);
   const end = toVector3(annotation.to);
   const span = end.clone().sub(start);
@@ -1059,7 +1055,7 @@ function createDimensionLines(annotation: Extract<Graph3DSceneAnnotation, { kind
   const group = new Group();
   if (total <= 1e-6) return group;
   const direction = span.clone().divideScalar(total);
-  const headLength = Math.min(total * 0.4, radius * 9);
+  const headLength = graph3DDimensionHeadLength(radius, total);
   const startHead = createAxisEnd(endStyle, color, headLength, direction.clone().negate());
   const endHead = createAxisEnd(endStyle, color, headLength, direction);
   const trim = endHead?.shaftTrim ?? startHead?.shaftTrim ?? 0;
@@ -1087,13 +1083,6 @@ function createDimensionLines(annotation: Extract<Graph3DSceneAnnotation, { kind
   return group;
 }
 
-const DIMENSION_RADIUS_PER_WIDTH = 0.012;
-
-function clampDimensionWidth(lineWidth: number | undefined): number {
-  if (lineWidth === undefined || !Number.isFinite(lineWidth)) return 1.5;
-  return Math.min(32, Math.max(0.5, lineWidth));
-}
-
 /** `[offset, length]` pairs along the shaft; one run for a solid line, many for a dash pattern. */
 function dashRuns(
   shaftLength: number,
@@ -1101,11 +1090,10 @@ function dashRuns(
   radius: number,
 ): Array<[number, number]> {
   if (shaftLength <= 1e-6) return [];
-  if (lineStyle === "solid") return [[0, shaftLength]];
-  // Dash lengths are mostly fixed in world units: tying them to the stroke width made a thick
-  // dashed line read as three long bars instead of a dash pattern.
-  const dash = lineStyle === "dotted" ? radius * 1.6 : 0.12 + radius * 2;
-  const gap = lineStyle === "dotted" ? 0.06 + radius * 2 : 0.08 + radius * 1.5;
+  const pattern = graph3DDimensionDashPattern(lineStyle, radius);
+  if (!pattern) return [[0, shaftLength]];
+  const dash = pattern.dashSize;
+  const gap = pattern.gapSize;
   const period = dash + gap;
   const count = Math.min(240, Math.max(1, Math.round(shaftLength / period)));
   const scaled = shaftLength / count;
@@ -1150,9 +1138,6 @@ function hasMaterial(object: Object3D): object is Object3D & { material: Materia
   );
 }
 
-/** Half-length of the drawn coordinate axes, in scene units. */
-export const GRAPH3D_AXIS_LENGTH = 3;
-
 /**
  * Camera for the authored viewpoint.
  *
@@ -1160,9 +1145,10 @@ export const GRAPH3D_AXIS_LENGTH = 3;
  * changes the perspective divide — never the framing the author set up.
  */
 export function createThreeGraph3DCamera(camera: Graph3DCamera, aspect: number): Camera {
+  const half = GRAPH3D_VIEW_HALF_HEIGHT;
   const result = camera.projection === "orthographic"
-    ? new OrthographicCamera(-3 * aspect, 3 * aspect, 3, -3, 0.01, 10_000)
-    : new PerspectiveCamera(camera.fov ?? 45, aspect, 0.01, 10_000);
+    ? new OrthographicCamera(-half * aspect, half * aspect, half, -half, GRAPH3D_NEAR_PLANE, 10_000)
+    : new PerspectiveCamera(camera.fov ?? GRAPH3D_DEFAULT_FOV_DEGREES, aspect, GRAPH3D_NEAR_PLANE, 10_000);
   result.position.set(camera.position.x, camera.position.y, camera.position.z);
   result.up.set(camera.up.x, camera.up.y, camera.up.z);
   if (result instanceof OrthographicCamera) result.zoom = camera.zoom ?? 1;
@@ -1177,23 +1163,22 @@ export function updateThreeGraph3DCameraAspect(camera: Camera, aspect: number): 
     camera.aspect = aspect;
     camera.updateProjectionMatrix();
   } else if (camera instanceof OrthographicCamera) {
-    camera.left = -3 * aspect;
-    camera.right = 3 * aspect;
-    camera.top = 3;
-    camera.bottom = -3;
+    camera.left = -GRAPH3D_VIEW_HALF_HEIGHT * aspect;
+    camera.right = GRAPH3D_VIEW_HALF_HEIGHT * aspect;
+    camera.top = GRAPH3D_VIEW_HALF_HEIGHT;
+    camera.bottom = -GRAPH3D_VIEW_HALF_HEIGHT;
     camera.updateProjectionMatrix();
   }
 }
 
 /** The three lights every 3D surface is lit with, so a still, an animation and a video match. */
 export function addThreeGraph3DLights(scene: Scene): void {
-  scene.add(new AmbientLight("#ffffff", 1.45));
-  const keyLight = new DirectionalLight("#ffffff", 2.2);
-  keyLight.position.set(4, -5, 8);
-  scene.add(keyLight);
-  const fillLight = new DirectionalLight("#dbeafe", 0.9);
-  fillLight.position.set(-5, 3, 2);
-  scene.add(fillLight);
+  scene.add(new AmbientLight(GRAPH3D_LIGHTS.ambient.color, GRAPH3D_LIGHTS.ambient.intensity));
+  for (const light of [GRAPH3D_LIGHTS.key, GRAPH3D_LIGHTS.fill]) {
+    const directional = new DirectionalLight(light.color, light.intensity);
+    directional.position.set(light.direction.x, light.direction.y, light.direction.z);
+    scene.add(directional);
+  }
 }
 
 /**
@@ -1213,9 +1198,14 @@ export function applyThreeGraph3DView(
     scene.remove(existing);
     disposeThreeGraph3DGroup(existing);
   }
-  scene.background = safeThreeColor(view.backgroundColor, "#ffffff");
+  scene.background = safeThreeColor(view.backgroundColor, GRAPH3D_DEFAULT_BACKGROUND_COLOR);
   if (view.showGrid) {
-    const grid = new GridHelper(10, 10, "#8895a1", "#d8dde2");
+    const grid = new GridHelper(
+      GRAPH3D_GRID.size,
+      GRAPH3D_GRID.divisions,
+      GRAPH3D_GRID.centerLineColor,
+      GRAPH3D_GRID.gridColor,
+    );
     grid.rotation.x = Math.PI / 2;
     grid.name = "graph3d-grid";
     scene.add(grid);

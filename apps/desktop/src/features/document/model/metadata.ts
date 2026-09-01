@@ -21,7 +21,7 @@ export interface SigmaMetadata {
 }
 
 export interface SigmaDocumentSourceMetadata {
-  format?: "classic-format" | "presentation";
+  format?: "studyaid-prt" | "powerpoint";
   layoutMode?: "fixedOverlay";
   printFlowContent?: boolean;
   /** Import provenance. Descriptive only - never an input to layout or rendering. */

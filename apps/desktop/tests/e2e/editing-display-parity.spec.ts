@@ -292,7 +292,7 @@ function parityDocument(): SigmaDocument {
                     { id: "trend_col_1", width: { mode: "fr", value: 1, min: 60 } },
                     { id: "trend_col_2", width: { mode: "fr", value: 1, min: 60 } },
                     // Narrower than the arrow's own 44px, like the interval columns of an imported
-                    // compact variation table (`lib/classic-format/table.ts`).
+                    // compact variation table (`lib/studyaid-prt/table.ts`).
                     { id: "trend_col_3", width: { mode: "fixed", value: 30 } },
                   ],
                   rows: [

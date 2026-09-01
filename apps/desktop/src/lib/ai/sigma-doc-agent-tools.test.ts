@@ -1,9 +1,10 @@
 import { isOverlayShape, overlayTextBlocksToInlineNodes } from "@/features/document";
-import { DEFAULT_TEXT_SHAPE_WIDTH } from "@/features/drawing";
+import { createGraph3DSpecPreset, DEFAULT_TEXT_SHAPE_WIDTH, getGraph3DPreviewSourceHash } from "@/features/drawing";
 import { describe, expect, it } from "vitest";
 
 import {
   applyAiTableCellPatches,
+  buildGraph3DSpecFromToolArgs,
   commitSigmaDocMutation,
   createSigmaDocAgentSession,
   createTableSpecFromAiToolArgs,
@@ -17,9 +18,18 @@ import {
 } from "@/lib/ai/sigma-doc-agent-tools";
 import { estimateBlockRects, getDefaultPageLayout, OVERLAY_ARROWHEADS } from "@/features/document";
 import { resolveShapePosition } from "@/features/drawing";
-import type { OverlayArrowShape, OverlayCalloutShape, OverlayGeoShape, OverlayGraphShape, OverlayLineShape, OverlayShape, OverlayTableShape, OverlayTextShape, SigmaTableSpec } from "@/features/document";
+import { buildGraph3DPresetNames } from "@/lib/graph3d-preset-names";
+import { createTranslator } from "@/lib/i18n";
+import type { Graph3DCut, OverlayArrowShape, OverlayCalloutShape, OverlayGeoShape, OverlayGraph3DShape, OverlayGraphShape, OverlayLineShape, OverlayShape, OverlayTableShape, OverlayTextShape, SigmaTableSpec } from "@/features/document";
 import type { BoxBlockChildBlock, SigmaDocument, Graph2DSpec } from "@/types/sigma-doc";
 import type { MaterialItem } from "@/types/material";
+
+/** A real 1x1 PNG: the AI overlay asset gate decodes the bytes and reads IHDR. */
+const PNG_1X1_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** A second real PNG (2x2), so a replaced preview can be told apart from the one it replaced. */
+const PNG_2X2_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==";
 
 describe("SigmaDoc draft mutation tools", () => {
   it("copy-with replaces text while preserving the source run formatting", () => {
@@ -3117,5 +3127,652 @@ describe("normalizeAiShapeGeometryPatch: absolute→local-origin normalization +
     const patch = normalizeAiShapeGeometryPatch(line, { points: [{ x: 60, y: 600 }, { x: 120, y: 640 }] });
     expect(patch.x).toBe(60);
     expect(patch.anchor).toBeUndefined();
+  });
+});
+
+describe("draft_insert_graph3d / draft_update_graph3d", () => {
+  const presetNames = buildGraph3DPresetNames(createTranslator("ja", "shape"));
+
+  function findGraph3DShapes(session: ReturnType<typeof createSigmaDocAgentSession>): OverlayGraph3DShape[] {
+    return (session.draftDocument.pageLayout?.overlay?.overlaySnapshot?.shapes ?? [])
+      .filter((shape): shape is OverlayGraph3DShape => shape.type === "graph3dShape");
+  }
+
+  /** ツールの語彙に無い永続fieldを図形へ置く。cutsを書ける経路はツール側に存在しないので、
+   * 「無関係な更新が既存のcutsを消さない」ことはここで作った状態からしか確かめられない。 */
+  function putCutOnGraph3DShape(
+    session: ReturnType<typeof createSigmaDocAgentSession>,
+    shapeId: string,
+    cut: Graph3DCut,
+  ): void {
+    const layout = session.draftDocument.pageLayout!;
+    const snapshot = layout.overlay!.overlaySnapshot!;
+    session.draftDocument = {
+      ...session.draftDocument,
+      pageLayout: {
+        ...layout,
+        overlay: {
+          ...layout.overlay!,
+          overlaySnapshot: {
+            ...snapshot,
+            shapes: snapshot.shapes.map((shape) => (
+              shape.id === shapeId && shape.type === "graph3dShape"
+                ? { ...shape, props: { ...shape.props, spec: { ...shape.props.spec, cuts: [cut] } } }
+                : shape
+            )),
+          },
+        },
+      },
+    };
+  }
+
+  function insertRevolution(session: ReturnType<typeof createSigmaDocAgentSession>, args: Record<string, unknown> = {}) {
+    return executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+      targetId: "p_1",
+      id: "graph3d_ai",
+      preset: "revolution",
+      ...args,
+    });
+  }
+
+  it("inserts a graph3dShape from a preset alone and never persists cuts", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session);
+
+    expect(result.ok).toBe(true);
+    const shapes = findGraph3DShapes(session);
+    expect(shapes).toHaveLength(1);
+    expect(shapes[0].props.spec.objects.some((object) => object.kind === "solidOfRevolution")).toBe(true);
+    expect(shapes[0].props.spec.cuts).toEqual([]);
+    expect(shapes[0].props.spec.version).toBe(1);
+  });
+
+  it("uses the drag default 360x280 box and honours explicit w/h", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    expect(insertRevolution(session).ok).toBe(true);
+    expect(findGraph3DShapes(session)[0].props).toMatchObject({ w: 360, h: 280 });
+
+    const sized = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(insertRevolution(sized, { id: "graph3d_sized", w: 480, h: 320 }).ok).toBe(true);
+    expect(findGraph3DShapes(sized)[0].props).toMatchObject({ w: 480, h: 320 });
+  });
+
+  it("merges camera shallowly onto the preset camera", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session, { camera: { position: { x: 1, y: 1, z: 1 } } });
+
+    expect(result.ok).toBe(true);
+    expect(findGraph3DShapes(session)[0].props.spec.camera).toEqual({
+      projection: "perspective",
+      position: { x: 1, y: 1, z: 1 },
+      target: { x: 0, y: 0, z: 0 },
+      up: { x: 0, y: 0, z: 1 },
+      fov: 42,
+    });
+  });
+
+  it("merges view shallowly onto the preset view", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session, { view: { showGrid: false } });
+
+    expect(result.ok).toBe(true);
+    const view = findGraph3DShapes(session)[0].props.spec.view;
+    expect(view.showGrid).toBe(false);
+    expect(view.showAxes).toBe(true);
+    expect(view.coordinateSystem).toBe("zUp");
+    expect(view.backgroundColor).toBe("#ffffff");
+  });
+
+  it("replaces arrays wholesale instead of appending to the preset", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session, {
+      objects: [{
+        id: "sphere_only",
+        kind: "primitive",
+        primitive: "sphere",
+        center: { x: "0", y: "0", z: "0" },
+        size: { x: "2", y: "2", z: "2" },
+      }],
+      regions: [],
+      annotations: [],
+      parameters: [],
+    });
+
+    expect(result.ok).toBe(true);
+    const spec = findGraph3DShapes(session)[0].props.spec;
+    expect(spec.objects.map((object) => object.id)).toEqual(["sphere_only"]);
+    expect(spec.regions).toEqual([]);
+    expect(spec.annotations).toEqual([]);
+    expect(spec.parameters).toEqual([]);
+  });
+
+  it("accepts a full spec without a preset", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+      targetId: "p_1",
+      id: "graph3d_spec_only",
+      spec: {
+        parameters: [],
+        objects: [{
+          id: "segment_only",
+          kind: "segment",
+          from: { x: "0", y: "0", z: "0" },
+          to: { x: "1", y: "1", z: "1" },
+        }],
+        regions: [],
+        annotations: [],
+        camera: {
+          projection: "orthographic",
+          position: { x: 4, y: -4, z: 3 },
+          target: { x: 0, y: 0, z: 0 },
+          up: { x: 0, y: 0, z: 1 },
+          zoom: 1.5,
+        },
+        view: {
+          coordinateSystem: "zUp",
+          showAxes: false,
+          showGrid: false,
+          backgroundColor: "#eef2ff",
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    const spec = findGraph3DShapes(session)[0].props.spec;
+    expect(spec.objects.map((object) => object.kind)).toEqual(["segment"]);
+    expect(spec.camera.projection).toBe("orthographic");
+    expect(spec.view.backgroundColor).toBe("#eef2ff");
+    expect(spec.cuts).toEqual([]);
+  });
+
+  it("rejects an invalid object and names the failing field path", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session, {
+      objects: [{ id: "broken", kind: "notAKind" }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("objects[0]");
+    expect(findGraph3DShapes(session)).toHaveLength(0);
+  });
+
+  it("names both camera and view when both are broken", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+      targetId: "p_1",
+      preset: "blank",
+      camera: { projection: "isometric" },
+      view: { coordinateSystem: "yUp" },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("camera");
+    expect(result.message).toContain("view");
+  });
+
+  it("names only the broken half when just the camera is invalid", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+      targetId: "p_1",
+      preset: "blank",
+      camera: { projection: "isometric" },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("camera");
+    expect(result.message).not.toContain("view");
+  });
+
+  it("refuses a preview png that is not a PNG data url even when the shared gate accepts it", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session, {
+      previewPng: { dataUrl: "sigma-doc-storage://graph3d-preview", w: 1, h: 1 },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(findGraph3DShapes(session)).toHaveLength(0);
+  });
+
+  it("inserts on a whiteboard CANVAS without an anchor and refuses CANVAS elsewhere", () => {
+    const whiteboard = createSigmaDocAgentSession({ document: createWhiteboardDocument(), selectedId: null });
+
+    const canvasResult = executeSigmaDocAgentDraftTool(whiteboard, "draft_insert_graph3d", {
+      targetId: "CANVAS",
+      id: "whiteboard_graph3d",
+      preset: "blank",
+      x: 640,
+      y: 400,
+    });
+
+    expect(canvasResult.ok).toBe(true);
+    const canvasShape = findGraph3DShapes(whiteboard)[0];
+    expect(canvasShape).toMatchObject({ x: 640, y: 400 });
+    expect(canvasShape).not.toHaveProperty("anchor");
+
+    const paged = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(executeSigmaDocAgentDraftTool(paged, "draft_insert_graph3d", {
+      targetId: "CANVAS",
+      preset: "blank",
+    }).ok).toBe(false);
+  });
+
+  it("anchors an area insertion inside the requested problem area", () => {
+    const session = createSigmaDocAgentSession({
+      document: createDocument([{
+        type: "problem",
+        id: "problem_graph3d",
+        tags: [],
+        lead: [],
+        prompt: [paragraph("problem_graph3d_prompt", "問題文")],
+        solution: [paragraph("problem_graph3d_solution", "解説")],
+        hints: [],
+      }]),
+      selectedId: "problem_graph3d",
+    });
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+      targetId: "problem_graph3d",
+      area: "solution",
+      id: "graph3d_area",
+      preset: "blank",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(findGraph3DShapes(session)[0].anchor).toMatchObject({
+      type: "block",
+      blockId: "problem_graph3d_solution",
+    });
+  });
+
+  it("returns scene issues without failing the insertion", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+      targetId: "p_1",
+      id: "graph3d_bad_expression",
+      preset: "blank",
+      objects: [{
+        id: "broken_surface",
+        kind: "implicitSurface",
+        expression: "x^^2",
+        bounds: {
+          x: { min: "-1", max: "1" },
+          y: { min: "-1", max: "1" },
+          z: { min: "-1", max: "1" },
+        },
+        resolution: 8,
+      }],
+    });
+
+    expect(result.ok).toBe(true);
+    const data = result.data as { sceneIssues: { scope: string; id: string }[]; objectCount: number };
+    expect(data.objectCount).toBe(1);
+    expect(data.sceneIssues).toHaveLength(1);
+    expect(data.sceneIssues[0]).toMatchObject({ scope: "object", id: "broken_surface" });
+    expect(findGraph3DShapes(session)).toHaveLength(1);
+  });
+
+  it.each(["revolution", "surface", "tricylinder", "sphereTetrahedron", "blank"] as const)(
+    "reports no scene issues for the %s preset",
+    (preset) => {
+      const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+      const result = executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+        targetId: "p_1",
+        id: `graph3d_${preset}`,
+        preset,
+      });
+
+      expect(result.ok).toBe(true);
+      expect((result.data as { sceneIssues: unknown[] }).sceneIssues).toEqual([]);
+    },
+  );
+
+  it("bounds the issue probe so a dense figure cannot stall the tool call", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    // 解像度256のmarching cubesは1個で約1.8秒、この個数を素の密度で回すとヒープが尽きる。
+    const objects = Array.from({ length: 16 }, (_, index) => ({
+      id: `dense_solid_${index}`,
+      kind: "boundedSolid",
+      inequalities: ["x^2 + y^2 + z^2 <= 1"],
+      bounds: {
+        x: { min: "-1", max: "1" },
+        y: { min: "-1", max: "1" },
+        z: { min: "-1", max: "1" },
+      },
+      resolution: 256,
+    }));
+
+    const startedAt = Date.now();
+    const result = executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+      targetId: "p_1",
+      id: "graph3d_dense",
+      preset: "blank",
+      objects,
+    });
+
+    expect(result.ok).toBe(true);
+    expect((result.data as { sceneIssues: unknown[] }).sceneIssues).toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    // authoredな解像度は文書側にそのまま残る (粗くするのは検査用のサンプルだけ)。
+    const stored = findGraph3DShapes(session)[0].props.spec.objects[0];
+    expect(stored).toMatchObject({ kind: "boundedSolid", resolution: 256 });
+  }, 30_000);
+
+  it("bounds the issue probe for primitives too, which the shared sampler leaves alone", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    // `createGraph3DSampledSpec` は factor<1 では primitive の分割数を触らないので、
+    // スキーマ上限どうし (64個 × 分割数256) を掛けるとピークメモリがGB級になる。
+    const objects = Array.from({ length: 64 }, (_, index) => ({
+      id: `dense_sphere_${index}`,
+      kind: "primitive",
+      primitive: "sphere",
+      center: { x: "0", y: "0", z: "0" },
+      size: { x: "2", y: "2", z: "2" },
+      resolution: 256,
+    }));
+
+    const startedAt = Date.now();
+    const result = executeSigmaDocAgentDraftTool(session, "draft_insert_graph3d", {
+      targetId: "p_1",
+      id: "graph3d_dense_primitives",
+      preset: "blank",
+      objects,
+    });
+
+    expect(result.ok).toBe(true);
+    expect((result.data as { sceneIssues: unknown[] }).sceneIssues).toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+    expect(findGraph3DShapes(session)[0].props.spec.objects[0]).toMatchObject({ resolution: 256 });
+  }, 30_000);
+
+  it("reports regions whose members no longer exist after an objects replacement", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session, {
+      objects: [{
+        id: "lone_point",
+        kind: "point",
+        position: { x: "0", y: "0", z: "0" },
+      }],
+    });
+
+    expect(result.ok).toBe(true);
+    const data = result.data as { regionCount: number; unresolvedRegionIds: string[] };
+    // revolution プリセットの region はメンバーを失っても spec には残る (黙って消さない)。
+    expect(data.regionCount).toBe(1);
+    expect(data.unresolvedRegionIds).toEqual(["region_section"]);
+  });
+
+  it("refuses a preview png that the AI overlay asset gate rejects", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session, {
+      previewPng: { dataUrl: "data:image/png;base64,AAAA", w: 720, h: 560 },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(findGraph3DShapes(session)).toHaveLength(0);
+  });
+
+  it("attaches the supplied preview png as an overlay asset and stamps the source hash", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = insertRevolution(session, {
+      // w/h は「実際に描かれたビットマップの寸法」なので、fixture の 1x1 PNG と一致させる。
+      previewPng: { dataUrl: `data:image/png;base64,${PNG_1X1_BASE64}`, w: 1, h: 1 },
+    });
+
+    expect(result.ok).toBe(true);
+    const shape = findGraph3DShapes(session)[0];
+    expect(shape.props.previewAssetId).toBe(`asset_graph3d_preview_${shape.id}`);
+    expect(shape.props.previewSourceHash).toBe(getGraph3DPreviewSourceHash(shape.props.spec));
+    const assets = session.draftDocument.pageLayout?.overlay?.overlaySnapshot?.assets ?? {};
+    expect(assets[shape.props.previewAssetId!].props).toMatchObject({
+      w: 1,
+      h: 1,
+      mimeType: "image/png",
+      isAnimated: false,
+    });
+    expect((result.data as { preview: { source: string } }).preview.source).toBe("provided");
+  });
+
+  it("keeps id, position, anchor, size and unspecified spec fields on update", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(insertRevolution(session, { x: 120, y: 240, w: 400, h: 300 }).ok).toBe(true);
+    const before = findGraph3DShapes(session)[0];
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId: before.id,
+      objects: [{
+        id: "updated_point",
+        kind: "point",
+        position: { x: "1", y: "2", z: "3" },
+      }],
+    });
+
+    expect(result.ok).toBe(true);
+    const after = findGraph3DShapes(session)[0];
+    expect(after.id).toBe(before.id);
+    expect(after.x).toBe(before.x);
+    expect(after.y).toBe(before.y);
+    expect(after.anchor).toEqual(before.anchor);
+    expect(after.props.w).toBe(before.props.w);
+    expect(after.props.h).toBe(before.props.h);
+    expect(after.props.spec.camera).toEqual(before.props.spec.camera);
+    expect(after.props.spec.view).toEqual(before.props.spec.view);
+    expect(after.props.spec.objects.map((object) => object.id)).toEqual(["updated_point"]);
+    expect(after.props.spec.parameters).toEqual(before.props.spec.parameters);
+  });
+
+  it("leaves the preview hash alone when an update only resizes", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(insertRevolution(session, {
+      previewPng: { dataUrl: `data:image/png;base64,${PNG_1X1_BASE64}`, w: 1, h: 1 },
+    }).ok).toBe(true);
+    const before = findGraph3DShapes(session)[0];
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId: before.id,
+      w: 500,
+    });
+
+    expect(result.ok).toBe(true);
+    const after = findGraph3DShapes(session)[0];
+    expect(after.props.spec).toBe(before.props.spec);
+    // 内容が変わっていないのだから、プレビューが「更新待ち」に化けてはいけない。
+    expect(after.props.previewSourceHash).toBe(getGraph3DPreviewSourceHash(after.props.spec));
+    expect((result.data as { preview: { source: string } }).preview.source).toBe("unchanged");
+  });
+
+  it("never echoes the preview png bytes back in the tool result", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    const previewPng = { dataUrl: `data:image/png;base64,${PNG_1X1_BASE64}`, w: 1, h: 1 };
+
+    const inserted = insertRevolution(session, { previewPng });
+    const shapeId = findGraph3DShapes(session)[0].id;
+    const updated = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId,
+      camera: { position: { x: 4, y: 4, z: 4 } },
+      previewPng: { dataUrl: `data:image/png;base64,${PNG_2X2_BASE64}`, w: 2, h: 2 },
+    });
+
+    // 画像は文書に入る。それを結果でもう一度返すと、1回のツール応答でモデルのcontextが埋まる。
+    expect(JSON.stringify(inserted.data)).not.toContain(PNG_1X1_BASE64);
+    expect(JSON.stringify(updated.data)).not.toContain(PNG_2X2_BASE64);
+    // 画像が付いたことは分かる必要がある。
+    expect(JSON.stringify(inserted.data)).toContain(`asset_graph3d_preview_${shapeId}`);
+  });
+
+  it("keeps cuts that are already on the shape when an update only moves the camera", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(insertRevolution(session).ok).toBe(true);
+    const shapeId = findGraph3DShapes(session)[0].id;
+    // 断面は永続化されるがツールの語彙には無い。無関係な更新で黙って消してはいけない。
+    putCutOnGraph3DShape(session, shapeId, {
+      id: "cut_1",
+      targetObjectIds: [],
+      plane: { kind: "equation", expression: "z = 0" },
+    });
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId,
+      camera: { position: { x: 4, y: 4, z: 4 } },
+    });
+
+    expect(result.ok).toBe(true);
+    const after = findGraph3DShapes(session)[0];
+    expect(after.props.spec.cuts.map((cut) => cut.id)).toEqual(["cut_1"]);
+    expect(after.props.spec.camera.position).toEqual({ x: 4, y: 4, z: 4 });
+  });
+
+  it("replaces the derived preview asset and refreshes the hash when an update changes the spec", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(insertRevolution(session, {
+      previewPng: { dataUrl: `data:image/png;base64,${PNG_1X1_BASE64}`, w: 1, h: 1 },
+    }).ok).toBe(true);
+    const before = findGraph3DShapes(session)[0];
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId: before.id,
+      objects: [{ id: "moved_point", kind: "point", position: { x: "1", y: "1", z: "1" } }],
+      previewPng: { dataUrl: `data:image/png;base64,${PNG_2X2_BASE64}`, w: 2, h: 2 },
+    });
+
+    expect(result.ok).toBe(true);
+    const after = findGraph3DShapes(session)[0];
+    expect(after.props.previewAssetId).toBe(`asset_graph3d_preview_${after.id}`);
+    expect(after.props.previewSourceHash).toBe(getGraph3DPreviewSourceHash(after.props.spec));
+    expect(after.props.previewSourceHash).not.toBe(before.props.previewSourceHash);
+    const assets = session.draftDocument.pageLayout?.overlay?.overlaySnapshot?.assets ?? {};
+    expect(assets[after.props.previewAssetId!].props.src).toBe(`data:image/png;base64,${PNG_2X2_BASE64}`);
+    // 同じidへ上書きするので、更新のたびに孤児assetが増えない。
+    expect(Object.keys(assets)).toEqual([`asset_graph3d_preview_${after.id}`]);
+    expect((result.data as { preview: { source: string } }).preview.source).toBe("provided");
+  });
+
+  it("refuses an update whose preview png the AI overlay asset gate rejects", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(insertRevolution(session).ok).toBe(true);
+    const shapeId = findGraph3DShapes(session)[0].id;
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId,
+      camera: { position: { x: 4, y: 4, z: 4 } },
+      previewPng: { dataUrl: "data:image/png;base64,AAAA", w: 2, h: 2 },
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("refuses an update that asks for nothing", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(insertRevolution(session).ok).toBe(true);
+    const shapeId = findGraph3DShapes(session)[0].id;
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", { shapeId });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("resizes on update when w/h are supplied", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(insertRevolution(session).ok).toBe(true);
+    const shapeId = findGraph3DShapes(session)[0].id;
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId,
+      w: 500,
+      h: 400,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(findGraph3DShapes(session)[0].props).toMatchObject({ w: 500, h: 400 });
+  });
+
+  it("names the actual shape type when the update target is not a graph3dShape", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+    expect(executeSigmaDocAgentDraftTool(session, "draft_insert_graph", {
+      targetId: "p_1",
+      id: "graph2d_target",
+      curves: [{ id: "curve_target", expr: "x^2" }],
+    }).ok).toBe(true);
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId: "graph2d_target",
+      preset: "blank",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("graph3dShape");
+    expect(result.message).toContain("graph2dShape");
+  });
+
+  it("reports a missing update target by id", () => {
+    const session = createSigmaDocAgentSession({ document: createDocument(), selectedId: "p_1" });
+
+    const result = executeSigmaDocAgentDraftTool(session, "draft_update_graph3d", {
+      shapeId: "graph3d_missing",
+      preset: "blank",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("graph3d_missing");
+  });
+
+  it("buildGraph3DSpecFromToolArgs replaces arrays, merges camera, and always clears cuts", () => {
+    const base = createGraph3DSpecPreset("revolution", presetNames);
+
+    const next = buildGraph3DSpecFromToolArgs(base, {
+      objects: [{
+        id: "only_point",
+        kind: "point",
+        position: { x: "0", y: "0", z: "0" },
+      }],
+      camera: { zoom: 2 },
+    });
+
+    expect(next.objects.map((object) => object.id)).toEqual(["only_point"]);
+    expect(next.camera).toEqual({ ...base.camera, zoom: 2 });
+    expect(next.cuts).toEqual([]);
+    expect(next.regions).toEqual(base.regions);
+    expect(next.annotations).toEqual(base.annotations);
+    expect(next.parameters).toEqual(base.parameters);
+  });
+
+  it("buildGraph3DSpecFromToolArgs layers explicit fields on top of a supplied spec", () => {
+    const base = createGraph3DSpecPreset("blank", presetNames);
+
+    const next = buildGraph3DSpecFromToolArgs(base, {
+      spec: {
+        parameters: [],
+        objects: [{ id: "spec_point", kind: "point", position: { x: "0", y: "0", z: "0" } }],
+        regions: [],
+        annotations: [],
+        camera: {
+          projection: "orthographic",
+          position: { x: 1, y: 1, z: 1 },
+          target: { x: 0, y: 0, z: 0 },
+          up: { x: 0, y: 0, z: 1 },
+        },
+        view: { coordinateSystem: "zUp", showAxes: true, showGrid: true, backgroundColor: "#ffffff" },
+      },
+      view: { showGrid: false },
+    });
+
+    expect(next.objects.map((object) => object.id)).toEqual(["spec_point"]);
+    expect(next.camera.projection).toBe("orthographic");
+    expect(next.view.showGrid).toBe(false);
+    expect(next.view.showAxes).toBe(true);
   });
 });

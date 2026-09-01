@@ -602,6 +602,8 @@ export const ai = {
       draft_insert_table: "表を追加しています",
       draft_insert_shape: "図形を追加しています",
       draft_insert_graph: "グラフを追加しています",
+      draft_insert_graph3d: "3Dグラフを追加しています",
+      draft_update_graph3d: "3Dグラフを更新しています",
       draft_insert_text_block: "テキストを追加しています",
       draft_create_problem: "問題を追加しています",
       draft_update_problem_answer: "解答を更新しています",

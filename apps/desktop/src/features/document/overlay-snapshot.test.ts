@@ -120,7 +120,7 @@ describe("overlay snapshot normalization", () => {
       },
       shapes: [{
         ...rectangle("shape_meta"),
-        meta: { source: "slides", slide: 2 },
+        meta: { source: "pptx", slide: 2 },
         ignoredShapeField: "remove",
         props: {
           ...rectangle("shape_meta").props,
@@ -151,7 +151,7 @@ describe("overlay snapshot normalization", () => {
       "vendor.example": { enabled: true },
       "sigma.legacy.metadata": {
         shapes: {
-          shape_meta: { source: "slides", slide: 2 },
+          shape_meta: { source: "pptx", slide: 2 },
         },
         assets: {
           image_1: { importedBy: "legacy" },

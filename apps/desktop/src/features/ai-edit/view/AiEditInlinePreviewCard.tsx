@@ -37,6 +37,7 @@ import {
   isOverlayOwnedAiEditDraft,
   isOverlaySigmaDocMutationOp,
   overlayShapeNoun,
+  resolveMutationOpAssets,
   resolveMutationOpShapeResults,
   resolveOverlayShapeAnchorBlockId,
   type AiEditPreviewState,
@@ -88,7 +89,8 @@ export interface AiEditInlineMutationEntry {
    * one-line summary. Absent when the op is not shape-visual or the live
    * document/shape wasn't available at grouping time. */
   afterShapes?: OverlayShape[];
-  /** Overlay assets of the live document, needed to render `afterShapes`. */
+  /** Overlay assets `afterShapes` needs to render — the live document's, with any
+   * replacement the preceding ops carry already merged in. */
   assets?: Record<string, OverlayAsset>;
 }
 
@@ -336,11 +338,13 @@ function groupSinglePreviewEntries(
   });
 
   const overlaySnapshot = document?.pageLayout?.overlay?.overlaySnapshot;
-  const overlayAssets = overlaySnapshot?.assets ?? {};
   // Threaded through the ops below so a shape touched by several ops previews
   // each op against the previous op's result — the same sequential semantics
-  // the real apply path uses.
+  // the real apply path uses. Assets are threaded for the same reason: an op can
+  // replace a picture derived from the shape it updates, and the following ops
+  // (and this op's own card) must draw the replacement, not the stored one.
   let shapesCursor = overlaySnapshot?.shapes ?? [];
+  let assetsCursor = overlaySnapshot?.assets ?? {};
 
   mutationOperations.forEach((op, index) => {
     const rawAnchorId = primarySigmaDocMutationOpTargetId(op);
@@ -358,13 +362,14 @@ function groupSinglePreviewEntries(
       const byId = new Map(afterShapes.map((shape) => [shape.id, shape]));
       shapesCursor = shapesCursor.map((shape) => byId.get(shape.id) ?? shape);
     }
+    assetsCursor = resolveMutationOpAssets(op, assetsCursor);
     pushEntry(resolveAnchorId(shapeAnchorBlockId ?? rawAnchorId), {
       kind: "mutation",
       op,
       operationIndex: operations.length + index,
       operationCount: totalCount,
       sessionSummary: preview.draft.summary,
-      ...(afterShapes && afterShapes.length > 0 ? { afterShapes, assets: overlayAssets } : {}),
+      ...(afterShapes && afterShapes.length > 0 ? { afterShapes, assets: assetsCursor } : {}),
     });
   });
 

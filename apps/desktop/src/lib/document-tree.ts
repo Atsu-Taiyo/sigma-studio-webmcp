@@ -1100,7 +1100,7 @@ export function addRichBlockToProblem(
 export function insertRichBlockNearSelection(
   document: SigmaDocument,
   selectedId: string | null,
-  block: RichBlock,
+  block: ProblemAreaBlock,
 ): SigmaDocument | null {
   if (!selectedId) {
     return null;
@@ -1154,7 +1154,7 @@ export function insertRichBlockNearSelection(
     : null;
 }
 
-function insertAfterRichBlock<T extends ProblemAreaBlock>(blocks: T[], selectedId: string, block: RichBlock): T[] | null {
+function insertAfterRichBlock<T extends ProblemAreaBlock>(blocks: T[], selectedId: string, block: ProblemAreaBlock): T[] | null {
   const index = blocks.findIndex((item) => richBlockContainsId(item, selectedId));
   if (index < 0) {
     return null;

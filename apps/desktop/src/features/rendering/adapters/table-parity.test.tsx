@@ -503,7 +503,7 @@ describe("every surface draws a trend cell the same way", () => {
    *
    * So the component declares it, and the values are read back out of the CSS rather than trusted to
    * a comment. Fixed pixels were the wrong answer in the other direction: an imported compact
-   * variation table leaves a 24px content box (`lib/classic-format/table.ts` — `min: 28`, `paddingX: 2`)
+   * variation table leaves a 24px content box (`lib/studyaid-prt/table.ts` — `min: 28`, `paddingX: 2`)
    * and `.overlay-table-cell-content-layer` clips, so a 44px arrow lost its head.
    */
   it("carries the container sizing the overlay stylesheets supply", () => {

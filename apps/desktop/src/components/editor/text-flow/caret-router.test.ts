@@ -7,7 +7,9 @@ import { createRichTextEngineExtensions } from "@/components/tiptap/rich-text-en
 import { SigmaDocTextAttrs } from "@/components/editor/TextFlowEditor";
 
 import {
+  cancelCaretKeeperWindow,
   deliverCaret,
+  finishCaretKeeperWindow,
   moveCaretHorizontally,
   moveCaretVertically,
   flushPendingCaret,
@@ -18,7 +20,10 @@ import {
   getTextRunSurfaces,
   registerCaretSurface,
   requestCaret,
+  requestCaretKeeperReanchor,
   setFragmentTables,
+  startCaretKeeperWindow,
+  subscribeCaretKeeperTarget,
   subscribeCaretSurfaceMount,
   subscribeCaretSurfaceUnregister,
   updateCaretSurfaceFacets,
@@ -31,13 +36,35 @@ import type { TextFlowSelectionBookmark } from "@/features/text-editing";
 const cleanups: Array<() => void> = [];
 
 afterEach(() => {
+  cancelCaretKeeperWindow();
   while (cleanups.length > 0) {
     cleanups.pop()?.();
   }
   setFragmentTables({}, {});
   // 保留を持ち越さない (面が 1 つも無い状態で消化すると何も起きない)。
   flushPendingCaret();
+  vi.restoreAllMocks();
 });
+
+function mockAnimationFrames(): () => number {
+  let nextId = 1;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = nextId;
+    nextId += 1;
+    callbacks.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+    callbacks.delete(id);
+  });
+  return () => {
+    const scheduled = [...callbacks.entries()];
+    callbacks.clear();
+    scheduled.forEach(([, callback]) => callback(performance.now()));
+    return scheduled.length;
+  };
+}
 
 function createEditor(text: string): Editor {
   const editor = new Editor({
@@ -187,6 +214,155 @@ describe("キャレット面の registry", () => {
     // 再チャンクの安全弁。ここが空になると、開いて最初の 1 打鍵でユニットが再マウントする。
     expect(getFocusedCaretSurfaceUnitIds()).toEqual(new Set(["u1"]));
   });
+
+  it("focused な面の解除時に現在の選択を後継面へ再配送する", () => {
+    const source = createEditor("本文");
+    const sourceDispose = registerCaretSurface({
+      editor: source,
+      ...facets({
+        unitId: "u1",
+        ownsBlock: (blockId) => blockId === "p_1",
+        addressAt: (position) => ({
+          affinity: "after",
+          blockId: "p_1",
+          kind: "text",
+          offset: position,
+        }),
+      }),
+    });
+    vi.spyOn(source, "isFocused", "get").mockReturnValue(true);
+    source.commands.setTextSelection(3);
+    const currentPosition = source.state.selection.head;
+
+    sourceDispose();
+
+    const successor = createEditor("本文");
+    const applyCaret = vi.fn(() => true);
+    register(successor, {
+      unitId: "u2",
+      ownsBlock: (blockId) => blockId === "p_1",
+      applyCaret,
+    });
+
+    expect(applyCaret).toHaveBeenCalledTimes(1);
+    expect(applyCaret).toHaveBeenCalledWith({
+      anchor: expect.objectContaining({ blockId: "p_1", offset: currentPosition }),
+      head: expect.objectContaining({ blockId: "p_1", offset: currentPosition }),
+      preferredX: null,
+    });
+  });
+
+  it("DOM focus が先に BODY へ落ちても直近の surface の選択を後継面へ再配送する", () => {
+    const source = createEditor("本文");
+    const sourceDispose = registerCaretSurface({
+      editor: source,
+      ...facets({
+        unitId: "u1",
+        ownsBlock: (blockId) => blockId === "p_1",
+        addressAt: (position) => ({
+          affinity: "after",
+          blockId: "p_1",
+          kind: "text",
+          offset: position,
+        }),
+      }),
+    });
+    document.body.append(source.view.dom);
+    source.view.dom.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    vi.spyOn(source, "isFocused", "get").mockReturnValue(false);
+    source.commands.setTextSelection(3);
+
+    sourceDispose();
+
+    const successor = createEditor("本文");
+    const applyCaret = vi.fn(() => true);
+    register(successor, {
+      unitId: "u2",
+      ownsBlock: (blockId) => blockId === "p_1",
+      applyCaret,
+    });
+
+    expect(applyCaret).toHaveBeenCalledTimes(1);
+    expect(applyCaret).toHaveBeenCalledWith({
+      anchor: expect.objectContaining({ blockId: "p_1" }),
+      head: expect.objectContaining({ blockId: "p_1" }),
+      preferredX: null,
+    });
+  });
+
+  it("focused surface の解除前にある pending を古い選択で上書きしない", () => {
+    const source = createEditor("本文");
+    const sourceDispose = registerCaretSurface({
+      editor: source,
+      ...facets({
+        unitId: "u1",
+        ownsBlock: (blockId) => blockId === "p_1",
+        addressAt: (position) => ({
+          affinity: "after",
+          blockId: "p_1",
+          kind: "text",
+          offset: position,
+        }),
+      }),
+    });
+    vi.spyOn(source, "isFocused", "get").mockReturnValue(true);
+    source.commands.setTextSelection(3);
+    const intendedSelection = {
+      anchor: { affinity: "after" as const, blockId: "p_1", kind: "text" as const, offset: 1 },
+      head: { affinity: "after" as const, blockId: "p_1", kind: "text" as const, offset: 1 },
+      preferredX: null,
+    };
+    requestCaret(intendedSelection);
+
+    sourceDispose();
+
+    const successor = createEditor("本文");
+    const applyCaret = vi.fn(() => true);
+    register(successor, {
+      unitId: "u2",
+      ownsBlock: (blockId) => blockId === "p_1",
+      applyCaret,
+    });
+
+    expect(applyCaret).toHaveBeenCalledTimes(1);
+    expect(applyCaret).toHaveBeenCalledWith(intendedSelection);
+  });
+
+  it("別の UI へ明示的に focus した後は stale な surface を再アームしない", () => {
+    const source = createEditor("本文");
+    const sourceDispose = registerCaretSurface({
+      editor: source,
+      ...facets({
+        unitId: "u1",
+        ownsBlock: (blockId) => blockId === "p_1",
+        addressAt: (position) => ({
+          affinity: "after",
+          blockId: "p_1",
+          kind: "text",
+          offset: position,
+        }),
+      }),
+    });
+    document.body.append(source.view.dom);
+    source.view.dom.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    const button = document.createElement("button");
+    document.body.append(button);
+    button.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    vi.spyOn(source, "isFocused", "get").mockReturnValue(false);
+
+    sourceDispose();
+
+    const successor = createEditor("本文");
+    const applyCaret = vi.fn(() => true);
+    register(successor, {
+      unitId: "u2",
+      ownsBlock: (blockId) => blockId === "p_1",
+      applyCaret,
+    });
+
+    expect(applyCaret).not.toHaveBeenCalled();
+    button.remove();
+  });
 });
 
 
@@ -252,6 +428,247 @@ const caretInBox = {
 };
 
 describe("キャレットの配送", () => {
+  it("未 mount の keeper 配送先を優先 hydrate 用に通知する", () => {
+    const targets: string[] = [];
+    cleanups.push(subscribeCaretKeeperTarget((blockId) => targets.push(blockId)));
+    startCaretKeeperWindow();
+
+    expect(deliverCaret({
+      ...caretInBox,
+      anchor: { ...caretInBox.anchor, blockId: "not_mounted" },
+      head: { ...caretInBox.head, blockId: "not_mounted" },
+    })).toBe(false);
+
+    expect(targets).toEqual(["not_mounted"]);
+  });
+
+  it("整定中の再アンカーを frame ごとに 1 回へ畳む", () => {
+    const runNextFrame = mockAnimationFrames();
+    const editor = createEditor("本文");
+    const ensureCaretVisible = vi.fn();
+    register(editor, {
+      unitId: "u1",
+      ownsBlock: (blockId) => blockId === "p_1",
+      ensureCaretVisible,
+    });
+    startCaretKeeperWindow();
+    expect(deliverCaret({
+      ...caretInBox,
+      anchor: { ...caretInBox.anchor, blockId: "p_1" },
+      head: { ...caretInBox.head, blockId: "p_1" },
+    })).toBe(true);
+
+    requestCaretKeeperReanchor();
+    requestCaretKeeperReanchor();
+    runNextFrame();
+
+    expect(ensureCaretVisible).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["wheel", () => window.dispatchEvent(new WheelEvent("wheel"))],
+    ["touch", () => window.dispatchEvent(new Event("touchstart"))],
+    ["click", () => window.dispatchEvent(new Event("pointerdown"))],
+    ["navigation key", () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown" }))],
+  ])("手動 %s 後は再アンカーしない", (_label, navigate) => {
+    const runNextFrame = mockAnimationFrames();
+    const editor = createEditor("本文");
+    const ensureCaretVisible = vi.fn();
+    register(editor, {
+      unitId: "u1",
+      ownsBlock: (blockId) => blockId === "p_1",
+      ensureCaretVisible,
+    });
+    startCaretKeeperWindow();
+    expect(deliverCaret({
+      ...caretInBox,
+      anchor: { ...caretInBox.anchor, blockId: "p_1" },
+      head: { ...caretInBox.head, blockId: "p_1" },
+    })).toBe(true);
+    requestCaretKeeperReanchor();
+
+    navigate();
+    runNextFrame();
+
+    expect(ensureCaretVisible).not.toHaveBeenCalled();
+  });
+
+  it("整定中に DOM focus が BODY へ落ちたら現在選択を読み直して再配送する", () => {
+    const runNextFrame = mockAnimationFrames();
+    const editor = createEditor("本文");
+    const applyCaret = vi.fn(() => {
+      if (applyCaret.mock.calls.length >= 2) {
+        editor.view.dom.focus();
+      }
+      return true;
+    });
+    const ensureCaretVisible = vi.fn();
+    register(editor, {
+      unitId: "u1",
+      ownsBlock: (blockId) => blockId === "p_1",
+      addressAt: (position) => ({
+        affinity: "after",
+        blockId: "p_1",
+        kind: "text",
+        offset: position,
+      }),
+      applyCaret,
+      ensureCaretVisible,
+    });
+    document.body.append(editor.view.dom);
+    startCaretKeeperWindow();
+    const selection = {
+      ...caretInBox,
+      anchor: { ...caretInBox.anchor, blockId: "p_1" },
+      head: { ...caretInBox.head, blockId: "p_1" },
+    };
+    expect(deliverCaret(selection)).toBe(true);
+    editor.commands.setTextSelection(3);
+    const currentPosition = editor.state.selection.head;
+
+    editor.view.dom.dispatchEvent(new FocusEvent("focusout", {
+      bubbles: true,
+      relatedTarget: null,
+    }));
+    expect(applyCaret).toHaveBeenCalledTimes(1);
+
+    runNextFrame();
+
+    expect(applyCaret).toHaveBeenCalledTimes(2);
+    expect(applyCaret).toHaveBeenLastCalledWith({
+      anchor: expect.objectContaining({ blockId: "p_1", offset: currentPosition }),
+      head: expect.objectContaining({ blockId: "p_1", offset: currentPosition }),
+      preferredX: null,
+    });
+    expect(ensureCaretVisible).toHaveBeenCalledTimes(1);
+
+    finishCaretKeeperWindow();
+    runNextFrame();
+    runNextFrame();
+    editor.view.dom.dispatchEvent(new FocusEvent("focusout", {
+      bubbles: true,
+      relatedTarget: null,
+    }));
+    expect(applyCaret).toHaveBeenCalledTimes(2);
+    // 次の test へ unregister 再アームを持ち越さない。
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    outside.focus();
+    outside.remove();
+  });
+
+  it("整定中でも別 UI が意図的に focus されたら再配送しない", () => {
+    const runNextFrame = mockAnimationFrames();
+    const editor = createEditor("本文");
+    const applyCaret = vi.fn(() => true);
+    register(editor, {
+      unitId: "u1",
+      ownsBlock: (blockId) => blockId === "p_1",
+      addressAt: () => caretInBox.head,
+      applyCaret,
+    });
+    document.body.append(editor.view.dom);
+    const button = document.createElement("button");
+    document.body.append(button);
+    startCaretKeeperWindow();
+    expect(deliverCaret({
+      ...caretInBox,
+      anchor: { ...caretInBox.anchor, blockId: "p_1" },
+      head: { ...caretInBox.head, blockId: "p_1" },
+    })).toBe(true);
+
+    editor.view.dom.dispatchEvent(new FocusEvent("focusout", {
+      bubbles: true,
+      relatedTarget: button,
+    }));
+
+    runNextFrame();
+    expect(applyCaret).toHaveBeenCalledTimes(1);
+    button.remove();
+  });
+
+  it("window blur 中は再配送枠を消費せず、復帰後に現在状態を検査する", () => {
+    const runNextFrame = mockAnimationFrames();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const editor = createEditor("本文");
+    const applyCaret = vi.fn(() => true);
+    register(editor, {
+      unitId: "u1",
+      ownsBlock: (blockId) => blockId === "p_1",
+      addressAt: (position) => ({
+        affinity: "after",
+        blockId: "p_1",
+        kind: "text",
+        offset: position,
+      }),
+      applyCaret,
+    });
+    document.body.append(editor.view.dom);
+    startCaretKeeperWindow();
+    expect(deliverCaret({
+      ...caretInBox,
+      anchor: { ...caretInBox.anchor, blockId: "p_1" },
+      head: { ...caretInBox.head, blockId: "p_1" },
+    })).toBe(true);
+
+    editor.view.dom.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    runNextFrame();
+    expect(applyCaret).toHaveBeenCalledTimes(1);
+
+    hasFocus.mockReturnValue(true);
+    window.dispatchEvent(new Event("focus"));
+    runNextFrame();
+    expect(applyCaret).toHaveBeenCalledTimes(2);
+  });
+
+  it("外部 control への focus で keeper 世代の pending だけを取り消す", () => {
+    const runNextFrame = mockAnimationFrames();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const editor = createEditor("本文");
+    const applyCaret = vi.fn(() => applyCaret.mock.calls.length === 1);
+    const dispose = registerCaretSurface({
+      editor,
+      ...facets({
+        unitId: "u1",
+        ownsBlock: (blockId) => blockId === "p_1",
+        addressAt: (position) => ({
+          affinity: "after",
+          blockId: "p_1",
+          kind: "text",
+          offset: position,
+        }),
+        applyCaret,
+      }),
+    });
+    document.body.append(editor.view.dom);
+    startCaretKeeperWindow();
+    expect(deliverCaret({
+      ...caretInBox,
+      anchor: { ...caretInBox.anchor, blockId: "p_1" },
+      head: { ...caretInBox.head, blockId: "p_1" },
+    })).toBe(true);
+
+    editor.view.dom.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    runNextFrame();
+    expect(applyCaret).toHaveBeenCalledTimes(2);
+
+    const button = document.createElement("button");
+    document.body.append(button);
+    button.focus();
+    dispose();
+
+    const successor = createEditor("本文");
+    const successorApplyCaret = vi.fn(() => true);
+    register(successor, {
+      unitId: "u2",
+      ownsBlock: (blockId) => blockId === "p_1",
+      applyCaret: successorApplyCaret,
+    });
+
+    expect(successorApplyCaret).not.toHaveBeenCalled();
+    button.remove();
+  });
+
   it("宛先は断片の表が決めた 1 面だけ", () => {
     installFragmentTable();
     // 縦位置 200 はブロックの [120, 240) = 複製 1 の帯。

@@ -3,7 +3,7 @@ export type Graph2DPreset = "blank" | "sine" | "cosine" | "quadratic" | "line" |
 export type GraphTickMode = "number" | "pi";
 export type GraphCurveMode = "yOfX" | "xOfY" | "parametric" | "implicit";
 export type GraphCurveDash = "solid" | "dashed" | "dotted";
-export type GraphRenderStyle = "default" | "classic";
+export type GraphRenderStyle = "default" | "studyaid";
 export type GraphFillPattern =
   | "solid"
   | "diagonal"

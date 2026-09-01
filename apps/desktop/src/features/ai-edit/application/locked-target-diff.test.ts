@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { findAiLockedTargetsTouched, hasAiLockedTargetsTouched } from "./locked-target-diff";
 import { EMPTY_AI_LOCKED_TARGETS, mergeAiLockedTargets } from "./locked-targets";
+import { derivePendingAiProposalLockTargets } from "@/features/ai-edit/model/preview";
+import type { AiEditPreviewState } from "@/features/ai-edit/model/preview";
 import type { SigmaDocument } from "@/types/sigma-doc";
 
 function paragraph(id: string, text: string) {
@@ -163,5 +165,66 @@ describe("findAiLockedTargetsTouched", () => {
 
     expect(findAiLockedTargetsTouched(before, after, locked(["p1"], ["s1"])))
       .toEqual({ blockIds: ["p1"], shapeIds: ["s1"] });
+  });
+});
+
+/**
+ * pending 提案のロックは「決めるまで」の予約。**解決したら外れる**ことが、
+ * `restoreDocumentHistory` が ref から読む価値の裏づけになる —— ロック集合は
+ * 提案の解決に合わせて動くので、⌘Z のたびに**その時点の集合**を読まなければならない。
+ */
+function previewHolding(targetIds: string[]): AiEditPreviewState {
+  return {
+    draft: {
+      operations: targetIds.map((targetId) => ({
+        operation: "replaceBlock",
+        targetId,
+        // アンカー補助の下書きを除外する判定が読む (本物の下書きは必ず持っている)。
+        summary: "本文を書き換える",
+      })),
+    },
+  } as unknown as AiEditPreviewState;
+}
+
+function lockedByPreviews(previews: AiEditPreviewState[]) {
+  return mergeAiLockedTargets([], [], derivePendingAiProposalLockTargets(previews));
+}
+
+describe("a pending proposal's reservation", () => {
+  const before = makeDocument([paragraph("p1", "元"), paragraph("p2", "別")]);
+  const undoOfP1 = makeDocument([paragraph("p1", "戻した"), paragraph("p2", "別")]);
+
+  it("refuses an undo that would rewrite what the proposal is holding", () => {
+    const targets = lockedByPreviews([previewHolding(["p1"])]);
+
+    expect(hasAiLockedTargetsTouched(findAiLockedTargetsTouched(before, undoOfP1, targets)))
+      .toBe(true);
+  });
+
+  it("lets the same undo through once the proposal is resolved", () => {
+    // 適用・却下で提案はプレビュー集合から外れる。**そこでロックも外れる**。
+    const targets = lockedByPreviews([]);
+
+    expect(hasAiLockedTargetsTouched(findAiLockedTargetsTouched(before, undoOfP1, targets)))
+      .toBe(false);
+  });
+
+  it("keeps undo available elsewhere while the proposal is still pending", () => {
+    // ロックは「握っている対象」だけ。実行中でも他所の undo は通る。
+    const targets = lockedByPreviews([previewHolding(["p1"])]);
+    const undoOfP2 = makeDocument([paragraph("p1", "元"), paragraph("p2", "戻した")]);
+
+    expect(hasAiLockedTargetsTouched(findAiLockedTargetsTouched(before, undoOfP2, targets)))
+      .toBe(false);
+  });
+
+  it("releases only the proposal that was resolved", () => {
+    const targets = lockedByPreviews([previewHolding(["p2"])]);
+
+    expect(hasAiLockedTargetsTouched(findAiLockedTargetsTouched(before, undoOfP1, targets)))
+      .toBe(false);
+    const stillHeld = makeDocument([paragraph("p1", "元"), paragraph("p2", "戻した")]);
+    expect(hasAiLockedTargetsTouched(findAiLockedTargetsTouched(before, stillHeld, targets)))
+      .toBe(true);
   });
 });

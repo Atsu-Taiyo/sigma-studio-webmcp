@@ -1,7 +1,6 @@
 "use client";
 
 import { AlertTriangle, Check, Loader2, Save } from "lucide-react";
-import type { ReactNode } from "react";
 
 import { useEditorStore } from "@/features/editor-state";
 import { countPerformanceEvent } from "@/lib/performance";
@@ -17,7 +16,7 @@ export function DocumentTabSaveDot() {
   return <i className={`document-tab-save-dot ${saveState}`} aria-hidden="true" />;
 }
 
-export function SaveStatusBadge({ children }: { children?: ReactNode }) {
+export function SaveStatusBadge() {
   // 保存状態の変化でどれだけ描画されるかを EditorShell と切り分けて見るためのカウンタ。
   countPerformanceEvent("SaveStatusBadge.render");
   const saveState = useEditorStore((state) => state.saveState);
@@ -34,7 +33,6 @@ export function SaveStatusBadge({ children }: { children?: ReactNode }) {
               ? <AlertTriangle size={14} />
               : <Save size={14} />}
       <span>{statusMessage}</span>
-      {children}
     </div>
   );
 }

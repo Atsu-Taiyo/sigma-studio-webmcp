@@ -76,6 +76,16 @@ function insertBlock(document: SigmaDocument, index: number, block: ParagraphNod
   return { ...document, content };
 }
 
+function withOverlayTimestamp(document: SigmaDocument, updatedAt: string): SigmaDocument {
+  return {
+    ...document,
+    pageLayout: {
+      ...document.pageLayout!,
+      overlay: { ...document.pageLayout?.overlay, updatedAt },
+    },
+  };
+}
+
 function shapesOf(document: SigmaDocument): OverlayGeoShape[] {
   return normalizeOverlaySnapshot(document.pageLayout?.overlay?.overlaySnapshot).shapes as OverlayGeoShape[];
 }
@@ -151,13 +161,25 @@ describe("mergeExternalDocumentChange", () => {
     }
   });
 
-  it("fails when the human adds a block and the AI also restructures the document", () => {
+  it("keeps both blocks when the human adds one and the AI inserts another elsewhere", () => {
+    // 承認IPCの往復中にユーザーが改行して段落を足す、というのは競合ではない。挿入位置を
+    // それぞれのアンカーで解決し、どちらの段落も残す。
     const base = baseDocument();
     const mine = insertBlock(base, 0, paragraph("p_human_inserted", "人間が追加した段落"));
     const theirs = insertBlock(base, 1, paragraph("p_ai_inserted", "AIが挿入した段落"));
 
     const result = mergeExternalDocumentChange(base, mine, theirs);
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged.content.map((block) => block.id)).toEqual([
+        "p_human_inserted",
+        "p1",
+        "p_ai_inserted",
+        "p2",
+        "p3",
+      ]);
+      expect(result.resolvedConflicts).toBeUndefined();
+    }
   });
 
   it("succeeds when the AI changes an overlay shape and the human edits body text", () => {
@@ -182,15 +204,22 @@ describe("mergeExternalDocumentChange", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("succeeds when both sides insert a different new overlay shape and no shared shape conflicts", () => {
+  it("keeps both new shapes when the human and the AI each add one", () => {
     const base = withShapes(baseDocument(), [geoShape("shape_1")]);
     const mine = withShapes(base, [geoShape("shape_1"), geoShape("shape_human")]);
     const theirs = withShapes(base, [geoShape("shape_1"), geoShape("shape_ai")]);
 
-    // どちらもshape_1には触れておらず、追加した図形のIDが異なる (構造変更が食い違う) ため
-    // 保守的にconflict扱いになる。
+    // どちらもshape_1には触れておらず、追加したIDも別。同じアンカーへの追加はAI→人間の順で
+    // 決定的に並べる。
     const result = mergeExternalDocumentChange(base, mine, theirs);
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(shapesOf(result.merged).map((shape) => shape.id)).toEqual([
+        "shape_1",
+        "shape_ai",
+        "shape_human",
+      ]);
+    }
   });
 
   it("keeps the human's shape reordering while adopting the AI's edit to another shape", () => {
@@ -284,6 +313,111 @@ describe("mergeExternalDocumentChange", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.merged).toEqual(theirs);
+    }
+  });
+  it("does not treat the save timestamp as a metadata change", () => {
+    // 保存経路もキー入力も `{...doc, updatedAt: now}` という別コピーを作る。updatedAt を
+    // 内容差分として数えていたころは、AI承認のたびにここでメタ競合になり、未保存の入力が
+    // 「（アプリ内編集の退避）」という別教材へ切り出されていた。
+    const base = { ...baseDocument(), updatedAt: "2024-01-01T00:00:00.000Z" };
+    const mine = { ...replaceParagraphText(base, "p2", "人間が入力中"), updatedAt: "2024-01-01T00:00:01.000Z" };
+    const theirs = { ...replaceParagraphText(base, "p1", "AIの変更"), updatedAt: "2024-01-01T00:00:09.000Z" };
+
+    const result = mergeExternalDocumentChange(base, mine, theirs);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged.content.find((block) => block.id === "p1")).toEqual(paragraph("p1", "AIの変更"));
+      expect(result.merged.content.find((block) => block.id === "p2")).toEqual(paragraph("p2", "人間が入力中"));
+      // 記録用の時刻はディスク正本に揃える。
+      expect(result.merged.updatedAt).toBe("2024-01-01T00:00:09.000Z");
+    }
+  });
+
+  it("does not treat the overlay write timestamp as a metadata change", () => {
+    const base = withOverlayTimestamp(withShapes(baseDocument(), [geoShape("shape_1")]), "2024-01-01T00:00:00.000Z");
+    const mine = withOverlayTimestamp(replaceParagraphText(base, "p1", "人間が入力中"), "2024-01-01T00:00:02.000Z");
+    const theirs = withOverlayTimestamp(
+      withShapes(base, [geoShape("shape_1", { color: "#ff0000" })]),
+      "2024-01-01T00:00:07.000Z",
+    );
+
+    const result = mergeExternalDocumentChange(base, mine, theirs);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged.content.find((block) => block.id === "p1")).toEqual(paragraph("p1", "人間が入力中"));
+      expect(shapesOf(result.merged)).toEqual([geoShape("shape_1", { color: "#ff0000" })]);
+      expect(result.merged.pageLayout?.overlay?.updatedAt).toBe("2024-01-01T00:00:07.000Z");
+    }
+  });
+
+  it("takes theirs for the conflicting block only when resolution is prefer-theirs", () => {
+    const base = baseDocument();
+    const mine = replaceParagraphText(replaceParagraphText(base, "p1", "人間の変更"), "p2", "人間だけが触った段落");
+    const theirs = replaceParagraphText(base, "p1", "AIの変更");
+
+    const result = mergeExternalDocumentChange(base, mine, theirs, { resolution: "prefer-theirs" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged.content.find((block) => block.id === "p1")).toEqual(paragraph("p1", "AIの変更"));
+      expect(result.merged.content.find((block) => block.id === "p2")).toEqual(paragraph("p2", "人間だけが触った段落"));
+      expect(result.resolvedConflicts).toHaveLength(1);
+    }
+  });
+
+  it("keeps theirs' edit when the human deleted the block, under prefer-theirs", () => {
+    const base = baseDocument();
+    const mine = removeBlock(base, "p2");
+    const theirs = replaceParagraphText(base, "p2", "AIが書き換えた段落");
+
+    expect(mergeExternalDocumentChange(base, mine, theirs).ok).toBe(false);
+
+    const result = mergeExternalDocumentChange(base, mine, theirs, { resolution: "prefer-theirs" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged.content.map((block) => block.id)).toEqual(["p1", "p2", "p3"]);
+      expect(result.merged.content.find((block) => block.id === "p2")).toEqual(paragraph("p2", "AIが書き換えた段落"));
+      expect(result.resolvedConflicts).toHaveLength(1);
+    }
+  });
+
+  it("drops the block the AI deleted even when the human was editing it, under prefer-theirs", () => {
+    const base = baseDocument();
+    const mine = replaceParagraphText(base, "p2", "人間が入力中");
+    const theirs = removeBlock(base, "p2");
+
+    const result = mergeExternalDocumentChange(base, mine, theirs, { resolution: "prefer-theirs" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged.content.map((block) => block.id)).toEqual(["p1", "p3"]);
+      expect(result.resolvedConflicts).toHaveLength(1);
+    }
+  });
+
+  it("falls back to theirs' order when both sides added the same block id, under prefer-theirs", () => {
+    const base = baseDocument();
+    const mine = insertBlock(base, 0, paragraph("p_new", "人間が追加"));
+    const theirs = insertBlock(base, 3, paragraph("p_new", "AIが追加"));
+
+    expect(mergeExternalDocumentChange(base, mine, theirs).ok).toBe(false);
+
+    const result = mergeExternalDocumentChange(base, mine, theirs, { resolution: "prefer-theirs" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged.content.map((block) => block.id)).toEqual(["p1", "p2", "p3", "p_new"]);
+      expect(result.merged.content.find((block) => block.id === "p_new")).toEqual(paragraph("p_new", "AIが追加"));
+      expect(result.resolvedConflicts).toHaveLength(1);
+    }
+  });
+
+  it("keeps the human's block move while adopting the AI's insertion", () => {
+    const base = baseDocument();
+    const mine = insertBlock(removeBlock(base, "p3"), 0, paragraph("p3", "3番目の段落"));
+    const theirs = insertBlock(base, 1, paragraph("p_ai_inserted", "AIが挿入した段落"));
+
+    const result = mergeExternalDocumentChange(base, mine, theirs);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.merged.content.map((block) => block.id)).toEqual(["p3", "p1", "p_ai_inserted", "p2"]);
     }
   });
 });

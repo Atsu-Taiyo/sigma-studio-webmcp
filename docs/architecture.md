@@ -367,7 +367,7 @@ overlayは見た目のレイヤーとして `stackLayer: "background" | "foregro
 - `image`: 画像（オーバーレイの `assets` からdata URLまたはローカルasset参照を持つassetを参照）
 - `text`: 補助的なページ注釈（多用しない）
 
-板書風の補助図、図形問題の図、ベクトル図、数直線、面積図、増減表などをここで作ります。Presentation代替ではありません。
+板書風の補助図、図形問題の図、ベクトル図、数直線、面積図、増減表などをここで作ります。PowerPoint代替ではありません。
 
 ### Images And Assets
 

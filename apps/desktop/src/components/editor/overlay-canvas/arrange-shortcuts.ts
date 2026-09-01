@@ -5,7 +5,7 @@ type ArrangeKeyboardEvent = Pick<
   "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey"
 >;
 
-/** Google Slides defaults plus Presentation and legacy aliases. */
+/** Google Slides defaults plus PowerPoint and legacy aliases. */
 export function getOverlayArrangeShortcutAction(
   event: ArrangeKeyboardEvent,
 ): OverlayArrangeAction | null {

@@ -43,10 +43,10 @@ import {
  * The editor's converter between body blocks and Tiptap's JSON. Every editing surface goes through
  * it, a shape's text included (`overlay-tiptap-adapter.ts` narrows the result, it does not convert).
  *
- * There is a second, far narrower projection in `lib/classic-format/tiptap-blocks.ts`. The EditorMath
+ * There is a second, far narrower projection in `lib/studyaid-prt/tiptap-blocks.ts`. The StudyAid
  * import builds and rewrites Tiptap-shaped JSON as a *data shape* inside a headless service, and a
  * headless service may not reach into `components/` (`features/headless-boundaries.test.ts`), so it
- * cannot call this. It affords that only because `.legacy` carries nothing but paragraphs and
+ * cannot call this. It affords that only because `.prt` carries nothing but paragraphs and
  * headings. Unifying the two means moving this adapter down into `features/text-editing` where both
  * layers can reach it — not teaching that one about lists.
  */

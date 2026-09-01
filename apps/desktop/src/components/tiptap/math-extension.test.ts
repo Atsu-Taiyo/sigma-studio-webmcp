@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   InlineMathExtension,
-  createInlineMathTexFromEditorMathShortcut,
+  createInlineMathTexFromStudyAidShortcut,
   createInlineMathSelectionDecorations,
   extractSingleInlineMathText,
   focusInlineMathPlaceholder,
@@ -23,7 +23,7 @@ import {
   removeInlineMathClickPlaceholderIds,
   restoreDesktopInputSource,
   requestDesktopAsciiInputSource,
-  insertEditorMathShortcutInlineMathAtSelection,
+  insertStudyAidShortcutInlineMathAtSelection,
   resolveInlineMathArrowEdgeAction,
   resolveInlineMathLatexCommand,
   shouldCommitInlineMathOnKeyDown,
@@ -35,7 +35,7 @@ import {
   shouldInsertInlineMathLineBreak,
   shouldStartInlineMathOnBackslash,
 } from "@/components/tiptap/inline-math-extension";
-import { EDITOR_MATH_MATH_SHORTCUTS, getEditorMathMathShortcut } from "@/lib/math-editor-shortcuts";
+import { STUDYAID_MATH_SHORTCUTS, getStudyAidMathShortcut } from "@/lib/studyaid-math-shortcuts";
 import type { TiptapDoc } from "@/lib/tiptap-adapter";
 import { DEFAULT_MATH_RENDER_ENVIRONMENT } from "@/lib/math-environment";
 
@@ -309,7 +309,7 @@ describe("math tiptap extensions", () => {
     expect(normalizeInlineMathTexLiteralInput(String.raw`\al`)).toBe(String.raw`\al`);
   });
 
-  it("creates inline math directly from EditorMath shortcuts in body text", () => {
+  it("creates inline math directly from StudyAid shortcuts in body text", () => {
     const schema = getSchema(extensions);
     const doc = schema.nodes.doc.create(null, [
       schema.nodes.paragraph.create(null, [schema.text("abc")]),
@@ -319,11 +319,11 @@ describe("math tiptap extensions", () => {
       schema,
       selection: TextSelection.create(doc, 2),
     });
-    const shortcut = getEditorMathMathShortcut(keyEvent("g", { code: "KeyG", ctrlKey: true }));
+    const shortcut = getStudyAidMathShortcut(keyEvent("g", { code: "KeyG", ctrlKey: true }));
     let nextState = state;
 
     expect(shortcut?.tex).toBe("\\sum_{#?}^{#?} #?");
-    expect(insertEditorMathShortcutInlineMathAtSelection(
+    expect(insertStudyAidShortcutInlineMathAtSelection(
       state,
       schema.nodes.mathInline,
       shortcut!,
@@ -338,7 +338,7 @@ describe("math tiptap extensions", () => {
     expect(nextState.doc.textContent).toBe("abc");
   });
 
-  it("wraps selected body text with the EditorMath square shortcut", () => {
+  it("wraps selected body text with the StudyAid square shortcut", () => {
     const schema = getSchema(extensions);
     const doc = schema.nodes.doc.create(null, [
       schema.nodes.paragraph.create(null, [schema.text("abc")]),
@@ -348,11 +348,11 @@ describe("math tiptap extensions", () => {
       schema,
       selection: TextSelection.create(doc, 2, 3),
     });
-    const shortcut = getEditorMathMathShortcut(keyEvent("2", { altKey: true, code: "Digit2", ctrlKey: true }));
+    const shortcut = getStudyAidMathShortcut(keyEvent("2", { altKey: true, code: "Digit2", ctrlKey: true }));
     let nextState = state;
 
-    expect(createInlineMathTexFromEditorMathShortcut(shortcut!, "b")).toBe("{b}^{2}");
-    expect(insertEditorMathShortcutInlineMathAtSelection(
+    expect(createInlineMathTexFromStudyAidShortcut(shortcut!, "b")).toBe("{b}^{2}");
+    expect(insertStudyAidShortcutInlineMathAtSelection(
       state,
       schema.nodes.mathInline,
       shortcut!,
@@ -407,9 +407,9 @@ describe("math tiptap extensions", () => {
     })).resolves.toBeUndefined();
   });
 
-  it("renders EditorMath shortcut templates with MathLive placeholders", () => {
+  it("renders StudyAid shortcut templates with MathLive placeholders", () => {
     const representativeIds = new Set(["fraction", "nth-root", "sin-power", "matrix-2x2", "cases-3", "less-than-or-equal"]);
-    for (const shortcut of EDITOR_MATH_MATH_SHORTCUTS.filter((entry) => representativeIds.has(entry.id))) {
+    for (const shortcut of STUDYAID_MATH_SHORTCUTS.filter((entry) => representativeIds.has(entry.id))) {
       expect(renderMathHtml(shortcut.tex, DEFAULT_MATH_RENDER_ENVIRONMENT), shortcut.id).toContain("ML__latex");
     }
   });

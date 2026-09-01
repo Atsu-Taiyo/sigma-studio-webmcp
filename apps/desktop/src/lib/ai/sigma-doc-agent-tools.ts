@@ -1,18 +1,23 @@
-import { tv } from "@/lib/ai/validation-locale";
+import { resolveValidationLocale, tv } from "@/lib/ai/validation-locale";
 import { z } from "zod";
 
 import {
   DEFAULT_CALLOUT_CORNER_RADIUS,
+  buildGraph3DSceneGeometry,
   createArcShapeFromCenterDrag,
   createArcShapeFromThreePoints,
+  createGraph3DSampledSpec,
+  createGraph3DSpecPreset,
   createGraphAnnotationLabelShapeEntries,
   createGraphAxisLabelShapeEntries,
   createGraphFormulaLabelShapeEntries,
   createGraphPointLabelShapeEntries,
   DEFAULT_TEXT_SHAPE_WIDTH,
   estimateTextWidthEm,
+  getGraph3DPreviewSourceHash,
   getGraphPlotSize,
   getOverlayTextBlocksLineCount,
+  GRAPH3D_DEFAULT_CAMERA,
   normalizeCalloutCornerRadius,
   TEXT_ASCENT_EM,
   TEXT_DESCENT_EM,
@@ -23,6 +28,7 @@ import { DEFAULT_MATH_RENDER_ENVIRONMENT } from "@/lib/math-environment";
 import {
   clearMaterializedGraphLabelTexts,
   formatInlineNodeRange,
+  isGraph3DSpec,
   isValidOverlaySnapshot,
   isWhiteboardPageLayout,
   migrateLegacyGraphShapeToPlotBounds,
@@ -48,6 +54,7 @@ import {
   type OverlayArrowhead,
   type OverlayAsset,
   type OverlayDash,
+  type OverlayGraph3DShape,
   type OverlayGraphAxisLabelKey,
   type OverlayGraphShape,
   type OverlayImageShape,
@@ -70,6 +77,8 @@ import {
   type BoxBlockChildBlock,
   type BoxFrameSpec,
   type Graph2DSpec,
+  type Graph3DSpec,
+  type Graph3DViewSettings,
   type GraphAnnotation,
   type GraphAxes,
   type GraphCurve,
@@ -110,6 +119,7 @@ import {
 import {
   applySigmaDocMutationOp,
   EditableBlockSchema,
+  isAllowedAiOverlayAssetSource,
   type AiEditDraft,
   type AiEditSessionDocumentDraft,
   type SigmaDocMutationOp,
@@ -124,6 +134,8 @@ import {
 import { splitDelimitedInlineMathText } from "@/features/rendering/core";
 import { SigmaBlockSchema, RichBlockSchema, getTexIssues, parseSigmaDocument } from "@/lib/sigma-doc-schema";
 import { getGraphFillPath } from "@/lib/graph-fill";
+import { buildGraph3DPresetNames } from "@/lib/graph3d-preset-names";
+import { createTranslator, type Translate } from "@/lib/i18n";
 import { formatGraphIssue, getGraphIssues, getGraphPlotBox } from "@/lib/graph2d";
 import { formatValidationError } from "@/lib/validation-text";
 import { isSigmaValidationError } from "@/features/document";
@@ -217,6 +229,8 @@ export type SigmaDocAgentDraftToolName =
   | "draft_insert_table"
   | "draft_insert_shape"
   | "draft_insert_graph"
+  | "draft_insert_graph3d"
+  | "draft_update_graph3d"
   | "draft_insert_text_block"
   | "draft_create_problem"
   | "draft_update_problem_answer"
@@ -337,6 +351,37 @@ export const NULLABLE_SIGMA_DOC_AGENT_DRAFT_TOOL_ARGUMENT_KEYS: Partial<Record<S
     "annotations",
     "fills",
     "showFormulaLabels",
+  ],
+  draft_insert_graph3d: [
+    "targetId",
+    "area",
+    "id",
+    "x",
+    "y",
+    "w",
+    "h",
+    "preset",
+    "spec",
+    "parameters",
+    "objects",
+    "regions",
+    "annotations",
+    "camera",
+    "view",
+    "previewPng",
+  ],
+  draft_update_graph3d: [
+    "w",
+    "h",
+    "preset",
+    "spec",
+    "parameters",
+    "objects",
+    "regions",
+    "annotations",
+    "camera",
+    "view",
+    "previewPng",
   ],
   draft_insert_text_block: ["targetId", "area"],
   draft_create_problem: ["targetId"],
@@ -681,6 +726,50 @@ export const DraftInsertGraphArgsSchema = z.object({
   showFormulaLabels: z.boolean().optional(),
 });
 
+/**
+ * 3D の draft 層は 2D (`Graph2DSpecSchema`) と同じ分業で、型は緩く受けて
+ * `isGraph3DSpec()` で最終検証する。厳密な形は MCP / WebMCP の入力スキーマが担う。
+ */
+const Graph3DSpecArgSchema = z.custom<Record<string, unknown>>((value) => isRecord(value));
+const Graph3DPresetSchema = z.enum(["revolution", "surface", "tricylinder", "sphereTetrahedron", "blank"]);
+const Graph3DPreviewPngSchema = z.object({
+  dataUrl: z.string().min(1),
+  w: z.number().positive(),
+  h: z.number().positive(),
+  fileSize: z.number().nonnegative().optional(),
+}).strict();
+
+const Graph3DSpecPartsArgsSchema = {
+  preset: Graph3DPresetSchema.optional(),
+  spec: Graph3DSpecArgSchema.optional(),
+  parameters: z.array(LooseRecordSchema).max(16).optional(),
+  objects: z.array(LooseRecordSchema).max(64).optional(),
+  regions: z.array(LooseRecordSchema).max(32).optional(),
+  annotations: z.array(LooseRecordSchema).max(64).optional(),
+  camera: LooseRecordSchema.optional(),
+  view: LooseRecordSchema.optional(),
+} as const;
+
+export const DraftInsertGraph3DArgsSchema = z.object({
+  targetId: z.string().min(1).optional(),
+  area: ProblemAreaSchema.optional(),
+  id: z.string().min(1).optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  w: z.number().positive().optional(),
+  h: z.number().positive().optional(),
+  ...Graph3DSpecPartsArgsSchema,
+  previewPng: Graph3DPreviewPngSchema.optional(),
+});
+
+export const DraftUpdateGraph3DArgsSchema = z.object({
+  shapeId: z.string().min(1),
+  w: z.number().positive().optional(),
+  h: z.number().positive().optional(),
+  ...Graph3DSpecPartsArgsSchema,
+  previewPng: Graph3DPreviewPngSchema.optional(),
+});
+
 const DraftInsertTextBlockArgsSchema = z.object({
   targetId: z.string().min(1).optional(),
   area: ProblemAreaSchema.optional(),
@@ -1017,6 +1106,10 @@ function runDraftTool(
       return draftInsertShape(session, args);
     case "draft_insert_graph":
       return draftInsertGraph(session, args);
+    case "draft_insert_graph3d":
+      return draftInsertGraph3D(session, args);
+    case "draft_update_graph3d":
+      return draftUpdateGraph3D(session, args);
     case "draft_insert_text_block":
       return draftInsertTextBlock(session, args);
     case "draft_create_problem":
@@ -1242,7 +1335,7 @@ function draftInsertBodyContent(session: SigmaDocAgentSession, rawArgs: Record<s
     if (!problem) {
       throw new Error(tv("tools.draftInsertBodyContent3"));
     }
-    const richBlocks = blocks as RichBlock[];
+    const richBlocks = blocks as ProblemAreaBlock[];
     if (args.area !== "lead") {
       let insertionTargetId: string | null = null;
       if (targetId !== problem.id) {
@@ -1825,6 +1918,411 @@ export function createGraphSpecFromAiToolArgs(rawArgs: Record<string, unknown>):
   return normalizeGraphSpec(args.spec ?? createGraphSpecFromToolArgs(args));
 }
 
+/** ドラッグ作成 (`overlay-canvas/shapes/create-shape.ts`) と同じ既定サイズ。 */
+const DEFAULT_GRAPH3D_SHAPE_W = 360;
+const DEFAULT_GRAPH3D_SHAPE_H = 280;
+const GRAPH3D_SPEC_ARRAY_KEYS = ["parameters", "objects", "regions", "annotations"] as const;
+/** `findGraph3DSpecIssuePath` が camera と view を切り分けるための既知の正しい view。 */
+const GRAPH3D_PROBE_VIEW: Graph3DViewSettings = {
+  coordinateSystem: "zUp",
+  showAxes: true,
+  showGrid: true,
+  backgroundColor: "#ffffff",
+};
+
+export interface Graph3DSpecToolArgs {
+  spec?: Record<string, unknown>;
+  parameters?: unknown[];
+  objects?: unknown[];
+  regions?: unknown[];
+  annotations?: unknown[];
+  camera?: Record<string, unknown>;
+  view?: Record<string, unknown>;
+}
+
+export interface Graph3DSpecBuildOptions {
+  /**
+   * 土台の `cuts` をそのまま持ち越すか。
+   *
+   * `cuts` は永続化されるが `buildGraph3DSceneGeometry` が一切ビルドしない
+   * (`features/drawing/graph3d-scene.ts`) ため、ツールの入力語彙には出していない。新規作成では
+   * 常に空で確定させるが (`false`)、更新では**土台にあったものを残す** (`true`) —
+   * ツールが理解していないだけのデータを、無関係な更新のついでに黙って消してはいけない。
+   */
+  preserveCuts: boolean;
+}
+
+/**
+ * `preset` / 既存 spec を土台に、ツール引数で指定された部分だけを差し替えた `Graph3DSpec` を作る。
+ *
+ * - `spec` は「描かれる部分の丸ごと差し替え」、個別 field はその上に重なる細かい差し替え。
+ * - **配列 (`objects` など) は置換であって追加ではない**。id ベースの差分マージは「未知 id は
+ *   追加か更新か」「削除の表し方」で仕様が発散するため採らない。
+ * - `camera` / `view` だけは**浅くマージ**する。視点を1軸だけ動かす指示が、残りの視点情報を
+ *   書き直させずに済むのがこの2つだけだから。
+ */
+export function buildGraph3DSpecFromToolArgs(
+  base: Graph3DSpec,
+  args: Graph3DSpecToolArgs,
+  options: Graph3DSpecBuildOptions = { preserveCuts: false },
+): Graph3DSpec {
+  const source: Record<string, unknown> = { ...base, ...(args.spec ?? {}) };
+  const next: Record<string, unknown> = {
+    version: 1,
+    parameters: args.parameters ?? source.parameters,
+    objects: args.objects ?? source.objects,
+    cuts: options.preserveCuts ? base.cuts : [],
+    regions: args.regions ?? source.regions,
+    annotations: args.annotations ?? source.annotations,
+    camera: { ...(isRecord(source.camera) ? source.camera : {}), ...(args.camera ?? {}) },
+    view: { ...(isRecord(source.view) ? source.view : {}), ...(args.view ?? {}) },
+  };
+
+  if (!isGraph3DSpec(next)) {
+    throw new Error(tv("tools.buildGraph3DSpec1", { p0: findGraph3DSpecIssuePath(next) }));
+  }
+  return next;
+}
+
+/**
+ * `isGraph3DSpec` は真偽しか返さないので、AI が自己修正できるようにフィールドパスを復元する。
+ * 空の骨組みへ 1 件ずつ差し戻して、最初に落ちた位置を報告する。
+ */
+function findGraph3DSpecIssuePath(spec: Record<string, unknown>): string {
+  const skeleton: Record<string, unknown> = {
+    ...spec,
+    parameters: [],
+    objects: [],
+    cuts: [],
+    regions: [],
+    annotations: [],
+  };
+  if (!isGraph3DSpec(skeleton)) {
+    // 片方ずつ既知の正しい値へ差し替えて、どちらが原因かを個別に確かめる。両方壊れているときに
+    // 片方だけ挙げると、モデルはそこを直して同じエラーで戻ってくる (このヘルパが防ぐはずのループ)。
+    const cameraBroken = !isGraph3DSpec({ ...skeleton, view: GRAPH3D_PROBE_VIEW });
+    const viewBroken = !isGraph3DSpec({ ...skeleton, camera: GRAPH3D_DEFAULT_CAMERA });
+    if (cameraBroken && viewBroken) {
+      return "camera, view";
+    }
+    return cameraBroken ? "camera" : "view";
+  }
+  for (const key of GRAPH3D_SPEC_ARRAY_KEYS) {
+    const items = spec[key];
+    if (!Array.isArray(items)) {
+      return key;
+    }
+    const index = items.findIndex((item) => !isGraph3DSpec({ ...skeleton, [key]: [item] }));
+    if (index >= 0) {
+      return `${key}[${index}]`;
+    }
+  }
+  return "spec";
+}
+
+/**
+ * プリセット名は MCP サーバープロセスでも正しい言語で引ける唯一の入口を通す。
+ * `createCurrentLocaleTranslator` は node で常に既定ロケールを返すので使わない。
+ */
+function getGraph3DShapeTranslator(): Translate<"shape"> {
+  return createTranslator(resolveValidationLocale(), "shape");
+}
+
+function createGraph3DShapeFromSpec(
+  spec: Graph3DSpec,
+  document: SigmaDocument,
+  targetId: string,
+  args: { id?: string; x?: number; y?: number; w?: number; h?: number },
+): OverlayGraph3DShape {
+  const placed = resolveAiOverlayPlacement({
+    document,
+    anchorBlockId: targetId,
+    ...(args.x === undefined ? {} : { x: args.x }),
+    ...(args.y === undefined ? {} : { y: args.y }),
+  });
+  return {
+    id: args.id ?? createId("ai_graph3d"),
+    type: "graph3dShape",
+    x: placed.x,
+    y: placed.y,
+    rotation: 0,
+    anchor: placed.anchor,
+    props: {
+      w: args.w ?? DEFAULT_GRAPH3D_SHAPE_W,
+      h: args.h ?? DEFAULT_GRAPH3D_SHAPE_H,
+      spec,
+    },
+  };
+}
+
+/**
+ * ヘッドレスに描かれた派生 PNG を overlay asset にする。
+ * asset id を図形 id から決め打ちにするのは、アプリ側の WebGL キャプチャ
+ * (`OverlayCanvasEditorClient` の `handleGraph3DPreviewReady`) と同じ規約に乗せて、
+ * 上書きのたびに孤児 asset が増えないようにするため。
+ */
+const GRAPH3D_PREVIEW_PNG_DATA_URL_PREFIX = "data:image/png;base64,";
+
+function createGraph3DPreviewAsset(
+  shapeId: string,
+  // `w` / `h` は**実際に描かれたビットマップの寸法**で、図形の文書上のサイズではない
+  // (拡大・印刷で滲まないよう supersample するため)。渡すのはサーバ側のレンダラであって
+  // モデルではない — この引数は MCP のツールスキーマには出ない。
+  previewPng: { dataUrl: string; w: number; h: number; fileSize?: number },
+): OverlayAsset {
+  const dataUrl = previewPng.dataUrl.trim();
+  // 同じ判定は提案を書き出す直前にも文書全体へ掛かる (`assertAiOverlayAssetsInDocument`) が、
+  // そこで落とすと「ツールはokと言ったのに提案が失敗する」になる。asset を組み立てている
+  // ここで拒むのが、どの入力が悪かったかを呼び出し側へ返せる唯一の場所。
+  // 加えて PNG に限定する — 共通ゲートは jpeg / webp / storage 参照も通すが、下で mimeType を
+  // "image/png" と書くので、そこを通してしまうと文書に嘘の mimeType が残る。
+  if (!dataUrl.startsWith(GRAPH3D_PREVIEW_PNG_DATA_URL_PREFIX) || !isAllowedAiOverlayAssetSource(dataUrl)) {
+    throw new Error(tv("tools.createGraph3DPreviewAsset1"));
+  }
+  const encoded = dataUrl.split(",")[1] ?? "";
+  return {
+    id: `asset_graph3d_preview_${shapeId}`,
+    type: "image",
+    props: {
+      w: Math.max(1, Math.round(previewPng.w)),
+      h: Math.max(1, Math.round(previewPng.h)),
+      name: getGraph3DShapeTranslator()("graph3d.previewFileName"),
+      isAnimated: false,
+      mimeType: "image/png",
+      src: dataUrl,
+      fileSize: previewPng.fileSize ?? Math.max(0, Math.floor(encoded.length * 0.75)),
+    },
+  };
+}
+
+/**
+ * issue 検出用のサンプル密度の係数。`createGraph3DSampledSpec` の下限
+ * (解像度10 / サンプル6) まで落としきる小さい値を選ぶ。
+ *
+ * 式の誤りは密度に依らず最初の評価で出るので、検出には粗いサンプルで足りる。一方で
+ * marching cubes は解像度の3乗で効き、実測では解像度256の `boundedSolid` 1個で約1.8秒、
+ * 4個で約7.6秒、64個 (スキーマ上限) ではヒープが尽きてプロセスごと落ちる。
+ * ここは stdio の MCP リクエスト内で同期に走るので、authored の密度をそのまま使ってはいけない。
+ */
+const GRAPH3D_ISSUE_PROBE_SAMPLE_FACTOR = 0.05;
+/**
+ * `createGraph3DSampledSpec` は `primitive` の分割数を **factor > 1 のときしか書き換えない**
+ * (1個のリングは marched solid に比べて無視できる、という前提)。ところが上限どうしを掛けると
+ * 64個 × 分割数256 で 1GB 級のピークメモリになるので、検査用のサンプルではここも落とす。
+ */
+const GRAPH3D_ISSUE_PROBE_PRIMITIVE_RESOLUTION = 8;
+
+/** authored の密度を一切変えずに、検査だけを固定の粗いサンプルで走らせるための spec。 */
+function createGraph3DIssueProbeSpec(spec: Graph3DSpec): Graph3DSpec {
+  const sampled = createGraph3DSampledSpec(spec, GRAPH3D_ISSUE_PROBE_SAMPLE_FACTOR);
+  return {
+    ...sampled,
+    objects: sampled.objects.map((object) => (
+      object.kind === "primitive" && (object.resolution ?? 0) > GRAPH3D_ISSUE_PROBE_PRIMITIVE_RESOLUTION
+        ? { ...object, resolution: GRAPH3D_ISSUE_PROBE_PRIMITIVE_RESOLUTION }
+        : object
+    )),
+  };
+}
+
+/**
+ * 共通部分のメンバーが2個そろっていない region の id。
+ *
+ * 配列は丸ごと置換なので、`objects` だけ差し替えると preset 由来の region が消えた id を
+ * 指したまま残る。`graph3d-scene.ts` はそれを `members.length < 2` で**黙って捨てる**ので、
+ * ここで返さないとモデルには「regionCount は5なのに何も描かれない」としか見えない。
+ */
+function findUnresolvedGraph3DRegionIds(spec: Graph3DSpec): string[] {
+  const objectIds = new Set(spec.objects.map((object) => object.id));
+  return spec.regions
+    .filter((region) => (
+      region.kind === "objectIntersection" &&
+      region.objectIds.filter((objectId) => objectIds.has(objectId)).length < 2
+    ))
+    .map((region) => region.id);
+}
+
+/**
+ * 式の誤りは永続化エラーにしない (`features/document/model/graph3d.ts` の設計方針) ため、
+ * ビルド時の issue を結果データで返すのが「描く前にモデルへ知らせる」唯一の経路になる。
+ */
+function describeGraph3DSpec(spec: Graph3DSpec): Record<string, unknown> {
+  return {
+    objectCount: spec.objects.length,
+    regionCount: spec.regions.length,
+    unresolvedRegionIds: findUnresolvedGraph3DRegionIds(spec),
+    sceneIssues: buildGraph3DSceneGeometry(createGraph3DIssueProbeSpec(spec)).issues,
+  };
+}
+
+/** 図とその描画サイズ。派生 PNG を作る側 (MCP 層) が、draft を走らせる前に必要とする一式。 */
+export interface Graph3DPreviewRenderTarget {
+  spec: Graph3DSpec;
+  width: number;
+  height: number;
+}
+
+function resolveGraph3DInsertSpec(args: z.infer<typeof DraftInsertGraph3DArgsSchema>): Graph3DSpec {
+  const base = createGraph3DSpecPreset(args.preset ?? "blank", buildGraph3DPresetNames(getGraph3DShapeTranslator()));
+  return buildGraph3DSpecFromToolArgs(base, args, { preserveCuts: false });
+}
+
+/**
+ * `draft_insert_graph3d` がこれから書く図と、その箱の大きさ。
+ *
+ * 派生 PNG は WebGL の無いプロセスで描くので時間がかかり、draft 層は同期のまま保ちたい。
+ * そこで「何を描くか」だけを先に同じコードで解いておき、絵は呼び出し側が非同期に作って
+ * `previewPng` として渡す。組み立てを二重に書かないためにここを共有する。
+ */
+export function resolveGraph3DInsertPreviewTarget(rawArgs: Record<string, unknown>): Graph3DPreviewRenderTarget {
+  const args = DraftInsertGraph3DArgsSchema.parse(rawArgs);
+  return {
+    spec: resolveGraph3DInsertSpec(args),
+    width: args.w ?? DEFAULT_GRAPH3D_SHAPE_W,
+    height: args.h ?? DEFAULT_GRAPH3D_SHAPE_H,
+  };
+}
+
+interface Graph3DUpdatePlan {
+  shape: OverlayGraph3DShape;
+  spec: Graph3DSpec;
+  /** 図の中身が変わるか。偽なら w/h だけの更新で、既存の絵はそのまま正しい。 */
+  changesSpec: boolean;
+}
+
+function planGraph3DUpdate(
+  document: SigmaDocument,
+  args: z.infer<typeof DraftUpdateGraph3DArgsSchema>,
+): Graph3DUpdatePlan {
+  const snapshot = normalizeOverlaySnapshot(document.pageLayout?.overlay?.overlaySnapshot);
+  const shape = snapshot.shapes.find((item) => item.id === args.shapeId);
+  if (!shape) {
+    throw new Error(tv("tools.draftUpdateGraph3D1", { p0: args.shapeId }));
+  }
+  if (shape.type !== "graph3dShape") {
+    throw new Error(tv("tools.draftUpdateGraph3D2", { p0: shape.type }));
+  }
+
+  const changesSpec = args.spec !== undefined
+    || args.preset !== undefined
+    || GRAPH3D_SPEC_ARRAY_KEYS.some((key) => args[key] !== undefined)
+    || args.camera !== undefined
+    || args.view !== undefined;
+  if (!changesSpec && args.w === undefined && args.h === undefined) {
+    throw new Error(tv("tools.draftUpdateGraph3D4"));
+  }
+
+  const base = args.preset
+    ? createGraph3DSpecPreset(args.preset, buildGraph3DPresetNames(getGraph3DShapeTranslator()))
+    : shape.props.spec;
+  // spec に触らない更新 (w/h だけ) で組み直さないのが重要。`getGraph3DPreviewSourceHash` は
+  // `JSON.stringify` なのでキー順まで見る — 内容が同じでも組み直せばハッシュが変わり、
+  // 最新のプレビューが「更新待ち」に化ける。
+  return {
+    shape,
+    changesSpec,
+    spec: changesSpec
+      ? buildGraph3DSpecFromToolArgs(base, args, { preserveCuts: true })
+      : shape.props.spec,
+  };
+}
+
+/**
+ * `draft_update_graph3d` がこれから書く図と箱の大きさ。描き直す絵が無いなら `null`。
+ *
+ * 更新できない入力 (対象が無い・graph3dShape でない・何も変えない) もここでは `null` を返す。
+ * 絵が作れないことは更新の失敗ではなく、本当のエラーは直後の draft 実行が同じ判定で返すため、
+ * ここで投げると同じ失敗を二度別の言葉で報告することになる。
+ */
+export function resolveGraph3DUpdatePreviewTarget(
+  document: SigmaDocument,
+  rawArgs: Record<string, unknown>,
+): Graph3DPreviewRenderTarget | null {
+  try {
+    const args = DraftUpdateGraph3DArgsSchema.parse(rawArgs);
+    const plan = planGraph3DUpdate(document, args);
+    if (!plan.changesSpec) {
+      return null;
+    }
+    return {
+      spec: plan.spec,
+      width: args.w ?? plan.shape.props.w,
+      height: args.h ?? plan.shape.props.h,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function draftInsertGraph3D(session: SigmaDocAgentSession, rawArgs: Record<string, unknown>): SigmaDocAgentToolResult {
+  const args = DraftInsertGraph3DArgsSchema.parse(rawArgs);
+  const target = resolveOverlayInsertionTarget(session, args.targetId, args.area);
+  const spec = resolveGraph3DInsertSpec(args);
+  const placedShape = ensureUniqueOverlayShapeId(
+    session,
+    createGraph3DShapeFromSpec(spec, session.draftDocument, target.targetId, args),
+  );
+  const previewAsset = args.previewPng ? createGraph3DPreviewAsset(placedShape.id, args.previewPng) : null;
+  const shape: OverlayGraph3DShape = previewAsset
+    ? {
+      ...placedShape,
+      props: {
+        ...placedShape.props,
+        previewAssetId: previewAsset.id,
+        // ハッシュを省くと、エディタを持たない公開ビューアに「プレビュー更新待ち」バッジが
+        // 恒久的に出る (`shape-renderer.tsx` の previewStale 判定)。
+        previewSourceHash: getGraph3DPreviewSourceHash(spec),
+      },
+    }
+    : placedShape;
+  const assets = previewAsset ? { [previewAsset.id]: previewAsset } : {};
+  validateOverlayShapeWithAssets(shape, assets);
+
+  return commitOperations(session, [...target.preOperations, {
+    operation: "insertOverlayShape",
+    summary: tv("tools.draftInsertGraph3D1"),
+    targetId: target.targetId,
+    overlayShape: shape,
+    assets,
+  }], [...target.changedIds, shape.id, ...(previewAsset ? [previewAsset.id] : [])], tv("tools.draftInsertGraph3D2"), {
+    ...describeGraph3DSpec(spec),
+    preview: { source: previewAsset ? "provided" : "none" },
+  });
+}
+
+function draftUpdateGraph3D(session: SigmaDocAgentSession, rawArgs: Record<string, unknown>): SigmaDocAgentToolResult {
+  const args = DraftUpdateGraph3DArgsSchema.parse(rawArgs);
+  const { shape, spec, changesSpec } = planGraph3DUpdate(session.draftDocument, args);
+  const previewAsset = args.previewPng ? createGraph3DPreviewAsset(shape.id, args.previewPng) : null;
+
+  return commitSigmaDocMutation(session, {
+    operation: "updateOverlayShape",
+    summary: tv("tools.draftUpdateGraph3D3"),
+    shapeId: shape.id,
+    // `patchShape` は props を浅くマージするので、id / x / y / anchor と未指定の props は保持される。
+    patch: {
+      props: {
+        ...(changesSpec ? { spec } : {}),
+        ...(args.w === undefined ? {} : { w: args.w }),
+        ...(args.h === undefined ? {} : { h: args.h }),
+        // 描き直した図には描き直した絵を同じ操作で添える。別operationに分けると、片方だけが
+        // 適用された瞬間に「新しいspecに古い絵」が文書へ残る。
+        ...(previewAsset
+          ? { previewAssetId: previewAsset.id, previewSourceHash: getGraph3DPreviewSourceHash(spec) }
+          : {}),
+      },
+    },
+    ...(previewAsset ? { assets: { [previewAsset.id]: previewAsset } } : {}),
+  }, {
+    ...describeGraph3DSpec(spec),
+    preview: {
+      source: previewAsset
+        ? "provided"
+        : shape.props.previewAssetId === undefined ? "none" : "unchanged",
+    },
+  });
+}
+
 function draftInsertTextBlock(session: SigmaDocAgentSession, rawArgs: Record<string, unknown>): SigmaDocAgentToolResult {
   const args = DraftInsertTextBlockArgsSchema.parse(rawArgs);
   const targetId = getTargetId(session, args.targetId);
@@ -2141,11 +2639,41 @@ function commitOperation(
   return commitOperations(session, [operation], changedIds, operation.summary);
 }
 
+/**
+ * ツール結果の `data` へ載せるとき、asset の中身 (`src`) を短い印に置き換える。
+ *
+ * `src` は最大 2MB の data URL で、まったく同じ内容が文書側にも入る。呼び出したモデルへ
+ * もう一度返しても読む意味は無く、1回のツール応答で context を食い尽くすだけなので、
+ * 「どの asset が付いたか」だけが分かる形にする (`id` / `mimeType` / `fileSize` は残す)。
+ */
+const TOOL_DATA_OMITTED_ASSET_SOURCE = "<omitted: written into the document>";
+
+function summarizeAssetsForToolData(assets: Record<string, OverlayAsset>): Record<string, OverlayAsset> {
+  return Object.fromEntries(Object.entries(assets).map(([assetId, asset]) => [assetId, {
+    ...asset,
+    props: { ...asset.props, src: TOOL_DATA_OMITTED_ASSET_SOURCE },
+  }]));
+}
+
+function summarizeOperationForToolData(operation: AiEditDraft): AiEditDraft {
+  return operation.operation === "insertOverlayShape" && Object.keys(operation.assets ?? {}).length > 0
+    ? { ...operation, assets: summarizeAssetsForToolData(operation.assets) }
+    : operation;
+}
+
+function summarizeMutationOpForToolData(op: SigmaDocMutationOp): SigmaDocMutationOp {
+  return op.operation === "updateOverlayShape" && Object.keys(op.assets ?? {}).length > 0
+    ? { ...op, assets: summarizeAssetsForToolData(op.assets!) }
+    : op;
+}
+
 function commitOperations(
   session: SigmaDocAgentSession,
   operations: AiEditDraft[],
   changedIds: string[],
   message: string,
+  /** ツール固有の結果 (検証 issue やカウント) を `data` へ合流させる。 */
+  extraData?: Record<string, unknown>,
 ): SigmaDocAgentToolResult {
   const result = createAiEditSessionDocumentDraft(session.draftDocument, operations[0].targetId, {
     summary: message,
@@ -2159,7 +2687,8 @@ function commitOperations(
   session.operationResults.push(...result.operationResults);
   session.changedIds = uniqueStrings([...session.changedIds, ...changedIds]);
   return createToolResult(session, true, message, changedIds, {
-    operations: result.draft.operations,
+    operations: result.draft.operations.map(summarizeOperationForToolData),
+    ...(extraData ?? {}),
   });
 }
 
@@ -2170,7 +2699,12 @@ function commitOperations(
  * op in `session.mutationOperations` instead of `session.operations` since these ops are not
  * part of the AiEditDraft family the inline preview UI renders.
  */
-export function commitSigmaDocMutation(session: SigmaDocAgentSession, input: unknown): SigmaDocAgentToolResult {
+export function commitSigmaDocMutation(
+  session: SigmaDocAgentSession,
+  input: unknown,
+  /** ツール固有の結果 (検証 issue やカウント) を `data` へ合流させる。 */
+  extraData?: Record<string, unknown>,
+): SigmaDocAgentToolResult {
   try {
     const { op, nextDocument } = applySigmaDocMutationOp(session.draftDocument, input);
     validateDocumentMath(nextDocument);
@@ -2178,7 +2712,10 @@ export function commitSigmaDocMutation(session: SigmaDocAgentSession, input: unk
     session.draftDocument = nextDocument;
     session.mutationOperations.push(op);
     session.changedIds = uniqueStrings([...session.changedIds, ...changedIds]);
-    return createToolResult(session, true, op.summary, changedIds, { operation: op });
+    return createToolResult(session, true, op.summary, changedIds, {
+      operation: summarizeMutationOpForToolData(op),
+      ...(extraData ?? {}),
+    });
   } catch (error) {
     return createToolResult(session, false, formatToolError(error), [], undefined);
   }
@@ -2481,7 +3018,7 @@ function normalizeAnswerDefinition(
 function normalizeAiRichBlockList(
   input: z.infer<typeof AiRichBlockListSchema> | undefined,
   idPrefix: string,
-): RichBlock[] {
+): ProblemAreaBlock[] {
   if (input === undefined) {
     return [];
   }
@@ -2489,7 +3026,7 @@ function normalizeAiRichBlockList(
   const blocks = Array.isArray(input) ? input : [input];
   return blocks.map((block, index) => {
     const normalized = normalizeAiRichBlockInput(block, idPrefix, index);
-    if (normalized.type === "boxBlock") {
+    if (normalized.type === "boxBlock" || normalized.type === "layoutSection") {
       throw new Error(tv("tools.normalizeAiRichBlockList1"));
     }
     return normalized;
@@ -2500,7 +3037,7 @@ function normalizeAiRichBlockInput(
   input: z.infer<typeof AiRichBlockInputSchema>,
   idPrefix: string,
   index: number,
-): RichBlock | BoxBlockNode {
+): ProblemAreaBlock | BoxBlockNode {
   const source: Record<string, unknown> = typeof input === "string" ? { text: input } : input;
   const pagination = normalizePaginationInput(source.pagination);
 
@@ -2532,6 +3069,28 @@ function normalizeAiRichBlockInput(
 
   if (source.type === "list") {
     return normalizeAiListInput(source, idPrefix, index, pagination);
+  }
+  if (source.type === "codeBlock") {
+    const code = Array.isArray(source.children)
+      ? source.children.map((node) => {
+          if (typeof node === "string") return node;
+          return isRecord(node) && typeof node.text === "string" ? node.text : "";
+        }).join("")
+      : typeof source.text === "string"
+        ? source.text
+        : "";
+    const language = typeof source.language === "string" && source.language.trim()
+      ? source.language.trim()
+      : undefined;
+    const theme = source.theme === "light" || source.theme === "dark" ? source.theme : undefined;
+    return {
+      type: "codeBlock",
+      id: nonEmptyStringOr(source.id, createId(`${idPrefix}_code_${index + 1}`)),
+      children: code ? [{ type: "text", text: code }] : [],
+      ...(language ? { language } : {}),
+      ...(theme ? { theme } : {}),
+      ...(pagination ? { pagination } : {}),
+    };
   }
   const children = normalizeAiInlineContent(source);
   const id = nonEmptyStringOr(source.id, createId(`${idPrefix}_${index + 1}`));
@@ -2925,7 +3484,7 @@ function collectInlineNodeIds(children: InlineNode[], ids: Set<string>): void {
   }
 }
 
-function ensureUniqueRichBlocksForInsert(session: SigmaDocAgentSession, blocks: (RichBlock | BoxBlockNode)[]): (RichBlock | BoxBlockNode)[] {
+function ensureUniqueRichBlocksForInsert(session: SigmaDocAgentSession, blocks: (ProblemAreaBlock | BoxBlockNode)[]): (ProblemAreaBlock | BoxBlockNode)[] {
   return ensureUniqueRichBlocksWithAllocator(blocks, createTakenIdAllocator(session));
 }
 
@@ -4174,6 +4733,9 @@ function getOverlayShapeIdPrefix(shape: OverlayShape): string {
   }
   if (shape.type === "graph2dShape") {
     return "ai_graph";
+  }
+  if (shape.type === "graph3dShape") {
+    return "ai_graph3d";
   }
   if (shape.type === "image") {
     return "ai_image";

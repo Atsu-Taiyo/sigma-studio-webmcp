@@ -469,8 +469,8 @@ test("copies body and shapes twice in a row, the second time across a page break
   // 「1 回目はうまくいくのに 2 回目は本文だけ貼られる」の回帰。2 回目はページを跨ぐ
   // = 複数エディタにまたがる選択で、この経路がオーバーレイまで届かないと図形が落ちる。
   await openEditor(page, { pageBreakBeforeBlockId: "p_filler_0" });
-  // 2 ページ目までを 1 画面に入れる。ドラッグ選択は自動スクロールしないので、
-  // 跨ぐ両端が同時に見えている必要がある。
+  // 自動スクロールの速度や待ち時間に依存せず、跨ぎ選択そのものだけを検証するため、
+  // 2 ページ目までを 1 画面に入れる。
   await page.setViewportSize({ width: 1400, height: 1500 });
 
   await dragSelectBlock(page, ANCHORED_BLOCK_ID);

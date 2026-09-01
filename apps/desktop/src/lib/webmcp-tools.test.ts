@@ -36,7 +36,7 @@ function baseDocument(shapes: OverlayShape[] = []): SigmaDocument {
   };
 }
 
-function createHarness(initial = baseDocument()) {
+function createHarness(initial = baseDocument(), catalog: "public" | "implementation" = "implementation") {
   let document = initial;
   let revision = 0;
   let proposal: SigmaWebMcpProposal | null = null;
@@ -50,7 +50,7 @@ function createHarness(initial = baseDocument()) {
     proposeDocumentChange: (next) => { proposal = next; proposalUpdates.push(next); },
     withdrawDocumentChange: () => { proposal = null; },
   };
-  const tools = createSigmaWebMcpTools(ports);
+  const tools = createSigmaWebMcpTools(ports, { catalog });
   const tool = (name: string): WebMcpToolDefinition => {
     const found = tools.find((candidate) => candidate.name === name);
     if (!found) throw new Error(`Missing tool: ${name}`);
@@ -85,12 +85,101 @@ function currentShape(document: SigmaDocument, id: string): OverlayShape {
 
 describe("Sigma WebMCP desktop-parity tools", () => {
   it("publishes the documented open-document tool set with safety annotations", () => {
-    const { tools } = createHarness();
+    const { tools } = createHarness(baseDocument(), "public");
     expect(tools.map((tool) => tool.name)).toEqual(SIGMA_WEB_MCP_TOOL_NAMES);
     expect(tools.find((tool) => tool.name === "get_agent_instructions")?.annotations.readOnlyHint).toBe(true);
     expect(tools.find((tool) => tool.name === "get_agent_instructions")?.annotations.untrustedContentHint).toBe(true);
-    expect(tools.find((tool) => tool.name === "insert_body_content")?.annotations.readOnlyHint).toBe(false);
-    expect(tools.find((tool) => tool.name === "insert_body_content")?.description).toContain("get_agent_instructions");
+    expect(tools.find((tool) => tool.name === "insert_markdown")?.annotations.readOnlyHint).toBe(false);
+    expect(tools.find((tool) => tool.name === "insert_markdown")?.description).toContain("get_agent_instructions");
+  });
+
+  it("keeps the public catalog compact and task-oriented while preserving all major editing domains", () => {
+    const { tools } = createHarness(baseDocument(), "public");
+    expect(tools).toHaveLength(18);
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "inspect_document", "insert_markdown", "edit_text", "edit_problem", "organize_blocks",
+      "update_layout", "create_overlay", "update_overlay", "arrange_overlay", "delete_overlay",
+      "insert_graph3d", "update_graph3d",
+    ]));
+    expect(tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining([
+      "get_block", "get_blocks", "insert_shape", "insert_table", "insert_graph", "update_shape",
+    ]));
+  });
+
+  it("routes public inspection and Markdown insertion through the established proposal engine", async () => {
+    const harness = createHarness(baseDocument(), "public");
+    const context = parseResult(await harness.tool("inspect_document").execute({ targetId: "p_existing" }));
+    expect(context).toMatchObject({ revision: 0, target: { id: "p_existing", type: "paragraph" } });
+    expect(parseResult(await harness.tool("read_blocks").execute({ blockIds: ["p_existing", "p_second"] }))).toMatchObject({
+      blocks: [{ id: "p_existing" }, { id: "p_second" }],
+    });
+
+    const result = parseResult(await harness.tool("insert_markdown").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      markdown: "## 例題\n\n式 $x^2=4$ を解く。",
+    }));
+    expect(result).toMatchObject({ status: "pending_approval", operationCount: 2 });
+    harness.apply();
+    expect(harness.getDocument().content.slice(1, 3)).toMatchObject([
+      { type: "heading", children: [{ type: "text", text: "例題" }] },
+      { type: "paragraph" },
+    ]);
+    const insertedParagraph = harness.getDocument().content[2];
+    if (insertedParagraph?.type !== "paragraph") return;
+    expect(insertedParagraph.children.find((node) => node.type === "mathInline")).toMatchObject({ tex: "x^2=4" });
+  });
+
+  it("routes public overlay creation and updates by canonical object type", async () => {
+    const harness = createHarness(baseDocument(), "public");
+    await harness.tool("create_overlay").execute({
+      expectedRevision: 0,
+      objectType: "shape",
+      targetId: "p_existing",
+      kind: "rectangle",
+      x: 40,
+      y: 80,
+      color: "#111827",
+    });
+    harness.apply();
+    const created = harness.getDocument().pageLayout?.overlay?.overlaySnapshot?.shapes.find((shape) => shape.type === "geo");
+    expect(created).toMatchObject({ type: "geo", x: 40, y: 80, props: { color: "#111827" } });
+    if (!created) return;
+
+    await harness.tool("update_overlay").execute({
+      expectedRevision: 1,
+      shapeId: created.id,
+      expectedShape: created,
+      color: "#dc2626",
+    });
+    harness.apply();
+    expect(currentShape(harness.getDocument(), created.id)).toMatchObject({ props: { color: "#dc2626" } });
+  });
+
+  it("converts Markdown independently inside semantic problem areas", async () => {
+    const harness = createHarness(baseDocument(), "public");
+    await harness.tool("edit_problem").execute({
+      expectedRevision: 0,
+      action: "create",
+      targetId: "p_second",
+      prompt: "方程式 $x^2-4=0$ を解け。",
+      answerTex: String.raw`x=\pm2`,
+      solution: "## 解法\n\n平方差を使う。",
+      hints: "- 左辺を因数分解する\n- 零積の法則を使う",
+    });
+    harness.apply();
+    const problem = harness.getDocument().content.find((block) => block.type === "problem");
+    expect(problem).toMatchObject({
+      type: "problem",
+      prompt: [expect.objectContaining({ type: "paragraph" })],
+      answer: { type: "math", expected: String.raw`x=\pm2` },
+      solution: [expect.objectContaining({ type: "heading", level: 2 }), expect.objectContaining({ type: "paragraph" })],
+      hints: [expect.objectContaining({ type: "list" })],
+    });
+    if (problem?.type !== "problem") return;
+    const prompt = problem.prompt[0];
+    if (prompt?.type !== "paragraph") return;
+    expect(prompt.children.find((node) => node.type === "mathInline")).toMatchObject({ tex: "x^2-4=0" });
   });
 
   it("returns integrated edit context and user instructions with the Web revision", async () => {
@@ -99,6 +188,58 @@ describe("Sigma WebMCP desktop-parity tools", () => {
     const context = parseResult(await harness.tool("get_edit_context").execute({ targetId: "p_existing" }));
     expect(context).toMatchObject({ revision: 0, target: { id: "p_existing", type: "paragraph" } });
     expect(context.outline).toEqual(expect.arrayContaining([expect.objectContaining({ id: "p_second" })]));
+  });
+
+  it("inserts a 3D figure and updates it in place through the shared draft layer", async () => {
+    const harness = createHarness();
+
+    const inserted = parseResult(await harness.tool("insert_graph3d").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      id: "graph3d_web",
+      preset: "revolution",
+    }));
+    expect(inserted).toMatchObject({ status: "pending_approval", proposalId: WEB_MCP_PROPOSAL_ID });
+    harness.apply();
+    const shape = currentShape(harness.getDocument(), "graph3d_web") as OverlayShape & {
+      props: { previewAssetId?: string; spec: { camera: { position: { x: number; y: number; z: number } } } };
+    };
+    expect(shape.type).toBe("graph3dShape");
+    // ブラウザにラスタライザは無い。絵はアプリのWebGLキャプチャに任せ、嘘のハッシュを残さない。
+    expect(shape.props.previewAssetId).toBeUndefined();
+
+    const updated = parseResult(await harness.tool("update_graph3d").execute({
+      expectedRevision: 1,
+      shapeId: "graph3d_web",
+      expectedShape: shape,
+      camera: { position: { x: 4, y: -4, z: 3 } },
+    }));
+    expect(updated).toMatchObject({ status: "pending_approval" });
+    harness.apply();
+    const after = currentShape(harness.getDocument(), "graph3d_web") as typeof shape;
+    expect(after.x).toBe(shape.x);
+    expect(after.y).toBe(shape.y);
+    expect(after.props.spec.camera.position).toEqual({ x: 4, y: -4, z: 3 });
+  });
+
+  it("refuses update_graph3d on a shape that is not a 3D figure", async () => {
+    const harness = createHarness();
+    const inserted = parseResult(await harness.tool("insert_graph").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      id: "graph2d_web",
+      curves: [{ id: "curve_web", expr: "x^2" }],
+    }));
+    expect(inserted).toMatchObject({ status: "pending_approval" });
+    harness.apply();
+    const shape = currentShape(harness.getDocument(), "graph2d_web");
+
+    await expect(async () => harness.tool("update_graph3d").execute({
+      expectedRevision: 1,
+      shapeId: "graph2d_web",
+      expectedShape: shape,
+      camera: { position: { x: 1, y: 1, z: 1 } },
+    })).rejects.toThrow("graph3dShape");
   });
 
   it("scopes locally stored agent instructions to one document", () => {
@@ -123,6 +264,140 @@ describe("Sigma WebMCP desktop-parity tools", () => {
       type: "paragraph",
       children: [{ type: "text", text: "二次式 " }, { type: "mathInline", tex: "x^2+1" }, { type: "text", text: " を考える。" }],
     });
+  });
+
+  it("inserts Markdown with headings, math, escaped dollars, lists, emphasis, and fenced code", async () => {
+    const harness = createHarness();
+    const result = parseResult(await harness.tool("insert_body_content").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      markdown: [
+        "## 二次方程式",
+        "",
+        String.raw`式 $x^2-4=0$ と $$x=\pm2$$ を使う。価格は \$5。`,
+        "",
+        "- **解**を確認する",
+        "- *代入*する",
+        "",
+        "```typescript",
+        'const price = "$5";',
+        "```",
+      ].join("\n"),
+    }));
+
+    expect(result).toMatchObject({
+      status: "pending_approval",
+      proposalId: WEB_MCP_PROPOSAL_ID,
+      operationCount: 4,
+    });
+    expect(harness.getProposal()?.previewDraft.operations).toHaveLength(4);
+    harness.apply();
+
+    expect(harness.getDocument().content.slice(1, 5)).toMatchObject([
+      { type: "heading", level: 2, children: [{ type: "text", text: "二次方程式" }] },
+      {
+        type: "paragraph",
+        children: [
+          { type: "text", text: "式 " },
+          { type: "mathInline", tex: "x^2-4=0" },
+          { type: "text", text: " と " },
+          { type: "mathInline", tex: String.raw`x=\pm2` },
+          { type: "text", text: " を使う。価格は $5。" },
+        ],
+      },
+      {
+        type: "list",
+        items: [
+          { children: [{ type: "text", text: "解", marks: ["bold"] }, { type: "text", text: "を確認する" }] },
+          { children: [{ type: "text", text: "代入", marks: ["italic"] }, { type: "text", text: "する" }] },
+        ],
+      },
+      {
+        type: "codeBlock",
+        language: "typescript",
+        children: [{ type: "text", text: 'const price = "$5";' }],
+      },
+    ]);
+  });
+
+  it("accepts ordinary blank-line-separated prose through markdown and rejects ambiguous payloads", async () => {
+    const harness = createHarness();
+    await harness.tool("insert_body_content").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      markdown: "第一段落。\n\n第二段落。",
+    });
+    harness.apply();
+    expect(harness.getDocument().content.slice(1, 3)).toMatchObject([
+      { type: "paragraph", children: [{ type: "text", text: "第一段落。" }] },
+      { type: "paragraph", children: [{ type: "text", text: "第二段落。" }] },
+    ]);
+
+    expect(() => harness.tool("insert_body_content").execute({
+      expectedRevision: 1,
+      markdown: "$x$",
+      blocks: ["x"],
+    })).toThrow("Pass exactly one of markdown or blocks.");
+    expect(() => harness.tool("insert_body_content").execute({ expectedRevision: 1 })).toThrow(
+      "Pass exactly one of markdown or blocks.",
+    );
+  });
+
+  it.each([
+    "a",
+    "x^2+y^2=1",
+    String.raw`\frac{a+b}{c}`,
+    String.raw`\sqrt{x+1}`,
+    String.raw`\sum_{k=1}^{n} k`,
+    String.raw`\prod_{i=1}^{m} a_i`,
+    String.raw`\int_0^1 x^2\,dx`,
+    String.raw`\lim_{x\to0}\frac{\sin x}{x}`,
+    String.raw`a\leqq b`,
+    String.raw`x\in\mathbb{R}`,
+    String.raw`\mathrm{O}`,
+    String.raw`\vec{AB}`,
+    String.raw`\overline{AB}`,
+    String.raw`\left(1-\frac{2a}{3R}\right)`,
+    String.raw`\begin{pmatrix}a&b\\c&d\end{pmatrix}`,
+    String.raw`f'(x)=2x`,
+    String.raw`x=\pm2`,
+    String.raw`\theta=\frac{\pi}{3}`,
+    String.raw`\Phi_a=\pi B_0a^2`,
+    String.raw`\text{価格は\$5}`,
+  ])("round-trips common TeX exactly through the Markdown MCP path: %s", async (tex) => {
+    const harness = createHarness();
+    await harness.tool("insert_body_content").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      markdown: `式 $${tex}$。`,
+    });
+    harness.apply();
+    const inserted = harness.getDocument().content[1];
+    expect(inserted).toMatchObject({ type: "paragraph" });
+    if (inserted?.type !== "paragraph") return;
+    expect(inserted.children.find((node) => node.type === "mathInline")).toMatchObject({ tex });
+  });
+
+  it("keeps unmatched dollars as text and rejects unsupported TeX before publishing a proposal", async () => {
+    const unmatched = createHarness();
+    await unmatched.tool("insert_body_content").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      markdown: "未完の式 $x+1 は文字のまま。",
+    });
+    unmatched.apply();
+    expect(unmatched.getDocument().content[1]).toMatchObject({
+      type: "paragraph",
+      children: [{ type: "text", text: "未完の式 $x+1 は文字のまま。" }],
+    });
+
+    const invalid = createHarness();
+    expect(() => invalid.tool("insert_body_content").execute({
+      expectedRevision: 0,
+      targetId: "p_existing",
+      markdown: String.raw`式 $\notacommand{x}$。`,
+    })).toThrow();
+    expect(invalid.getProposal()).toBeNull();
   });
 
   it("updates rich content with typed runs including inline math", async () => {
@@ -183,7 +458,7 @@ describe("Sigma WebMCP desktop-parity tools", () => {
     const tableShape: OverlayShape = { id: "table_1", type: "tableShape", x: 80, y: 160, props };
     const harness = createHarness(baseDocument([tableShape]));
     expect(() => harness.tool("update_table").execute({ expectedRevision: 0, shapeId: "table_1", cellPatches: [{ row: 0, col: 0, content: "B" }] })).toThrow(
-      "MISSING_EXPECTED_SHAPE: Pass the exact shape object returned by get_document_outline (overlayShapes) as expectedShape.",
+      "MISSING_EXPECTED_SHAPE: Pass the exact shape object returned by inspect_document (overlayShapes) as expectedShape.",
     );
   });
 

@@ -38,10 +38,22 @@ export type EditorCommandCategoryId =
  * コマンド定義は **データだけ**。表示名・説明は `command` namespace が持ち、
  * 表示するときだけ {@link resolveEditorCommandCatalog} で解決する。
  */
+/**
+ * コマンドの性質。「いまフォーカスがある面でこのコマンドを走らせてよいか」を決める。
+ *
+ * - `documentSurface` (既定) … 本文編集面のためのコマンド。入力欄やダイアログの中では走らせない。
+ * - `editHistory` … 自前の編集履歴を持つ面にだけ譲り、それ以外では常に通す。
+ *
+ * **バインドが単一文字かどうかで推測しない。** ユーザーがキーを再割り当てした瞬間に
+ * 破綻するので、性質はコマンド側が宣言する。
+ */
+export type EditorCommandTargetPolicy = "documentSurface" | "editHistory";
+
 export interface EditorCommandShortcutDefinition {
   id: string;
   categoryId: EditorCommandCategoryId;
   defaultBinding: EditorShortcutBinding | null;
+  targetPolicy?: EditorCommandTargetPolicy;
 }
 
 /** 表示用に文言を解決したコマンド。UI 層だけが受け取る。 */
@@ -81,8 +93,8 @@ export const EDITOR_SHORTCUT_STORAGE_KEY = "sigma-studio:command-shortcuts";
 export const EDITOR_CUSTOM_COMMANDS_STORAGE_KEY = "sigma-studio:custom-commands";
 
 export const EDITOR_COMMAND_SHORTCUTS: readonly EditorCommandShortcutDefinition[] = [
-  { id: "edit.undo", categoryId: "edit", defaultBinding: { primary: true, key: "z" } },
-  { id: "edit.redo", categoryId: "edit", defaultBinding: { primary: true, shift: true, key: "z" } },
+  { id: "edit.undo", categoryId: "edit", defaultBinding: { primary: true, key: "z" }, targetPolicy: "editHistory" },
+  { id: "edit.redo", categoryId: "edit", defaultBinding: { primary: true, shift: true, key: "z" }, targetPolicy: "editHistory" },
   { id: "edit.search", categoryId: "edit", defaultBinding: { primary: true, key: "f" } },
   { id: "edit.selectAllWithShapes", categoryId: "edit", defaultBinding: { primary: true, shift: true, key: "a" } },
   { id: "edit.bold", categoryId: "textFormat", defaultBinding: null },
@@ -352,6 +364,19 @@ export function getEditorCommandCatalog(
   customCommands: readonly EditorCustomCommandDefinition[] = [],
 ): readonly EditorCommandShortcutDefinition[] {
   return customCommands.length === 0 ? EDITOR_COMMAND_SHORTCUTS : [...EDITOR_COMMAND_SHORTCUTS, ...customCommands];
+}
+
+/**
+ * コマンドの `targetPolicy`。未宣言 (カスタムコマンドを含む) は `documentSurface`。
+ *
+ * 例外を作らないために既定を安全側 (入力欄では走らせない) に置いている。
+ */
+export function getCommandTargetPolicy(
+  commandId: string,
+  customCommands: readonly EditorCustomCommandDefinition[] = [],
+): EditorCommandTargetPolicy {
+  const definition = getEditorCommandCatalog(customCommands).find((command) => command.id === commandId);
+  return definition?.targetPolicy ?? "documentSurface";
 }
 
 export function getCommandShortcutDefinition(

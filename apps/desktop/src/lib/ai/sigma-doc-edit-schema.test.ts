@@ -825,6 +825,23 @@ describe("AI SigmaDoc edit draft validation", () => {
     })).toThrow("合計デコードサイズが上限");
   });
 
+  it("counts the assets carried by updateOverlayShape against the same per-proposal byte budget", () => {
+    const largePng = `${VALID_PNG_DATA_URL}${"AAAA".repeat(Math.ceil((1_750_000 - 24) / 3))}`;
+    expect(() => parseAiEditSessionDraft({
+      summary: "大量の派生画像",
+      plan: ["大量の派生画像"],
+      operations: [],
+      mutationOperations: Array.from({ length: 5 }, (_, index) => ({
+        operation: "updateOverlayShape",
+        summary: "派生画像を差し替え",
+        shapeId: `shape_${index}`,
+        patch: { props: {} },
+        assets: { [`asset_${index}`]: imageAsset(`asset_${index}`, largePng) },
+      })),
+      warnings: [],
+    })).toThrow("合計デコードサイズが上限");
+  });
+
   it.each([
     "data:image/png;base64,",
     "data:image/png;base64,!!!!",
@@ -1676,6 +1693,51 @@ describe("applySigmaDocMutationOp", () => {
         summary: "存在しない図形です。",
         shapeId: "missing",
         patch: { x: 1 },
+      }),
+    ).toThrow();
+  });
+
+  it("writes the replacement assets an updateOverlayShape carries into the overlay snapshot", () => {
+    const document = documentWithOverlayShapes([imageShape("shape_1", "asset_1")]);
+    const withAsset = parseSigmaDocument({
+      ...document,
+      pageLayout: {
+        ...document.pageLayout!,
+        overlay: {
+          overlaySnapshot: {
+            version: 1,
+            assets: { asset_1: imageAsset("asset_1"), asset_other: imageAsset("asset_other") },
+            shapes: document.pageLayout!.overlay!.overlaySnapshot!.shapes,
+          },
+        },
+      },
+    });
+
+    const { nextDocument } = applySigmaDocMutationOp(withAsset, {
+      operation: "updateOverlayShape",
+      summary: "派生画像を差し替えました。",
+      shapeId: "shape_1",
+      patch: { props: { assetId: "asset_1" } },
+      assets: { asset_1: imageAsset("asset_1", VALID_JPEG_DATA_URL) },
+    });
+
+    const assets = nextDocument.pageLayout?.overlay?.overlaySnapshot?.assets ?? {};
+    // 同じidへの上書きが要点 (派生画像は図形と1:1で、孤児を増やさない)。
+    expect(assets.asset_1?.props.src).toBe(VALID_JPEG_DATA_URL);
+    // 無関係のassetは残る。
+    expect(assets.asset_other).toBeTruthy();
+  });
+
+  it("rejects updateOverlayShape assets whose source is not an allowed raster", () => {
+    const document = documentWithOverlayShapes([imageShape("shape_1", "asset_1")]);
+
+    expect(() =>
+      applySigmaDocMutationOp(document, {
+        operation: "updateOverlayShape",
+        summary: "派生画像を差し替えました。",
+        shapeId: "shape_1",
+        patch: { props: {} },
+        assets: { asset_1: imageAsset("asset_1", "data:image/svg+xml;base64,PHN2Zy8+") },
       }),
     ).toThrow();
   });

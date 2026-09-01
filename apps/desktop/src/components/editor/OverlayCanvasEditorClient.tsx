@@ -213,6 +213,14 @@ import {
 } from "./overlay-canvas/shape-renderer";
 import { useOverlayShapeEditorRenderers } from "./overlay-canvas/shape-interactive-body";
 import { focusOverlaySurface } from "./overlay-canvas/focus-overlay-surface";
+import {
+  createDragAutoScroller,
+  findDragAutoScrollScroller,
+  getDragAutoScrollViewportBounds,
+  panDragAutoScrollElement,
+  type DragAutoScrollPanBy,
+  type DragAutoScroller,
+} from "./drag-auto-scroll";
 export { OverlayShapeReadOnlyView } from "./overlay-canvas/shape-renderer";
 import type {
   OriginPickPreview,
@@ -467,6 +475,10 @@ const ANCHOR_LEADER_MIN_GAP_PX = 24;
 const ANCHOR_DETACHED_RULE_GAP_PX = 18;
 /** Pointer slop that keeps a click on the grip from rewriting the anchor. */
 const ANCHOR_DRAG_SLOP_PX = 2;
+// 8px は押下位置の微小な揺れと本物のドラッグを分ける値。本文選択の
+// DRAG_SELECTION_THRESHOLD_PX = 2 より大きいのは、誤爆時に 1px 動くのではなく紙面が飛ぶため。
+const DRAG_AUTO_SCROLL_SLOP_PX = 8;
+const SHAPE_DRAG_AUTO_SCROLL_MAX_SPEED_PX_PER_SEC = 1100;
 
 interface AnchorMeasurements {
   /**
@@ -534,6 +546,56 @@ function getTextPaintRevision(
   return repaint.revision;
 }
 
+interface PendingOverlaySave {
+  history: OverlayChangeHistory;
+  /** 本文と 1 エントリに畳むためのコアレスキー。無関係な変更が割り込んだら null に落とす。 */
+  historyGroup: string | null;
+}
+
+/**
+ * 250ms の保存窓に積まれた変更をまとめる規則。`history` は今までどおり `record` が勝つ。
+ *
+ * `historyGroup` の合成は下の {@link mergeOverlayHistoryGroup}。
+ */
+function mergePendingOverlaySave(
+  pending: PendingOverlaySave | null,
+  options: OverlayChangeOptions,
+): PendingOverlaySave {
+  const requestedHistory = options.history ?? "record";
+  const requestedGroup = options.historyGroup ?? null;
+  if (!pending) {
+    return { history: requestedHistory, historyGroup: requestedGroup };
+  }
+  return {
+    history: pending.history === "record" || requestedHistory === "record" ? "record" : "coalesce",
+    historyGroup: mergeOverlayHistoryGroup(pending.historyGroup, requestedGroup),
+  };
+}
+
+/**
+ * 同じ 250ms 窓に落ちた 2 つの保存要求のコアレスキーを合成する。
+ *
+ * - **片方だけがキーを持つ → そのキーを採る。** キー無しの保存 (オーバーレイ編集に入った
+ *   ときの再アンカーなど) が窓に残っているのは普通のことで、実測でもペースト直前に 1 本
+ *   積まれている。ここでキーを捨てると混在ペーストが畳めず、⌘Z が 2 回必要になる。
+ *   採った場合の代償は「その無関係な変更も同じ undo エントリで一緒に戻る」ことだけで、
+ *   **失われるものは無い** (エントリは操作前のスナップショットを持っている)。
+ * - **両方がキーを持ち、違う → `null`。** 別々の混在操作が同じ窓で衝突したときは畳まず、
+ *   独立した undo エントリにするのが安全側。
+ */
+export function mergeOverlayHistoryGroup(pending: string | null, requested: string | null): string | null {
+  if (pending === requested) {
+    return pending;
+  }
+  if (pending === null) {
+    return requested;
+  }
+  if (requested === null) {
+    return pending;
+  }
+  return null;
+}
+
 interface OverlayCanvasEditorClientProps {
   externalRevision: number;
   /**
@@ -582,6 +644,10 @@ interface OverlayCanvasEditorClientProps {
   pageGapPx?: number;
   /** Whether selected shapes expose draggable page/body anchor handles. */
   showAnchorHandles?: boolean;
+  /** ホワイトボードなど、DOM scroll 以外で viewport を流す場合の差し替え口。 */
+  autoScrollPanBy?: DragAutoScrollPanBy;
+  /** `autoScrollPanBy` と組で使う client 座標上の可視域。 */
+  autoScrollViewportElement?: HTMLElement | null;
   /** Vertical guide x positions, such as body text column starts/ends, in overlay coordinates. */
   verticalSnapGuides?: number[];
   backgroundLayerElement?: HTMLElement | null;
@@ -624,6 +690,15 @@ interface OverlayCanvasEditorClientProps {
   diffShapeClassNames?: ReadonlyMap<string, string>;
 }
 
+function isDragAutoScrollInteraction(mode: OverlayInteractionMode): boolean {
+  return mode.id === "overlay.move" ||
+    mode.id === "overlay.resize" ||
+    mode.id === "overlay.point" ||
+    mode.id === "overlay.marquee" ||
+    mode.id === "overlay.insertDrag" ||
+    mode.id === "overlay.anchor";
+}
+
 export default function OverlayCanvasEditorClient({
   externalRevision,
   documentId,
@@ -641,6 +716,8 @@ export default function OverlayCanvasEditorClient({
   pageHeightPx = 0,
   pageGapPx = 0,
   showAnchorHandles = true,
+  autoScrollPanBy,
+  autoScrollViewportElement = null,
   verticalSnapGuides = [],
   backgroundLayerElement,
   commandRequest,
@@ -711,7 +788,15 @@ export default function OverlayCanvasEditorClient({
   const modeRef = useRef(mode);
   const suppressNextShapeDoubleClickRef = useRef(0);
   const saveTimeoutRef = useRef<number | undefined>(undefined);
-  const pendingOverlayHistoryRef = useRef<OverlayChangeHistory | null>(null);
+  const pendingOverlayHistoryRef = useRef<PendingOverlaySave | null>(null);
+  /**
+   * 次に積まれる図形変更へ付けるコアレスキー (混在ペースト / 混在カット)。
+   *
+   * `deleteSelectedShapes` / `setShapes` の**シグネチャを変えずに**キーを運ぶための ref。
+   * `deleteSelectedShapes` は `runContextMenuAction(deleteSelectedShapes)` としてコールバック値
+   * のまま渡されており、引数を足すとイベントオブジェクトが options として流れ込む。
+   */
+  const pendingOverlaySaveHistoryGroupRef = useRef<string | null>(null);
   const imageCropDirtyRef = useRef(false);
   const mountedRef = useRef(false);
   const suppressNextSaveRef = useRef(false);
@@ -736,6 +821,26 @@ export default function OverlayCanvasEditorClient({
   const anchorMeasurementsRef = useRef(anchorMeasurements);
   const anchorMeasurementKeyRef = useRef("");
   const lastInteractionPointRef = useRef<OverlayPoint | null>(null);
+  const dragAutoScrollerRef = useRef<DragAutoScroller | null>(null);
+  const dragPointerRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    autoScrollArmed: boolean;
+  } | null>(null);
+  const dragCanvasRectRef = useRef<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const lastPointerModifiersRef = useRef({ ctrlKey: false, shiftKey: false });
+  const advanceInteractionFromClientRef = useRef<(
+    clientX: number,
+    clientY: number,
+    modifiers: { ctrlKey: boolean; shiftKey: boolean },
+    cachedCanvasRect?: { left: number; top: number; width: number; height: number } | null,
+  ) => void>(() => undefined);
   // リサイズ中に写像から外しておく線幅・矢印ヘッド分の余白。ドラッグ開始時に 1 度だけ測る
   // (図形の大きさに依らない一定量なので、ドラッグ中に測り直す必要はない)。
   const resizePaddingRef = useRef(ZERO_BOUNDS_PADDING);
@@ -998,7 +1103,10 @@ export default function OverlayCanvasEditorClient({
         // during every canvas edit makes shape insertion feel sticky on larger docs.
         updatedAt: new Date().toISOString(),
       },
-      { history: options.history ?? "record" },
+      {
+        history: options.history ?? "record",
+        ...(options.historyGroup ? { historyGroup: options.historyGroup } : {}),
+      },
     );
     imageCropDirtyRef.current = false;
   }, [getBlockAnchorScope, syncBlockAnchors]);
@@ -1009,6 +1117,7 @@ export default function OverlayCanvasEditorClient({
       saveTimeoutRef.current = undefined;
     }
     pendingOverlayHistoryRef.current = null;
+    pendingOverlaySaveHistoryGroupRef.current = null;
   }, []);
 
   const flushOverlayChange = useCallback(() => {
@@ -1018,34 +1127,37 @@ export default function OverlayCanvasEditorClient({
     if (saveTimeoutRef.current === undefined && !imageCropDirtyRef.current) {
       return;
     }
-    const history = pendingOverlayHistoryRef.current ?? "record";
+    const pending = pendingOverlayHistoryRef.current;
     clearQueuedOverlaySave();
-    emitOverlayChange({ history });
+    emitOverlayChange({
+      history: pending?.history ?? "record",
+      ...(pending?.historyGroup ? { historyGroup: pending.historyGroup } : {}),
+    });
   }, [clearQueuedOverlaySave, emitOverlayChange]);
 
   const commitOverlayChangeNow = useCallback((options: OverlayChangeOptions = {}) => {
-    const requestedHistory = options.history ?? "record";
-    const history = pendingOverlayHistoryRef.current === "record" || requestedHistory === "record"
-      ? "record"
-      : "coalesce";
+    const merged = mergePendingOverlaySave(pendingOverlayHistoryRef.current, options);
     clearQueuedOverlaySave();
-    emitOverlayChange({ history });
+    emitOverlayChange({
+      history: merged.history,
+      ...(merged.historyGroup ? { historyGroup: merged.historyGroup } : {}),
+    });
   }, [clearQueuedOverlaySave, emitOverlayChange]);
 
   const queueOverlaySave = useCallback((options: OverlayChangeOptions = {}) => {
-    const requestedHistory = options.history ?? "record";
-    pendingOverlayHistoryRef.current = pendingOverlayHistoryRef.current === "record" || requestedHistory === "record"
-      ? "record"
-      : "coalesce";
+    pendingOverlayHistoryRef.current = mergePendingOverlaySave(pendingOverlayHistoryRef.current, options);
     if (saveTimeoutRef.current) {
       window.clearTimeout(saveTimeoutRef.current);
     }
 
     saveTimeoutRef.current = window.setTimeout(() => {
       saveTimeoutRef.current = undefined;
-      const history = pendingOverlayHistoryRef.current ?? "record";
+      const pending = pendingOverlayHistoryRef.current;
       pendingOverlayHistoryRef.current = null;
-      emitOverlayChange({ history });
+      emitOverlayChange({
+        history: pending?.history ?? "record",
+        ...(pending?.historyGroup ? { historyGroup: pending.historyGroup } : {}),
+      });
     }, 250);
   }, [emitOverlayChange]);
 
@@ -1160,6 +1272,12 @@ export default function OverlayCanvasEditorClient({
       return;
     }
 
+    // 混在ペースト / 混在カットが置いていったコアレスキーを読み切る。**ガードより先に**
+    // 読んで必ず消す — 下の早期 return に取り残すと、次の無関係な図形編集がそのキーを
+    // 継承し、その編集だけを戻せなくなる。
+    const historyGroup = pendingOverlaySaveHistoryGroupRef.current;
+    pendingOverlaySaveHistoryGroupRef.current = null;
+
     if (explicitlySavedShapeStatesRef.current.delete(shapes)) {
       return;
     }
@@ -1169,8 +1287,17 @@ export default function OverlayCanvasEditorClient({
       return;
     }
 
+    if (historyGroup) {
+      // 混在クリップボード操作は離散イベントなので 250ms 待つ理由が無い。むしろ待つと
+      // **窓の後ろ側を縛るものが無く**、続けて起きた無関係な図形編集まで同じ undo
+      // エントリへ畳まれてしまう。ここで確定させれば窓が操作そのものに閉じる
+      // (直前から pending だったキー無しの保存は一緒に畳まれる — それは意図どおり)。
+      commitOverlayChangeNow({ historyGroup });
+      return;
+    }
+
     queueOverlaySave();
-  }, [assets, queueOverlaySave, shapes]);
+  }, [assets, commitOverlayChangeNow, queueOverlaySave, shapes]);
 
   // On entering overlay editing, re-derive anchored shapes' y from the current
   // block layout so figures sit where the text now flows (text may have reflowed
@@ -1783,10 +1910,22 @@ export default function OverlayCanvasEditorClient({
     }
   }, [handleImageRequest, imageRequest]);
 
-  const pagePointFromClient = useCallback((clientX: number, clientY: number): OverlayPoint => {
-    const rect = canvasRef.current?.getBoundingClientRect();
+  const pagePointFromClient = useCallback((
+    clientX: number,
+    clientY: number,
+    cachedRect?: { left: number; top: number; width: number; height: number } | null,
+  ): OverlayPoint => {
+    const rect = cachedRect ?? canvasRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) {
       return { x: clientX, y: clientY };
+    }
+    if (!cachedRect) {
+      dragCanvasRectRef.current = {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+      };
     }
 
     return {
@@ -1967,10 +2106,12 @@ export default function OverlayCanvasEditorClient({
     return nextShapes;
   }, [notifyEditPolicyBlocked, queueOverlaySave, setSelectedShapeIds, transitionMode]);
 
-  const deleteSelectedShapes = useCallback(() => {
-    if (isOverlaySelectionBlockedByEditPolicy(shapesRef.current, selectedIdsRef.current, editPolicyLockedShapeIdsRef.current)) {
-      notifyEditPolicyBlocked();
-    }
+  /**
+   * いま削除される図形 id。`deleteSelectedShapes` と、その前に「本当に消えるのか」を
+   * 知りたい呼び出し側 (混在カットのコアレスキー配り) で**同じ算出を共有する**。
+   * 別々に書くと、ロック条件が変わったときに片方だけ古くなる。
+   */
+  const getRemovableSelectedShapeIds = useCallback((): string[] => {
     const selectedIdSet = new Set(getIdsWithDescendants(shapesRef.current, selectedIdsRef.current, { includeGroups: true }));
     const removableIdSet = new Set(shapesRef.current
       .filter((shape) => selectedIdSet.has(shape.id)
@@ -1999,11 +2140,19 @@ export default function OverlayCanvasEditorClient({
       }
     }
 
-    const removableIds = [...removableIdSet];
+    return [...removableIdSet];
+  }, []);
+
+  const deleteSelectedShapes = useCallback(() => {
+    if (isOverlaySelectionBlockedByEditPolicy(shapesRef.current, selectedIdsRef.current, editPolicyLockedShapeIdsRef.current)) {
+      notifyEditPolicyBlocked();
+    }
+    const removableIds = getRemovableSelectedShapeIds();
     if (removableIds.length === 0) {
       return;
     }
 
+    const removableIdSet = new Set(removableIds);
     setShapes((current) => {
       const next = normalizeOverlayGroups(removeShapes(current, removableIds));
       shapesRef.current = next;
@@ -2011,7 +2160,7 @@ export default function OverlayCanvasEditorClient({
     });
     setSelectedShapeIds(selectedIdsRef.current.filter((id) => !removableIdSet.has(id)));
     transitionMode({ type: "select" });
-  }, [notifyEditPolicyBlocked, setSelectedShapeIds, transitionMode]);
+  }, [getRemovableSelectedShapeIds, notifyEditPolicyBlocked, setSelectedShapeIds, transitionMode]);
 
   const groupSelectedShapes = useCallback(() => {
     if (isOverlaySelectionBlockedByEditPolicy(shapesRef.current, selectedIdsRef.current, editPolicyLockedShapeIdsRef.current)) {
@@ -2208,7 +2357,7 @@ export default function OverlayCanvasEditorClient({
    */
   const applyPastedOverlayShapes = useCallback((
     payload: Extract<EditorClipboardPayload, { kind: "overlayShapes" }>,
-    options: { anchorBlockIdMap?: Record<string, string> } = {},
+    options: { anchorBlockIdMap?: Record<string, string>; historyGroup?: string } = {},
   ): boolean => {
     const prepared = prepareOverlayShapesForPaste({
       payload,
@@ -2254,7 +2403,10 @@ export default function OverlayCanvasEditorClient({
     });
     setSelectedShapeIds(prepared.selectedIds);
     transitionMode({ type: "select" });
-    queueOverlaySave();
+    // `setShapes` が起こす [assets, shapes] effect も保存を積むので、キーは ref でも渡す
+    // (同じキーなので 250ms 窓の中で 1 本に畳まれる)。
+    pendingOverlaySaveHistoryGroupRef.current = options.historyGroup ?? null;
+    queueOverlaySave(options.historyGroup ? { historyGroup: options.historyGroup } : {});
     return true;
   }, [getBlockAnchorScope, queueOverlaySave, setSelectedShapeIds, transitionMode]);
 
@@ -2342,7 +2494,10 @@ export default function OverlayCanvasEditorClient({
       }
       applyStyleToSelectedShapes(request.style);
     } else if (request.type === "pasteShapes") {
-      applyPastedOverlayShapes(request.payload, { anchorBlockIdMap: request.anchorBlockIdMap });
+      applyPastedOverlayShapes(request.payload, {
+        anchorBlockIdMap: request.anchorBlockIdMap,
+        historyGroup: request.historyGroup,
+      });
     } else if (request.type === "selectShapesForBlocks") {
       // フォーカスは本文に残したまま選択だけ立てる。`focusOverlayCanvas` を呼ぶと本文の
       // DOM 選択が消えて、混在選択が「図形だけ」に痩せる。
@@ -4014,6 +4169,21 @@ export default function OverlayCanvasEditorClient({
     };
 
     /**
+     * この cut / copy で、このインスタンスが図形を書き出す**見込みがあるか**。
+     *
+     * `handleCut` が本文側の印を食う前に、`writeShapeClipboard` が中断する条件を先に問う。
+     * ここを揃えないと、**掴んでいないインスタンスが印を食って**、実際に図形を切り取る側へ
+     * 本文もコアレスキーも届かない —— 「切り取りの undo が 2 手に割れる」が戻る。
+     * `handleCut` が選択の有無しか見ていなかったのが元の穴。
+     */
+    const canWriteShapeClipboard = (event: ClipboardEvent): boolean => {
+      if (activeTextEditorRef.current?.isFocused || !event.clipboardData) {
+        return false;
+      }
+      return getSelectedShapesForClipboard(shapesRef.current, selectedIdsRef.current).length > 0;
+    };
+
+    /**
      * 選択中の図形をクリップボードへ。本文の範囲も生きていれば 1 つの payload にまとめる。
      * 図形が乗ったときだけ true (呼び出し側が切り取りの削除まで進めてよい合図)。
      */
@@ -4021,14 +4191,13 @@ export default function OverlayCanvasEditorClient({
       event: ClipboardEvent,
       bodyText: { text: { slice: unknown; text: string }; html: string } | null,
     ): boolean => {
-      if (activeTextEditorRef.current?.isFocused || !event.clipboardData) {
+      // 2 つ目の条件は型の絞り込みのため (中身は `canWriteShapeClipboard` が既に見ている)。
+      if (!canWriteShapeClipboard(event) || !event.clipboardData) {
         return false;
       }
+      const clipboardData = event.clipboardData;
 
       const selectedShapes = getSelectedShapesForClipboard(shapesRef.current, selectedIdsRef.current);
-      if (selectedShapes.length === 0) {
-        return false;
-      }
       if (!bodyText && isTextInputTarget(event.target)) {
         return false;
       }
@@ -4037,7 +4206,7 @@ export default function OverlayCanvasEditorClient({
       event.stopPropagation();
       event.stopImmediatePropagation();
       if (bodyText) {
-        writeEditorClipboardData(event.clipboardData, createTextAndShapesClipboardPayload(
+        writeEditorClipboardData(clipboardData, createTextAndShapesClipboardPayload(
           bodyText.text,
           reanchorShapesToCopiedBlocks(selectedShapes, bodyText.text.slice),
           assetsRef.current,
@@ -4045,7 +4214,7 @@ export default function OverlayCanvasEditorClient({
         ), { html: bodyText.html });
       } else {
         writeEditorClipboardData(
-          event.clipboardData,
+          clipboardData,
           createOverlayClipboardPayload(selectedShapes, assetsRef.current, documentIdRef.current),
         );
       }
@@ -4066,11 +4235,33 @@ export default function OverlayCanvasEditorClient({
      * 印は必ず取り切る — 図形が選ばれていない切り取りで持ち越すと、次の切り取りに混ざる。
      */
     const handleCut = (event: ClipboardEvent) => {
+      // `takeBodyTextCut` の印は 1 回しか取れない。`handleCut` はマウント済みの
+      // オーバーレイごとに登録されている (本文 / running region で複数) ので、
+      // **書き出さないインスタンスが先に食う**と、切り取った図形を持つ側に本文も
+      // コアレスキーも届かない。書き出す見込みが無いインスタンスは何も取らずに降りる。
+      //
+      // **判定は `writeShapeClipboard` と 1 箇所で共有する。** 「選択が空でない」だけでは
+      // 足りない: テキスト編集中・`clipboardData` が無い・選択が全てクリップボード対象外、の
+      // どれでも書き出しは中断するのに、印だけ食われる。
+      if (!canWriteShapeClipboard(event)) {
+        return;
+      }
       const cutText = takeBodyTextCut(event);
       const bodyText = cutText
         ? { text: cutText, html: extractVisibleEditorClipboardHtml(event.clipboardData?.getData("text/html") ?? "") }
         : null;
       if (writeShapeClipboard(event, bodyText)) {
+        // 本文側が鋳造したキーを、この削除が起こす保存へ載せる (undo 1 回で両方戻す)。
+        // `deleteSelectedShapes` の引数では渡さない — `runContextMenuAction` にコールバック値
+        // のまま渡されており、引数を足すとイベントオブジェクトが options として流れ込む。
+        //
+        // **本当に消えるときだけ置く。** 選択が全てロック / 編集ポリシー禁止だと
+        // `deleteSelectedShapes` は何もせずに戻り、`setShapes` が走らないのでキーが
+        // 取り残される (次の無関係な編集がそれを継承して戻せなくなる)。
+        const willDeleteShapes = getRemovableSelectedShapeIds().length > 0;
+        pendingOverlaySaveHistoryGroupRef.current = willDeleteShapes
+          ? cutText?.historyGroup ?? null
+          : null;
         deleteSelectedShapes();
       }
     };
@@ -4112,7 +4303,7 @@ export default function OverlayCanvasEditorClient({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyPastedOverlayShapes, deleteSelectedShapes, getBlockAnchorScope, reanchorShapesToCopiedBlocks]);
+  }, [applyPastedOverlayShapes, deleteSelectedShapes, getBlockAnchorScope, getRemovableSelectedShapeIds, reanchorShapesToCopiedBlocks]);
 
   const getOriginPickPreviewFromClientPoint = useCallback((
     shapeId: OverlayShapeId,
@@ -4249,6 +4440,16 @@ export default function OverlayCanvasEditorClient({
     updateGraphShapeSpec(graphFillPickShapeId, nextSpec);
   }, [graphFillPickShapeId, pagePointFromClient, transitionMode, updateGraphShapeSpec]);
 
+  const captureDragPointer = useCallback((event: ReactPointerEvent<Element>) => {
+    dragPointerRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      autoScrollArmed: false,
+    };
+    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
+  }, []);
+
   const startInsertDragFromEvent = useCallback((event: ReactPointerEvent<HTMLDivElement>, tool: InsertTool) => {
     event.preventDefault();
     event.stopPropagation();
@@ -4265,8 +4466,8 @@ export default function OverlayCanvasEditorClient({
       start: point,
       points: tool.command === "freehand" ? [point] : undefined,
     });
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
-  }, [focusOverlayCanvas, pagePointFromClient, setSelectedShapeIds, transitionMode]);
+    captureDragPointer(event);
+  }, [captureDragPointer, focusOverlayCanvas, pagePointFromClient, setSelectedShapeIds, transitionMode]);
 
   const handleCurveInsertPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, tool: InsertTool) => {
     event.preventDefault();
@@ -4372,7 +4573,7 @@ export default function OverlayCanvasEditorClient({
         shapes: duplicatedShapes,
         start: point,
       });
-      bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
+      captureDragPointer(event);
       return;
     }
 
@@ -4400,8 +4601,8 @@ export default function OverlayCanvasEditorClient({
           ? "table"
         : undefined,
     });
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
-  }, [duplicateSelectedShapes, focusOverlayCanvas, notifyEditPolicyBlocked, setSelectedShapeIds, toggleShapeSelection, transitionMode]);
+    captureDragPointer(event);
+  }, [captureDragPointer, duplicateSelectedShapes, focusOverlayCanvas, notifyEditPolicyBlocked, setSelectedShapeIds, toggleShapeSelection, transitionMode]);
 
   /**
    * インクに当たらなかった押下の共通処理 (選択を落としてマーキーを始める)。
@@ -4422,8 +4623,8 @@ export default function OverlayCanvasEditorClient({
       setSelectedShapeIds([]);
     }
     transitionMode({ type: "startMarquee", start: point, additive });
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
-  }, [focusOverlayCanvas, setSelectedShapeIds, transitionMode]);
+    captureDragPointer(event);
+  }, [captureDragPointer, focusOverlayCanvas, setSelectedShapeIds, transitionMode]);
 
   const handleCanvasPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.defaultPrevented) {
@@ -4526,13 +4727,14 @@ export default function OverlayCanvasEditorClient({
       focusOverlayCanvas();
       selectShape(targetShape.id);
       transitionMode({ type: "startImageCropPan", shape: targetShape, start: point });
-      bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
+      captureDragPointer(event);
       return;
     }
 
     startShapePointerInteraction(event, targetShape, point);
   }, [
     beginEmptySpacePointerInteraction,
+    captureDragPointer,
     focusOverlayCanvas,
     getOpenStrokeShapeAtPoint,
     getShapeAtPoint,
@@ -4571,8 +4773,8 @@ export default function OverlayCanvasEditorClient({
       start,
       bounds: frame.visual,
     });
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
-  }, [focusOverlayCanvas, notifyEditPolicyBlocked, pagePointFromClient, transitionMode]);
+    captureDragPointer(event);
+  }, [captureDragPointer, focusOverlayCanvas, notifyEditPolicyBlocked, pagePointFromClient, transitionMode]);
 
   const handleImageCropResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, shape: Extract<OverlayShape, { type: "image" }>, handle: ResizeHandle) => {
     if (shape.locked) {
@@ -4591,8 +4793,8 @@ export default function OverlayCanvasEditorClient({
       handle,
       start,
     });
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
-  }, [focusOverlayCanvas, pagePointFromClient, selectShape, transitionMode]);
+    captureDragPointer(event);
+  }, [captureDragPointer, focusOverlayCanvas, pagePointFromClient, selectShape, transitionMode]);
 
   const handleRotatePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -4616,8 +4818,8 @@ export default function OverlayCanvasEditorClient({
       center,
       startAngle: angleFromCenter(center, point),
     });
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
-  }, [focusOverlayCanvas, notifyEditPolicyBlocked, pagePointFromClient, transitionMode]);
+    captureDragPointer(event);
+  }, [captureDragPointer, focusOverlayCanvas, notifyEditPolicyBlocked, pagePointFromClient, transitionMode]);
 
   const handleAnchorPointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>, shape: OverlayShape, origin: OverlayPoint) => {
     if (event.button !== 0 || shape.locked) {
@@ -4634,8 +4836,8 @@ export default function OverlayCanvasEditorClient({
       start: pagePointFromClient(event.clientX, event.clientY),
       origin,
     });
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
-  }, [focusOverlayCanvas, pagePointFromClient, selectShape, transitionMode]);
+    captureDragPointer(event);
+  }, [captureDragPointer, focusOverlayCanvas, pagePointFromClient, selectShape, transitionMode]);
 
   const handlePointPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, shape: OverlayShape, handle: PointHandle) => {
     if (shape.locked || event.button !== 0) {
@@ -4681,8 +4883,9 @@ export default function OverlayCanvasEditorClient({
       pivot: getShapeRotationPivot(shape),
       rotation: getShapeRotation(shape),
     });
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
+    captureDragPointer(event);
   }, [
+    captureDragPointer,
     focusOverlayCanvas,
     notifyEditPolicyBlocked,
     pagePointFromClient,
@@ -4740,20 +4943,21 @@ export default function OverlayCanvasEditorClient({
     });
     // Never `event.currentTarget.setPointerCapture`: a per-shape capture swallows the canvas's own
     // double-click handling. The bleed surface is the one element allowed to capture.
-    bleedSurfaceRef.current?.setPointerCapture(event.pointerId);
-  }, [focusOverlayCanvas, notifyEditPolicyBlocked, selectShape, transitionMode, updateShape]);
+    captureDragPointer(event);
+  }, [captureDragPointer, focusOverlayCanvas, notifyEditPolicyBlocked, selectShape, transitionMode, updateShape]);
 
-  const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (originPickShapeId) {
-      updateOriginPickPreviewFromEvent(event);
-    }
-
+  const advanceInteractionFromClient = useCallback((
+    clientX: number,
+    clientY: number,
+    modifiers: { ctrlKey: boolean; shiftKey: boolean },
+    cachedCanvasRect?: { left: number; top: number; width: number; height: number } | null,
+  ) => {
     const interaction = modeRef.current;
     if (!isInteractionMode(interaction)) {
       return;
     }
 
-    const point = pagePointFromClient(event.clientX, event.clientY);
+    const point = pagePointFromClient(clientX, clientY, cachedCanvasRect);
     lastInteractionPointRef.current = point;
     if (interaction.id === "overlay.move") {
       applyMoveInteractionAtPoint(interaction, point);
@@ -4761,13 +4965,13 @@ export default function OverlayCanvasEditorClient({
     }
 
     if (interaction.id === "overlay.resize") {
-      applyResizeInteractionAtPoint(interaction, point, event);
+      applyResizeInteractionAtPoint(interaction, point, modifiers);
       return;
     }
 
     if (interaction.id === "overlay.rotate") {
       clearSnapGuides();
-      const nextDelta = resolveRotatePointerDelta(interaction, point, event.shiftKey);
+      const nextDelta = resolveRotatePointerDelta(interaction, point, modifiers.shiftKey);
       setShapes((current) => {
         const next = normalizeOverlayGroups(mergeShapesById(current, rotateShapesAround(interaction.shapes, interaction.center, nextDelta)));
         shapesRef.current = next;
@@ -4789,7 +4993,7 @@ export default function OverlayCanvasEditorClient({
     }
 
     if (interaction.id === "overlay.point") {
-      applyPointInteractionAtPoint(interaction, point, event);
+      applyPointInteractionAtPoint(interaction, point, modifiers);
       if (isShapeAdjustmentHandle(interaction.handle)) {
         setAdjustmentDragReadoutPointerPosition(point);
       }
@@ -4807,7 +5011,7 @@ export default function OverlayCanvasEditorClient({
         type: "updateCurveDrawing",
         current: getSnappedDrawingPoint(point, {
           previousPoint,
-          shiftKey: event.shiftKey,
+          shiftKey: modifiers.shiftKey,
           enabled: isPointSnappedClickDrawingTool(interaction.tool),
         }),
       });
@@ -4815,7 +5019,7 @@ export default function OverlayCanvasEditorClient({
     }
 
     if (interaction.id === "overlay.insertDrag") {
-      const current = getSnappedInsertDragPoint(interaction.tool, interaction.start, point, event);
+      const current = getSnappedInsertDragPoint(interaction.tool, interaction.start, point, modifiers);
       transitionMode({
         type: "updateInsertDrag",
         current,
@@ -4834,13 +5038,112 @@ export default function OverlayCanvasEditorClient({
     applyResizeInteractionAtPoint,
     getSnappedDrawingPoint,
     getSnappedInsertDragPoint,
-    originPickShapeId,
     pagePointFromClient,
     transitionMode,
-    updateOriginPickPreviewFromEvent,
   ]);
 
+  useLayoutEffect(() => {
+    advanceInteractionFromClientRef.current = advanceInteractionFromClient;
+  }, [advanceInteractionFromClient]);
+
+  const stopDragAutoScroll = useCallback(() => {
+    dragAutoScrollerRef.current?.stop();
+    dragAutoScrollerRef.current = null;
+  }, []);
+
+  const updateDragAutoScroll = useCallback((clientX: number, clientY: number) => {
+    if (!isDragAutoScrollInteraction(modeRef.current)) {
+      stopDragAutoScroll();
+      return;
+    }
+
+    if (!dragAutoScrollerRef.current) {
+      const startElement = canvasRef.current ?? bleedSurfaceRef.current;
+      const scrollContainer = startElement && !autoScrollPanBy
+        ? findDragAutoScrollScroller(startElement)
+        : null;
+      const viewportElement = autoScrollViewportElement ?? scrollContainer;
+      if (!viewportElement) {
+        return;
+      }
+      const ownerWindow = viewportElement.ownerDocument.defaultView;
+      if (!ownerWindow) {
+        return;
+      }
+      const panBy = autoScrollPanBy ?? (
+        scrollContainer
+          ? (dx: number, dy: number) => panDragAutoScrollElement(scrollContainer, dx, dy)
+          : null
+      );
+      if (!panBy) {
+        return;
+      }
+      dragAutoScrollerRef.current = createDragAutoScroller({
+        ownerWindow,
+        getViewportBounds: () => getDragAutoScrollViewportBounds(viewportElement, ownerWindow),
+        panBy,
+        onPan: (lastClientX, lastClientY, layout) => {
+          if (!isDragAutoScrollInteraction(modeRef.current)) {
+            stopDragAutoScroll();
+            return;
+          }
+          advanceInteractionFromClientRef.current(
+            lastClientX,
+            lastClientY,
+            lastPointerModifiersRef.current,
+            layout.rectSettled ? null : dragCanvasRectRef.current,
+          );
+        },
+        maxSpeedPxPerSec: SHAPE_DRAG_AUTO_SCROLL_MAX_SPEED_PX_PER_SEC,
+      });
+    }
+    dragAutoScrollerRef.current.update(clientX, clientY);
+  }, [autoScrollPanBy, autoScrollViewportElement, stopDragAutoScroll]);
+
+  const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (originPickShapeId) {
+      updateOriginPickPreviewFromEvent(event);
+    }
+
+    lastPointerModifiersRef.current = {
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+    };
+    advanceInteractionFromClient(event.clientX, event.clientY, lastPointerModifiersRef.current);
+    const dragPointer = dragPointerRef.current;
+    if (event.buttons !== 0 && dragPointer?.pointerId === event.pointerId) {
+      if (!dragPointer.autoScrollArmed) {
+        dragPointer.autoScrollArmed = Math.hypot(
+          event.clientX - dragPointer.startClientX,
+          event.clientY - dragPointer.startClientY,
+        ) > DRAG_AUTO_SCROLL_SLOP_PX;
+      }
+      if (dragPointer.autoScrollArmed) {
+        updateDragAutoScroll(event.clientX, event.clientY);
+      } else {
+        stopDragAutoScroll();
+      }
+    } else {
+      stopDragAutoScroll();
+    }
+  }, [advanceInteractionFromClient, originPickShapeId, stopDragAutoScroll, updateDragAutoScroll, updateOriginPickPreviewFromEvent]);
+
+  useEffect(() => {
+    if (!isDragAutoScrollInteraction(mode)) {
+      stopDragAutoScroll();
+    }
+  }, [mode, stopDragAutoScroll]);
+
+  useEffect(() => stopDragAutoScroll, [stopDragAutoScroll]);
+
+  const handlePointerCancel = useCallback(() => {
+    dragPointerRef.current = null;
+    stopDragAutoScroll();
+  }, [stopDragAutoScroll]);
+
   const handlePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    dragPointerRef.current = null;
+    stopDragAutoScroll();
     const interaction = modeRef.current;
     if (!isInteractionMode(interaction)) {
       return;
@@ -5040,6 +5343,7 @@ export default function OverlayCanvasEditorClient({
     refreshAnchorMeasurements,
     selectShape,
     setSelectedShapeIds,
+    stopDragAutoScroll,
     transitionMode,
   ]);
 
@@ -5745,6 +6049,7 @@ export default function OverlayCanvasEditorClient({
       }}
       onPointerDown={handleCanvasPointerDown}
       onPointerMove={handlePointerMove}
+      onPointerCancel={handlePointerCancel}
       onPointerLeave={() => {
         if (originPickShapeId) {
           setOriginPickPreview(null);

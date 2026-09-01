@@ -13,6 +13,7 @@ import { CodeHighlightExtension } from "@/components/tiptap/code-highlight-exten
 import { BoxedTextRunHeightExtension } from "@/components/tiptap/boxed-text-run-height";
 import { InlineMathExtension } from "@/components/tiptap/inline-math-extension";
 import { ListMarkerTypographyExtension } from "@/components/tiptap/list-marker-typography-extension";
+import { NativeHistoryGuardExtension } from "@/components/tiptap/native-history-guard";
 import { ParenOrderedListExtension } from "@/components/tiptap/paren-ordered-list-extension";
 import { SearchHighlightExtension } from "@/components/tiptap/search-highlight-extension";
 import {
@@ -185,6 +186,9 @@ export function createRichTextEngineExtensions({
       underline: false,
     }),
     ListKeyboardShortcutsExtension,
+    // 面ごとの opt-in にしない。**新しい編集面が増えたときに素通しになるのが一番怖い**ので、
+    // 共通エンジンを通るものは全部守る (本文・RichTextEditor・図形テキスト・表セル)。
+    NativeHistoryGuardExtension,
     // After StarterKit so its own `1. ` ordered-list rule stays untouched.
     ...(orderedListMarkerStyles ? [ParenOrderedListExtension] : []),
     ...(bodyBlocks

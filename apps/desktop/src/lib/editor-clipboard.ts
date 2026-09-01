@@ -274,9 +274,20 @@ export function writeTextSliceClipboardData(dataTransfer: DataTransfer, slice: u
  * そこで本文エディタが、同じイベントの中だけ生きる印としてここへ置く。次のマイクロタスクで
  * 自分で消えるので、イベントをまたいで残ることはない。
  */
-let pendingBodyTextCut: { event: Event; slice: unknown; text: string } | null = null;
+let pendingBodyTextCut: BodyTextCut & { event: Event } | null = null;
 
-export function markBodyTextCut(event: Event, cut: { slice: unknown; text: string }): void {
+interface BodyTextCut {
+  slice: unknown;
+  text: string;
+  /**
+   * 本文側が鋳造した undo のコアレスキー (混在切り取り)。図形側はこれを受け取って
+   * 同じキーで保存し、⌘Z 1 回で本文と図形が同時に戻る
+   * (`text-flow/clipboard-history-group.ts`)。
+   */
+  historyGroup?: string;
+}
+
+export function markBodyTextCut(event: Event, cut: BodyTextCut): void {
   pendingBodyTextCut = { event, ...cut };
 }
 
@@ -284,10 +295,12 @@ export function markBodyTextCut(event: Event, cut: { slice: unknown; text: strin
  * 同じ cut イベントで置かれた印だけを返す。イベントで縛るのは、タイマーで消すと
  * 「リスナーとリスナーの間で走るマイクロタスク」に消されてしまい、window まで届かないため。
  */
-export function takeBodyTextCut(event: Event): { slice: unknown; text: string } | null {
+export function takeBodyTextCut(event: Event): BodyTextCut | null {
   const pending = pendingBodyTextCut;
   pendingBodyTextCut = null;
-  return pending?.event === event ? { slice: pending.slice, text: pending.text } : null;
+  return pending?.event === event
+    ? { slice: pending.slice, text: pending.text, historyGroup: pending.historyGroup }
+    : null;
 }
 
 export function readTextSliceClipboardData(dataTransfer: DataTransfer): { slice: unknown; text: string } | null {

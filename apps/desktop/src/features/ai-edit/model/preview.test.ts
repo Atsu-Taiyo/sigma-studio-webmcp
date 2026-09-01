@@ -18,6 +18,7 @@ import {
   hasBodyAiEditChanges,
   hasOverlayAiEditChanges,
   isOverlayOnlyAiEditPreview,
+  resolveMutationOpAssets,
   resolveMutationOpShapeResults,
   resolveOverlayShapeAnchorBlockId,
   summarizeAiEditPreviewChanges,
@@ -27,7 +28,7 @@ import {
   overlayShapeNounId,
 } from "./preview";
 import type { AiEditDraft, AiEditSessionDraft, SigmaDocMutationOp } from "@/lib/ai/sigma-doc-edit-schema";
-import type { OverlayShape } from "@/features/document";
+import type { OverlayAsset, OverlayShape } from "@/features/document";
 import type { DesktopMcpEditProposalProvider, DesktopMcpEditProposalSummary } from "@/types/desktop";
 import type { OverlayGeoShape, OverlayTableShape } from "@/features/document";
 import type { SigmaDocument } from "@/types/sigma-doc";
@@ -1430,6 +1431,37 @@ describe("resolveOverlayShapeAnchorBlockId", () => {
   });
 });
 
+describe("resolveMutationOpAssets", () => {
+  const asset = (id: string, src: string): OverlayAsset => ({
+    id,
+    type: "image",
+    props: { w: 1, h: 1, name: `${id}.png`, isAnimated: false, mimeType: "image/png", src, fileSize: 1 },
+  });
+
+  it("overlays the replacement assets an updateOverlayShape carries onto the current ones", () => {
+    const current = { a: asset("a", "data:image/png;base64,OLD"), b: asset("b", "data:image/png;base64,KEEP") };
+    const op: SigmaDocMutationOp = {
+      operation: "updateOverlayShape",
+      summary: "派生画像を差し替え",
+      shapeId: "s1",
+      patch: { props: {} },
+      assets: { a: asset("a", "data:image/png;base64,NEW") },
+    };
+
+    const resolved = resolveMutationOpAssets(op, current);
+
+    expect(resolved.a.props.src).toBe("data:image/png;base64,NEW");
+    expect(resolved.b.props.src).toBe("data:image/png;base64,KEEP");
+  });
+
+  it("returns the current assets unchanged for an op that carries none", () => {
+    const current = { a: asset("a", "data:image/png;base64,OLD") };
+    const op: SigmaDocMutationOp = { operation: "updateOverlayShape", summary: "移動", shapeId: "s1", patch: { x: 1 } };
+
+    expect(resolveMutationOpAssets(op, current)).toBe(current);
+  });
+});
+
 describe("resolveMutationOpShapeResults", () => {
   it("computes the patched shape for updateOverlayShape, using the exact same merge as apply", () => {
     const shape = rectShape("s1", 10, 20, { props: { w: 180, h: 96, geo: "rectangle", fill: "none", color: "black", labelColor: "black", dash: "solid", size: "m" } });
@@ -1513,6 +1545,56 @@ describe("deriveAiEditPreviewShapeUpdates", () => {
 
     expect(updates).toHaveLength(1);
     expect(updates[0]).toMatchObject({ shapeId: "s1", after: { id: "s1", x: 10, y: 50 } });
+  });
+
+  it("keeps carrying a replacement asset when a later op touches the same shape again", () => {
+    const shape = rectShape("s1", 0, 0);
+    const replacement: OverlayAsset = {
+      id: "asset_1",
+      type: "image",
+      props: { w: 1, h: 1, name: "a.png", isAnimated: false, mimeType: "image/png", src: "data:image/png;base64,NEW", fileSize: 1 },
+    };
+    const preview = makePreview({
+      mutationOperations: [
+        {
+          operation: "updateOverlayShape",
+          summary: "図を描き直して絵も差し替え",
+          shapeId: "s1",
+          patch: { props: {} },
+          assets: { asset_1: replacement },
+        },
+        // 絵を運ばない後続の操作 (サイズだけの更新・整列)。呼び出し側は shapeId で
+        // 最後の1件へ畳むので、ここで落とすと「新しい図形に古い絵」に逆戻りする。
+        { operation: "updateOverlayShape", summary: "大きさだけ変更", shapeId: "s1", patch: { props: { w: 400 } } },
+      ],
+    });
+
+    const updates = deriveAiEditPreviewShapeUpdates([preview], [shape]);
+
+    expect(updates).toHaveLength(2);
+    expect(updates[1].replacedAssets).toEqual({ asset_1: replacement });
+  });
+
+  it("carries the replacement assets of an update so the after-state is not drawn with the stored picture", () => {
+    const shape = rectShape("s1", 0, 0);
+    const replacement: OverlayAsset = {
+      id: "asset_1",
+      type: "image",
+      props: { w: 1, h: 1, name: "a.png", isAnimated: false, mimeType: "image/png", src: "data:image/png;base64,NEW", fileSize: 1 },
+    };
+    const preview = makePreview({
+      mutationOperations: [{
+        operation: "updateOverlayShape",
+        summary: "派生画像を差し替え",
+        shapeId: "s1",
+        patch: { props: {} },
+        assets: { asset_1: replacement },
+      }],
+    });
+
+    const updates = deriveAiEditPreviewShapeUpdates([preview], [shape]);
+
+    expect(updates[0].replacedAssets).toEqual({ asset_1: replacement });
   });
 
   it("threads results sequentially: a later op sees an earlier op's after-state", () => {

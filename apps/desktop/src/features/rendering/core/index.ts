@@ -8,6 +8,8 @@ export * from "./document-title-inline";
 export * from "./editor-zoom-event";
 export * from "./flow-fragmentation";
 export * from "./graph3d-labels";
+export * from "./graph3d-projection";
+export * from "./graph3d-style";
 export * from "./inline-math-delimiters";
 export * from "./list-marker-typography";
 export * from "./math-typeset-style";

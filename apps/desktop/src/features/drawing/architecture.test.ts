@@ -383,7 +383,7 @@ describe("drawing feature dependency boundary", () => {
     )), "utf8");
 
     expectTypeOf(resolveRotatePointerDelta).toBeFunction();
-    expect(clientSource).toContain("resolveRotatePointerDelta(interaction, point, event.shiftKey)");
+    expect(clientSource).toContain("resolveRotatePointerDelta(interaction, point, modifiers.shiftKey)");
     expect(clientSource).not.toContain("snapRotationDeltaToAbsoluteStep");
   });
 

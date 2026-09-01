@@ -616,7 +616,7 @@
     calc(var(--sigma-doc-box-padding-left, 14px) * -1);
   padding: 0 var(--sigma-doc-box-padding-right, 14px) 0 var(--sigma-doc-box-padding-left, 14px);
   /*
-   * 帯と本文を切る罫。TeX の見出し付き枠 (EditorMath の問題枠もこの形) は地色だけでなく
+   * 帯と本文を切る罫。TeX の見出し付き枠 (Studyaid の問題枠もこの形) は地色だけでなく
    * 帯の下に 1 本引く。既定幅は 0 なので、罫を持たない既存の帯箱は変わらない。
    */
   border-bottom:

@@ -28,6 +28,12 @@ export type OverlayChangeHistory = "record" | "coalesce";
 
 export interface OverlayChangeOptions {
   history?: OverlayChangeHistory;
+  /**
+   * undo のコアレスキー。本文と図形が混ざったペースト / カットで、本文側が鋳造した
+   * キーをここへ通すと 1 つの undo エントリに畳まれる
+   * (`text-flow/clipboard-history-group.ts`)。
+   */
+  historyGroup?: string;
 }
 
 /**
@@ -142,6 +148,8 @@ export type OverlayActionRequestInput =
       payload: Extract<EditorClipboardPayload, { kind: "overlayShapes" }>;
       /** コピー元ブロック id → 貼り付けで生まれたブロック id。 */
       anchorBlockIdMap?: Record<string, string>;
+      /** 本文と 1 つの undo エントリに畳むためのコアレスキー。 */
+      historyGroup?: string;
     };
 
 export type OverlayActionRequest = OverlayActionRequestInput & { id: number };

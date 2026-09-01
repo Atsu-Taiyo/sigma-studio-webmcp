@@ -13,7 +13,7 @@ describe("overlay arrange shortcuts", () => {
     expect(action({ key: "ArrowDown", metaKey: true })).toBe("backward");
   });
 
-  it("accepts Presentation and legacy bracket aliases", () => {
+  it("accepts PowerPoint and legacy bracket aliases", () => {
     expect(action({ key: "}", code: "BracketRight", metaKey: true, shiftKey: true })).toBe("front");
     expect(action({ key: "{", code: "BracketLeft", ctrlKey: true, shiftKey: true })).toBe("back");
     expect(action({ key: "]", metaKey: true })).toBe("forward");

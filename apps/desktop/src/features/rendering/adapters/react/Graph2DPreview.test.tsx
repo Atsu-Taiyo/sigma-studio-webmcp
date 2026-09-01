@@ -29,11 +29,11 @@ describe("Graph2DPreview CSS injection", () => {
     expect(markupWithAxisColor("#1f2937")).toContain("#1f2937");
   });
 
-  it("falls back to the classic preset axis color when the stored one is rejected", () => {
+  it("falls back to the studyaid preset axis color when the stored one is rejected", () => {
     const base = createGraph2DSpecPreset("line");
     const html = renderToStaticMarkup(
       <Graph2DPreview
-        spec={{ ...base, axes: { ...base.axes, renderStyle: "classic", axisColor: INJECTED } as typeof base.axes }}
+        spec={{ ...base, axes: { ...base.axes, renderStyle: "studyaid", axisColor: INJECTED } as typeof base.axes }}
         staticMode
       />,
     );
@@ -225,13 +225,13 @@ describe("Graph2DPreview rendering adapter", () => {
     expect(html).not.toContain("graph2d-origin-label-tex");
   });
 
-  it("renders EditorMath graph axes with dashed textbook styling", () => {
+  it("renders StudyAid graph axes with dashed textbook styling", () => {
     const lineSpec = createGraph2DSpecPreset("line");
     const spec = {
       ...lineSpec,
       axes: {
         ...lineSpec.axes,
-        renderStyle: "classic" as const,
+        renderStyle: "studyaid" as const,
         axisColor: "#0d0d0d",
         axisStrokeWidth: 0.85,
         axisDash: "dashed" as const,

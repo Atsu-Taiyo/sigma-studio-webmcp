@@ -40,6 +40,10 @@ import {
 import { DEFAULT_FILL_OPACITY } from "@/lib/fill-opacity";
 import { CommandSettingsDialog } from "@/components/editor/CommandSettingsDialog";
 import { TexCommandReferenceDialog } from "@/components/editor/TexCommandReferenceDialog";
+import {
+  DocumentTextCopyDialog,
+  DocumentTextImportDialog,
+} from "@/components/editor/DocumentTextTransferDialog";
 import { TexEnvironmentSettingsDialog } from "@/components/editor/TexEnvironmentSettingsDialog";
 import { PageSettingsDialog } from "@/components/editor/PageSettingsDialog";
 import { viewportToCanvasAnchor } from "@/components/editor/PageCanvasEditor";
@@ -197,6 +201,10 @@ import {
   SELECT_INLINE_MATH_EVENT,
   updateInlineMathDraft,
 } from "@/components/tiptap/inline-math-extension";
+import {
+  NATIVE_HISTORY_COMMAND_EVENT,
+  type NativeHistoryCommandDetail,
+} from "@/components/tiptap/native-history-guard";
 import { QR_CODE_REQUEST_EVENT, type QrCodeRequestDetail } from "@/components/tiptap/url-detection-extension";
 import { generateQrPngFile } from "@/lib/qr-code";
 import {
@@ -265,13 +273,11 @@ import {
   type SigmaDocumentRecoveryIssue,
 } from "@/lib/sigma-doc-schema";
 import { mergeExternalDocumentChange } from "@/lib/document-block-merge";
-import { areStructurallyEqual } from "@/lib/structural-equality";
+import { areSigmaDocumentsEquivalent, comparableDocumentValue } from "@/lib/document-equivalence";
 import {
   applyMcpEditPreview as runSerializedMcpEditPreview,
   decideAiApprovedDocument,
-  replaceDocumentAfterRequiredBackup,
   trackInFlightSave,
-  type BackupFirstDocumentReplacementResult,
 } from "@/lib/ai-run-applier";
 import {
   DEFAULT_COMMENT_COLOR,
@@ -287,9 +293,9 @@ import {
   detectEditorShortcutPlatform,
   findCommandByShortcut,
   formatShortcutText,
+  getCommandTargetPolicy,
   getEditorCommandCatalog,
   getShortcutForCommand,
-  isSingleCharacterShortcut,
   loadEditorCustomCommands,
   loadEditorShortcutOverrides,
   parseEditorCustomCommands,
@@ -301,7 +307,6 @@ import {
   type EditorCommandId,
   type EditorCustomCommandAction,
   type EditorCustomCommandDefinition,
-  type EditorShortcutBinding,
   type EditorShortcutOverrides,
 } from "@/lib/editor-command-shortcuts";
 import { APP_READY_EVENT } from "@/components/StartupSplash";
@@ -360,15 +365,17 @@ import { AiSettingsDialog } from "@/components/editor/AiSettingsDialog";
 import { Tooltip } from "@/components/ui/Tooltip";
 import type { TooltipContent } from "@/components/ui/Tooltip";
 import {
-  importEditorMathProtectedBuffer,
-  isEditorMathPrtFilename,
-  isEditorMathSprFilename,
-  DEFAULT_EDITOR_MATH_IMPORT_FILENAME,
-  EDITOR_MATH_IMPORT_AVAILABLE,
-  EditorMathPrtPasswordError,
-} from "@/lib/classic-format-import";
+  importStudyAidProtectedBuffer,
+  isStudyAidPrtFilename,
+  isStudyAidSprFilename,
+  DEFAULT_STUDYAID_IMPORT_FILENAME,
+  STUDYAID_IMPORT_AVAILABLE,
+  StudyAidPrtPasswordError,
+} from "@/lib/studyaid-prt-import";
 import { importTexDocument, isTexFilename } from "@/lib/tex-import";
-import { importPresentationSlidesBuffer, isPresentationSlidesFilename } from "@/lib/presentation-import";
+import { writeTextToClipboard } from "@/lib/clipboard-text";
+import { serializeDocumentText } from "@/lib/document-text-transfer";
+import { importPowerPointPptxBuffer, isPowerPointPptxFilename } from "@/lib/powerpoint-import";
 import { getSupportedOverlayImageFiles } from "@/lib/overlay-image-files";
 import {
   cloneMaterialContentForInsert,
@@ -487,6 +494,13 @@ import {
   sameOverlaySelectionSummary,
 } from "@/components/editor/editor-shell/document-helpers";
 import {
+  deliverHistoryShortcutToFocusedSurface,
+  isCompositionStillActive,
+  shouldEndCompositionForEvent,
+  isCommandShortcutBlockedByTarget,
+  isTextEntryTarget,
+} from "@/components/editor/editor-shell/command-shortcut-targets";
+import {
   captureEditorTabViewState,
   resolveEditorTabViewState,
   scheduleEditorTabViewRestore,
@@ -494,18 +508,13 @@ import {
   type ResolvedEditorTabViewState,
 } from "@/components/editor/editor-shell/editor-tab-view-state";
 import {
-  applyAiApprovalAdoptionIfFileActive,
-  beginPendingAiApprovalAdoption,
-  hasPendingAiApprovalForFile,
-  persistWorkspaceBeforeAiApprovalAdoption,
-  preventCloseForPendingAiApproval,
   queueLatestDocumentChange,
   recordSuccessfulDocumentSave,
-  resolveRevisionedBackup,
-  runSingleFlight,
   saveBeforeDocumentReplacement,
   syncDocumentRefWhenStateIsCurrent,
   takeLatestDocumentChange,
+  nextObservedRevisionAfterQuietOutcome,
+  decideExternalDocumentChange,
   type SuccessfulDocumentSave,
 } from "@/components/editor/editor-shell/document-state-sync";
 import {
@@ -685,16 +694,6 @@ type DocumentStorageChangeEvent = Extract<
   { type: "document" }
 >;
 
-interface PendingAiApprovalAdoption {
-  fileId: string;
-  document: SigmaDocument;
-  revision: number;
-  userDocument: SigmaDocument;
-  userDocumentDirtyRevision: number;
-  backup?: DocumentFileRecord;
-  backupSourceDirtyRevision?: number;
-}
-
 /**
  * 画面 1 つ分の状態ストアを作って配るだけの薄い外側。
  *
@@ -731,6 +730,36 @@ export function EditorShell({ embeddedHost }: EditorShellProps = {}) {
  * 「スクロールできる」だけでなく「その向きにまだ余地がある」まで見ないと、端まで来た要素に
  * ホイールを吸われて盤面が動かせなくなる。
  */
+/**
+ * overlay の変更を `commitDocumentChange` のオプションへ翻訳する。
+ *
+ * `coalesce` は「直前へマージ」ではなく **record を丸ごとスキップ**するので、
+ * 本文編集に必ず後続する従属変更 (削除後の自動再アンカー) だけに使う。単独でも起こりうる
+ * クリップボード操作は `historyGroup` (コアレスキー) を共有する形にする —— キーが違えば
+ * 必ず record されるので、図形だけの操作が取りこぼされない
+ * (`text-flow/clipboard-history-group.ts` の宣言コメント)。
+ */
+export function resolveOverlayCommitOptions(
+  options?: OverlayChangeOptions,
+): DocumentChangeOptions | undefined {
+  // **キーが優先**。両方来たときに `coalesce` を採ると `record` が丸ごとスキップされ、
+  // その変更を単独では戻せなくなる —— この設計が排除しようとしている唯一の消失形そのもの。
+  // 今日の混在経路はすべて `history: "record"` を要求するのでここは通らないが、
+  // 順序を逆にした瞬間に静かに壊れるので、優先順位をコードで固定しておく。
+  if (options?.historyGroup) {
+    return { historyGroup: options.historyGroup };
+  }
+  return options?.history === "coalesce" ? { coalesce: true } : undefined;
+}
+
+/** `edit.undo` / `edit.redo` なら向き、それ以外は null。 */
+function historyShortcutDirection(commandId: string): "undo" | "redo" | null {
+  if (commandId === "edit.undo") {
+    return "undo";
+  }
+  return commandId === "edit.redo" ? "redo" : null;
+}
+
 function canScrollWithin(
   target: EventTarget | null,
   boundary: HTMLElement,
@@ -824,7 +853,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   } = editorStore.getState();
   const selectedId = useStore(editorStore, (state) => state.selectedId);
   const [degradedWatcherScopes, setDegradedWatcherScopes] = useState<DegradedWatcherScope[]>([]);
-  const [hasPendingAiApprovalAdoption, setHasPendingAiApprovalAdoption] = useState(false);
   const announceRecovery = useCallback((
     issues: SigmaDocumentRecoveryIssue[],
     recoveryBackupPath?: string,
@@ -1277,7 +1305,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   const [overlaySelection, setOverlaySelection] = useState<OverlaySelectionSummary>(EMPTY_OVERLAY_SELECTION);
   const [webMcpPreviewGroups, setWebMcpPreviewGroups] = useState<AiEditPreviewState[]>([]);
   const webMcpBridgeRef = useRef<WebMcpBridgeHandle | null>(null);
-  const [webMcpPanelTarget, setWebMcpPanelTarget] = useState<HTMLDivElement | null>(null);
   const visibleAiEditPreviewGroups = useMemo(
     () => [...aiEditPreviewGroups, ...webMcpPreviewGroups],
     [aiEditPreviewGroups, webMcpPreviewGroups],
@@ -1289,12 +1316,16 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   const [documentInstanceRevision, setDocumentInstanceRevision] = useState(0);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const otherImportInputRef = useRef<HTMLInputElement | null>(null);
-  // EditorMath教材(.legacy/.archive)はパスワードゲート: 正しいパスワードが入力される
+  // StudyAid教材(.prt/.spr)はパスワードゲート: 正しいパスワードが入力される
   // まで選択ファイルを保持し、ダイアログで照合してからインポートする。
-  const [editorMathPasswordRequest, setEditorMathPasswordRequest] = useState<File | null>(null);
-  const [editorMathPassword, setEditorMathPassword] = useState("");
-  const [editorMathPasswordError, setEditorMathPasswordError] = useState<string | null>(null);
-  const [editorMathImporting, setEditorMathImporting] = useState(false);
+  const [studyAidPasswordRequest, setStudyAidPasswordRequest] = useState<File | null>(null);
+  const [studyAidPassword, setStudyAidPassword] = useState("");
+  const [studyAidPasswordError, setStudyAidPasswordError] = useState<string | null>(null);
+  const [studyAidImporting, setStudyAidImporting] = useState(false);
+  // 教材のテキスト受け渡し。取り込みは貼り付け面を開くだけ、書き出しは
+  // クリップボードへ直接入れ、拒否されたときだけ手で選ぶ面 (テキストを保持) を出す。
+  const [textImportOpen, setTextImportOpen] = useState(false);
+  const [documentTextCopyFallback, setDocumentTextCopyFallback] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fontFamilyButtonRef = useRef<HTMLButtonElement | null>(null);
   const blockStyleButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -1363,24 +1394,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   // 非同期loadを追い越してもAI適用の履歴情報を失わないよう、active file分だけ別に保持する。
   const pendingAutoAppliedProposalIdsByFileRef = useRef(new Map<string, string[]>());
   const documentStorageChangeProcessorRef = useRef<((event: DocumentStorageChangeEvent) => void) | null>(null);
-  const pendingAiApprovalAdoptionRef = useRef<PendingAiApprovalAdoption | null>(null);
-  const aiApprovalAdoptionPromiseRef = useRef<Promise<BackupFirstDocumentReplacementResult<DocumentFileRecord>> | null>(null);
   const [autosaveRetry, setAutosaveRetry] = useState(0);
   const autosaveRetryTimerRef = useRef<number | null>(null);
-
-  const clearPendingAiApprovalAdoption = useCallback(() => {
-    pendingAiApprovalAdoptionRef.current = null;
-    setHasPendingAiApprovalAdoption(false);
-  }, []);
-
-  useEffect(() => {
-    if (!hasPendingAiApprovalAdoption) {
-      return;
-    }
-    const warnBeforeClose = (event: BeforeUnloadEvent) => preventCloseForPendingAiApproval(event);
-    window.addEventListener("beforeunload", warnBeforeClose);
-    return () => window.removeEventListener("beforeunload", warnBeforeClose);
-  }, [hasPendingAiApprovalAdoption]);
 
   const finishMcpPreviewBusy = useCallback(() => {
     mcpPreviewBusyRef.current = false;
@@ -1656,12 +1671,12 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     // 本文が空の文書 (この不具合で空のまま保存されたファイル、埋め込みホストからの差し替え、
     // AI が全消しした正本) はここで直る — 開き直せば必ず入力できる状態から始まる。
     const nextDocument = ensureEditableBody(incomingDocument).document;
-    const pendingAdoption = pendingAiApprovalAdoptionRef.current;
-    if (pendingAdoption?.fileId === activeFileIdRef.current) {
-      // 退避失敗後に別タブへ移る場合も、差し替え直前の最新入力を再試行用に保持する。
-      pendingAdoption.userDocument = documentRef.current;
-    }
     const selected = nextSelectedId ?? getDefaultDocumentSelectionId(nextDocument);
+    // **履歴は必ず消す。** 「後始末はするが履歴は残す」形も試したが、undo は文書を丸ごと
+    // 差し替えるので、採用前のスナップショットがスタックに残っている限り ⌘Z 1 回で外部の
+    // 変更がメモリから消え、dirty 判定になった autosave が採用済み revision (CAS 通過) で
+    // 書き戻して**ディスク上の他者の変更を消す**。ここで消しておくと ⌘Z が空振りしてその
+    // 事故が起きない。undo が外部同期をまたぐときの安全性は独立した設計課題。
     documentHistory.clear();
     documentRef.current = nextDocument;
     if (nextObservedRevision !== undefined) {
@@ -1751,6 +1766,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     });
   }, [activeFileId, documentInstanceRevision, workspaceReady]);
 
+
   // 外部変更 (AI提案の自動承認などによる保存) を mergeExternalDocumentChange で人間の未保存編集と
   // 3-wayマージできた場合に使う、resetEditorDocument より軽量な反映経路。全文リロードではないため
   // undo/redoスタックや選択中ブロック以外のUI状態(コメント選択中アンカー等)は保持する — 通常の
@@ -1765,7 +1781,13 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     syncedRevision: number,
   ) => {
     // 外部側が本文を空にしていても、こちらの画面はキャレットを置ける状態を保つ。
-    const mergedDocument = ensureEditableBody(incomingMergedDocument).document;
+    // id 重複の修復も通す — マージ結果は mine と theirs の継ぎ合わせなので、重複が残ると
+    // 次回リロードで id が振り直され、等価判定を落として全文リロード (履歴全消し) の種になる。
+    // 無変更なら同一参照が返るので余計な再描画は増えない。
+    const mergedDocument = ensureEditableBody(repairDuplicateTopLevelIds(
+      incomingMergedDocument,
+      DOCUMENT_BLOCK_OPERATION_PORTS,
+    )).document;
     const currentSelectedId = selectedIdRef.current;
     const nextSelectedId = currentSelectedId && findBlock(mergedDocument, currentSelectedId)
       ? currentSelectedId
@@ -1800,7 +1822,14 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     const currentDocument = documentRef.current;
     const currentSelectedId = selectedIdRef.current;
     // AI が本文を全消しした正本を採用しても、入力できる場所は残す。
-    const nextDocument = ensureEditableBody(params.nextDocument).document;
+    //
+    // id 重複の修復も通す。マージ結果は mine と theirs を継ぎ合わせたもので、重複が残ると
+    // 次回リロードで id が振り直され、外部変更の等価判定を落として**履歴の全消しを再発
+    // させる種**になる。無変更なら同一参照が返るので余計な再描画は増えない。
+    const nextDocument = ensureEditableBody(repairDuplicateTopLevelIds(
+      params.nextDocument,
+      DOCUMENT_BLOCK_OPERATION_PORTS,
+    )).document;
     const nextSelectedId = currentSelectedId && findBlock(nextDocument, currentSelectedId)
       ? currentSelectedId
       : getDefaultDocumentSelectionId(nextDocument);
@@ -1812,7 +1841,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       },
       metadata: {
         origin: "automation",
-        correlationIds: params.proposalIds,
+        // 外部由来の採用はすべてここを通る。AI 提案に紐づかない (autosave 由来の) 採用では
+        // 相関 id が無いので、空配列を残さず省く。
+        ...(params.proposalIds.length > 0 ? { correlationIds: params.proposalIds } : {}),
       },
     });
     documentRef.current = nextDocument;
@@ -1852,10 +1883,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     });
     lastSavedDocumentRef.current = params.diskDocument;
     lastSyncedDocumentRef.current = params.diskDocument;
-
-    if (decision.kind === "stay-dirty") {
-      return decision;
-    }
 
     // 採用する正本が本文を持たないときも、画面側はキャレットを置ける状態を保つ
     // (差分はディスク正本 = `params.diskDocument` 側の判定には混ぜない)。
@@ -2163,118 +2190,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     return createUnsavedEditBackup(documentRef.current);
   }, [createUnsavedEditBackup, isCurrentDocumentDirty]);
 
-  const performApprovedDocumentAdoption = useCallback(async (
-    pending: PendingAiApprovalAdoption,
-  ) => {
-    return replaceDocumentAfterRequiredBackup({
-      backupRequired: !!pending.backup
-        || (pending.fileId === activeFileIdRef.current ? isCurrentDocumentDirty() : true),
-      createBackup: async () => {
-        // バックアップ作成中にも入力は進みうる。作成元dirty revisionが変わったら、その場で
-        // 新しいスナップショットを退避し直し、古いバックアップで正本へ差し替えない。
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          const isPendingFileActive = pending.fileId === activeFileIdRef.current;
-          const source = isPendingFileActive ? documentRef.current : pending.userDocument;
-          const sourceRevision = isPendingFileActive
-            ? documentDirtyRevisionRef.current
-            : pending.userDocumentDirtyRevision;
-          const resolved = await resolveRevisionedBackup({
-            cached: pending.backup && pending.backupSourceDirtyRevision !== undefined
-              ? { backup: pending.backup, sourceRevision: pending.backupSourceDirtyRevision }
-              : undefined,
-            sourceRevision,
-            createBackup: () => createUnsavedEditBackup(source),
-          });
-          if (!resolved) {
-            return null;
-          }
-          pending.backup = resolved.backup;
-          pending.backupSourceDirtyRevision = resolved.sourceRevision;
-          if (
-            pending.fileId !== activeFileIdRef.current
-            || documentDirtyRevisionRef.current === resolved.sourceRevision
-          ) {
-            return resolved.backup;
-          }
-          pending.backup = undefined;
-          pending.backupSourceDirtyRevision = undefined;
-        }
-        throw new Error(tEditor("status.setAsideRetry"));
-      },
-      replace: async (backup) => {
-        if (!backup) {
-          applyAiApprovalAdoptionIfFileActive({
-            fileId: pending.fileId,
-            getActiveFileId: () => activeFileIdRef.current,
-            apply: () => {
-              const currentSelectedId = selectedIdRef.current;
-              resetEditorDocument(
-                pending.document,
-                currentSelectedId && findBlock(pending.document, currentSelectedId)
-                  ? currentSelectedId
-                  : getDefaultDocumentSelectionId(pending.document),
-                pending.revision,
-              );
-            },
-          });
-          clearPendingAiApprovalAdoption();
-          return;
-        }
-        pending.backup = backup;
-        const nextOpenFileIds = uniqueStringIds([
-          ...openFileIdsRef.current,
-          backup.fileId,
-          pending.fileId,
-        ]);
-        const workspaceResult = await persistWorkspaceBeforeAiApprovalAdoption({
-          saveWorkspace: () => saveWorkspaceState({
-            openFileIds: nextOpenFileIds,
-            activeFileId: activeFileIdRef.current,
-          }),
-          onPersisted: () => {
-            // workspace保存を待つ間にタブが変わっても、別タブのeditor stateへ旧文書をresetしない。
-            applyAiApprovalAdoptionIfFileActive({
-              fileId: pending.fileId,
-              getActiveFileId: () => activeFileIdRef.current,
-              apply: () => {
-                const currentSelectedId = selectedIdRef.current;
-                resetEditorDocument(
-                  pending.document,
-                  currentSelectedId && findBlock(pending.document, currentSelectedId)
-                    ? currentSelectedId
-                    : getDefaultDocumentSelectionId(pending.document),
-                  pending.revision,
-                );
-              },
-            });
-            setOpenFileIds(nextOpenFileIds);
-            clearPendingAiApprovalAdoption();
-          },
-        });
-        if (!workspaceResult.ok) {
-          throw new Error(workspaceResult.error ?? tEditor("status.setAsideTabsFailed"));
-        }
-      },
-    });
-  }, [clearPendingAiApprovalAdoption, createUnsavedEditBackup, isCurrentDocumentDirty, resetEditorDocument]);
-
-  const adoptApprovedDocumentAfterBackup = useCallback((pending: PendingAiApprovalAdoption) => (
-    runSingleFlight(aiApprovalAdoptionPromiseRef, () => performApprovedDocumentAdoption(pending))
-  ), [performApprovedDocumentAdoption]);
-
   const saveCurrentDocumentBeforeReplacement = useCallback(async (): Promise<boolean> => {
-    const pending = pendingAiApprovalAdoptionRef.current;
-    if (pending && hasPendingAiApprovalForFile(pending, activeFileIdRef.current)) {
-      setSaveState("saving");
-      const replacement = await adoptApprovedDocumentAfterBackup(pending);
-      if (!replacement.ok) {
-        setSaveState("error");
-        setStatusMessage(tEditor("status.keepOpenSetAsideFailed"));
-        return false;
-      }
-      return true;
-    }
-
     return saveBeforeDocumentReplacement({
       save: saveCurrentDocumentRecord,
       onFailure: (result) => {
@@ -2292,7 +2208,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         setStatusMessage(result.error ?? tEditor("status.keepOpenSaveFailed"));
       },
     });
-  }, [adoptApprovedDocumentAfterBackup, dispatchDocumentStorageChange, saveCurrentDocumentRecord, setSaveState, setStatusMessage]);
+  }, [dispatchDocumentStorageChange, saveCurrentDocumentRecord, setSaveState, setStatusMessage]);
 
   const switchAwayFromDeletedFile = useCallback(async (deletedFileId: string) => {
     const backup = await saveUnsavedEditBackup();
@@ -3108,6 +3024,15 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   }, [commitDocumentChange, setActiveCommentThreadId, setStatusMessage]);
 
   const restoreDocumentHistory = useCallback((direction: "undo" | "redo") => {
+    // AI 側の状態は ref から読む (`aiLockedTargetsRef` の宣言のコメント参照)。書き込み中は
+    // state のミラーではなく、書き込み開始と同時に立つ `mcpPreviewBusyRef` を直接見る。
+    //
+    // **`commitDocumentChange` と対称にしておく。** 文書を書き換える choke point は 2 つ
+    // (通常の編集と履歴の巻き戻し) で、AI が握っている対象を守る条件は同じでなければならない。
+    // 片方だけ state のミラーを読むと、書き込みが始まった直後の 1 手 —— つまり**いちばん
+    // 危ない瞬間の ⌘Z** —— だけがすり抜ける。state はレンダー 1 回ぶん遅れて届く。
+    const aiDocumentWriteInProgress = mcpPreviewBusyRef.current;
+    const aiLockedTargets = aiLockedTargetsRef.current;
     if (aiDocumentWriteInProgress) {
       setStatusMessage(aiDocumentWriteInProgressMessage());
       return;
@@ -3195,7 +3120,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       return;
     }
     setStatusMessage(direction === "undo" ? tEditor("status.undone") : tEditor("status.redone"));
-  }, [aiDocumentWriteInProgress, aiLockedTargets, documentHistory, refreshMcpEditProposals, setActiveCommentThreadId, setCommentAnchorCandidate, setPendingCommentAnchor, setSelectedId, setSelectedInlineMath, setStatusMessage]);
+  }, [documentHistory, refreshMcpEditProposals, setActiveCommentThreadId, setCommentAnchorCandidate, setPendingCommentAnchor, setSelectedId, setSelectedInlineMath, setStatusMessage]);
 
   const undoDocumentChange = useCallback(() => {
     restoreDocumentHistory("undo");
@@ -3497,9 +3422,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         scheduleAutosaveRetry();
         return;
       }
-      if (hasPendingAiApprovalForFile(pendingAiApprovalAdoptionRef.current, activeFileId)) {
-        return;
-      }
       setSaveState("saving");
     }, 0);
     const timeoutId = window.setTimeout(async () => {
@@ -3529,9 +3451,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         || mcpPreviewBusyRef.current
       ) {
         scheduleAutosaveRetry();
-        return;
-      }
-      if (hasPendingAiApprovalForFile(pendingAiApprovalAdoptionRef.current, activeFileId)) {
         return;
       }
       const revisionToSave = documentDirtyRevisionRef.current;
@@ -4441,7 +4360,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         },
         updatedAt: new Date().toISOString(),
       };
-    }, options?.history === "coalesce" ? { coalesce: true } : undefined);
+    }, resolveOverlayCommitOptions(options));
   };
 
   const updateOverlay = (overlay: PageOverlay, options?: OverlayChangeOptions) => writeOverlay(overlay, options);
@@ -5587,6 +5506,160 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     } as OverlayActionRequest);
   }, []);
 
+  /**
+   * コマンドを走らせる前の後始末。開いているメニュー・ポップオーバーを閉じる。
+   *
+   * **入口が 2 つあるので関数として共有する** — キーボード / コマンドパレット /
+   * ネイティブメニューが通る `runShortcutCommandRef` と、ネイティブ undo を
+   * `beforeinput` で受け止める経路。ここが割れていると、フォントサイズやブロック
+   * スタイルのポップオーバーが「消えた内容の状態」を表示したまま残る。
+   */
+  const closeTransientCommandSurfaces = useCallback(() => {
+    setActiveMenu(null);
+    setExportMenuOpen(false);
+    setShapeMenuOpen(false);
+    setLineToolMenuOpen(false);
+    setFontFamilyMenuOpen(false);
+    setBlockStyleMenuOpen(false);
+    setFontSizeMenuOpen(false);
+    setBoxedTextMenuOpen(false);
+    setLineHeightMenuOpen(false);
+    setTextAlignMenuOpen(false);
+    setColorStylePanel(null);
+    setLineEndpointMenu(null);
+  }, []);
+
+  /**
+   * IME 変換中か。**メニュー経路には `event.isComposing` が無い**ので自前で追う。
+   *
+   * 変換中に文書を差し替えると未確定の文字列ごと壊れるため、キーボード経路と同じく
+   * メニュー経路でも抑止する。
+   *
+   * **真偽値ではなく合成中の要素を持ち、しかも「立ちっぱなしになり得ない」形にする。**
+   * `compositionend` は取りこぼす経路がいくつもある —— 合成中の要素が DOM から引き剥がされる
+   * (AI 適用時の PM `setContent`・ページ割りのリフロー・インライン数式ノードビューの破棄)、
+   * Escape で変換をキャンセルする、アプリを切り替える、プログラムから blur する。真偽値で
+   * 持つと**そのままセッション中ずっと立ちっぱなしになり、メニュー ⌘Z が永久に死ぬ** ——
+   * いま直している不具合と同じクラスの穴を自分で作ることになる。
+   *
+   * そこで失効の道を 4 本用意する。どれか 1 本でも通れば解ける:
+   * 1. 要素が DOM から外れた (`isConnected`)
+   * 2. その要素がもうフォーカスを持っていない (読むたびに `activeElement` と突き合わせる)
+   * 3. 合成を伴わないキー入力・ポインタ操作が来た (`isComposing === false`)
+   * 4. ウィンドウがフォーカスを失った (`blur`)
+   */
+  const imeCompositionElementRef = useRef<Element | null>(null);
+  const isImeCompositionActive = useCallback(() => {
+    const element = imeCompositionElementRef.current;
+    if (isCompositionStillActive(element)) {
+      return true;
+    }
+    imeCompositionElementRef.current = null;
+    return false;
+  }, []);
+  useEffect(() => {
+    const begin = (event: Event) => {
+      imeCompositionElementRef.current = event.target instanceof Element ? event.target : null;
+    };
+    const end = () => {
+      imeCompositionElementRef.current = null;
+    };
+    // 合成を伴わない入力が来たら、そこで合成は終わっている。`compositionend` が来ない
+    // 経路 (Escape でのキャンセルなど) の唯一の出口なので、キーもポインタも見る。
+    const endIfNotComposing = (event: Event) => {
+      if (shouldEndCompositionForEvent(event)) {
+        end();
+      }
+    };
+    window.addEventListener("compositionstart", begin, true);
+    window.addEventListener("compositionend", end, true);
+    // フォーカスが外れた時点で合成は終わっている。`compositionend` を取りこぼす経路の保険。
+    window.addEventListener("focusout", end, true);
+    window.addEventListener("keydown", endIfNotComposing, true);
+    window.addEventListener("keyup", endIfNotComposing, true);
+    window.addEventListener("pointerdown", end, true);
+    // アプリ・ブラウザの切り替え。戻ってきたときに立ちっぱなしにしない。
+    window.addEventListener("blur", end);
+    return () => {
+      window.removeEventListener("compositionstart", begin, true);
+      window.removeEventListener("compositionend", end, true);
+      window.removeEventListener("focusout", end, true);
+      window.removeEventListener("keydown", endIfNotComposing, true);
+      window.removeEventListener("keyup", endIfNotComposing, true);
+      window.removeEventListener("pointerdown", end, true);
+      window.removeEventListener("blur", end);
+    };
+  }, []);
+
+  /**
+   * 「いま他の面が前に出ているか」。**キーボード経路とメニュー経路で同じ抑止を使う。**
+   * 片方だけに書くと、メニューがダイアログを飛び越えて背後の文書を戻す。
+   */
+  const isModalSurfaceOpen = commandSettingsOpen
+    || texCommandReferenceOpen
+    || pageSettingsOpen
+    || documentListOpen
+    || previewOpen
+    || aiSettingsOpen
+    || desktopSettingsOpen
+    || materialLibraryOpen
+    || templateGalleryOpen
+    || materialAddDialogOpen
+    || ribbonBackstageOpen
+    || commandPaletteOpen;
+
+  useEffect(() => {
+    // ネイティブ undo / redo (右クリックメニュー・3 本指スワイプ・支援技術など) を
+    // 本文エディタが `beforeinput` で止めて、こちらへ振り向けてくる。
+    // 送り手は `components/tiptap/native-history-guard.ts` (逆流を避けて window イベント)。
+    //
+    // **これが 3 本目の入口。** キーボード・ネイティブメニューと同じフォーカスポリシーを
+    // 通す —— 通さないと、モーダルの上でも IME 変換中でも、右クリック Undo が背後の文書を
+    // 巻き戻す。
+    //
+    // `deliverToFocusedSurface: false` にしているのは、この経路では**面ごとの振り分けを
+    // 既にガード側が済ませている**ため。shell に届いた時点で「文書で戻してほしい」の意味
+    // しかなく、ここで下書き面へ `beforeinput` を投げ返すと同じ合図が往復する。
+    // **IME の抑止はこの経路だけ二重に掛かる。どちらが効いているかを明記しておく。**
+    // 1 段目はガード側の `view.composing` —— 本文 PM で変換中なら、ガードは
+    //    `preventDefault()` だけして**この window イベントを投げない**。だからここには来ない。
+    // 2 段目がこの `isComposing` —— ガードを経由しない面 (数式欄・下書き面) から来た合図と、
+    //    `view.composing` が非同期にクリアされる約 20ms の窓を受け止める。
+    // どちらで止まってもユーザーに見えるのは**静かな no-op** (合成した `beforeinput` は
+    // untrusted なのでブラウザの既定 undo を起こさない = PM 所有 DOM は書き換わらない)。
+    // 変換中に文書を差し替えて未確定の文字列ごと壊すより、この 1 回を飲むほうがよい。
+    const handleNativeHistoryCommand = (event: Event) => {
+      const detail = (event as CustomEvent<NativeHistoryCommandDetail>).detail;
+      if (detail?.direction !== "undo" && detail?.direction !== "redo") {
+        return;
+      }
+      const outcome = deliverHistoryShortcutToFocusedSurface({
+        activeElement: window.document.activeElement,
+        direction: detail.direction,
+        isComposing: isImeCompositionActive(),
+        ownerDocument: window.document,
+        isModalSurfaceOpen,
+        deliverToFocusedSurface: false,
+      });
+      if (outcome !== "document") {
+        return;
+      }
+      // 後始末 (`closeTransientCommandSurfaces`) はキーボード / コマンドパレット /
+      // ネイティブメニューが通る `runShortcutCommandRef` と**同じ関数を共有する**。
+      // ここだけ後始末を飛ばすと、フォントサイズやブロックスタイルのポップオーバーが
+      // 「消えた内容の状態」を表示したまま残る。
+      closeTransientCommandSurfaces();
+      if (detail.direction === "undo") {
+        undoDocumentChange();
+      } else {
+        redoDocumentChange();
+      }
+    };
+    window.addEventListener(NATIVE_HISTORY_COMMAND_EVENT, handleNativeHistoryCommand);
+    return () => window.removeEventListener(NATIVE_HISTORY_COMMAND_EVENT, handleNativeHistoryCommand);
+  }, [closeTransientCommandSurfaces, isImeCompositionActive, isModalSurfaceOpen,
+    redoDocumentChange, undoDocumentChange]);
+
   useEffect(() => {
     const handleOverlayShapesPasteRequest = (event: Event) => {
       const detail = (event as CustomEvent<OverlayShapesPasteRequestDetail>).detail;
@@ -5601,6 +5674,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         type: "pasteShapes",
         payload: detail.payload,
         anchorBlockIdMap: detail.anchorBlockIdMap,
+        historyGroup: detail.historyGroup,
       });
       setStatusMessage(tEditor("status.bodyAndShapesPasted"));
     };
@@ -5955,7 +6029,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   };
 
   const exportJson = async () => {
-    const data = JSON.stringify(document, null, 2);
+    const data = serializeDocumentText(document);
     const suggestedName = `${resolveDocumentTitle(document, "lesson")}.sigmadoc.json`;
     const bridge = getDesktopBridge();
     if (bridge) {
@@ -5977,6 +6051,26 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     anchor.download = suggestedName;
     anchor.click();
     URL.revokeObjectURL(url);
+  };
+
+  /**
+   * 教材をファイルではなくクリップボードのテキストとして持ち出す。
+   * チャットやメールへそのまま貼れるので、書き出し先を選ぶ手数が要らない。
+   */
+  const copyDocumentText = async () => {
+    setActiveMenu(null);
+    const text = serializeDocumentText(document);
+    if (await writeTextToClipboard(text)) {
+      setStatusMessage(tEditor("status.documentTextCopied"));
+      return;
+    }
+    // 権限で書けなかったときは行き止まりにせず、手で選べる面に同じテキストを出す。
+    setDocumentTextCopyFallback(text);
+  };
+
+  const openTextImportDialog = () => {
+    setActiveMenu(null);
+    setTextImportOpen(true);
   };
 
   const openDocumentViaDesktop = async () => {
@@ -6208,27 +6302,27 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     await deleteDocumentFromList(activeFileId);
   };
 
-  const importDocumentFile = async (file: File, options: { editorMathPassword?: string } = {}) => {
+  const importDocumentFile = async (file: File, options: { studyAidPassword?: string } = {}) => {
     try {
-      const isPrt = isEditorMathPrtFilename(file.name);
-      const isSpr = isEditorMathSprFilename(file.name);
-      const isEditorMath = isPrt || isSpr;
+      const isPrt = isStudyAidPrtFilename(file.name);
+      const isSpr = isStudyAidSprFilename(file.name);
+      const isStudyAid = isPrt || isSpr;
       const isTex = isTexFilename(file.name);
-      const isSlides = isPresentationSlidesFilename(file.name);
-      if (isEditorMath && options.editorMathPassword === undefined) {
-        setEditorMathPassword("");
-        setEditorMathPasswordError(null);
-        setEditorMathPasswordRequest(file);
+      const isPptx = isPowerPointPptxFilename(file.name);
+      if (isStudyAid && options.studyAidPassword === undefined) {
+        setStudyAidPassword("");
+        setStudyAidPasswordError(null);
+        setStudyAidPasswordRequest(file);
         return;
       }
       let recoveryIssues: SigmaDocumentRecoveryIssue[] = [];
       let imported: SigmaDocument;
-      if (isEditorMath) {
-        imported = await importEditorMathProtectedBuffer(await file.arrayBuffer(), file.name, options.editorMathPassword ?? "");
+      if (isStudyAid) {
+        imported = await importStudyAidProtectedBuffer(await file.arrayBuffer(), file.name, options.studyAidPassword ?? "");
       } else if (isTex) {
         imported = importTexDocument(await file.text(), file.name);
-      } else if (isSlides) {
-        imported = await importPresentationSlidesBuffer(await file.arrayBuffer(), file.name, {
+      } else if (isPptx) {
+        imported = await importPowerPointPptxBuffer(await file.arrayBuffer(), file.name, {
           locale: getAppLocale(),
         });
       } else {
@@ -6257,7 +6351,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         setOpenFileIds([importedDocument.docId]);
         setActiveFileId(importedDocument.docId);
         setSaveState("saved");
-        setStatusMessage(isPrt ? tEditor("status.legacyImported") : isSpr ? tEditor("status.archiveImported") : isTex ? tEditor("status.texConverted") : isSlides ? tEditor("status.presentationConverted") : tEditor("status.jsonImported"));
+        setStatusMessage(isPrt ? tEditor("status.prtImported") : isSpr ? tEditor("status.sprImported") : isTex ? tEditor("status.texConverted") : isPptx ? tEditor("status.powerPointConverted") : tEditor("status.jsonImported"));
         announceRecovery(recoveryIssues);
         return;
       }
@@ -6265,10 +6359,10 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         return;
       }
       const importedRecord = await createDocumentFromSigmaDocument(importedDocument);
-      await openDocumentAsTab(importedRecord, isPrt ? tEditor("status.legacyImported") : isSpr ? tEditor("status.archiveImported") : isTex ? tEditor("status.texConverted") : isSlides ? tEditor("status.presentationConverted") : tEditor("status.jsonImported"));
+      await openDocumentAsTab(importedRecord, isPrt ? tEditor("status.prtImported") : isSpr ? tEditor("status.sprImported") : isTex ? tEditor("status.texConverted") : isPptx ? tEditor("status.powerPointConverted") : tEditor("status.jsonImported"));
       announceRecovery(recoveryIssues);
     } catch (error) {
-      if (error instanceof EditorMathPrtPasswordError && options.editorMathPassword !== undefined) {
+      if (error instanceof StudyAidPrtPasswordError && options.studyAidPassword !== undefined) {
         throw error;
       }
       setSaveState("error");
@@ -6285,7 +6379,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     importInputRef.current?.click();
   };
 
-  const openOtherImportDialog = EDITOR_MATH_IMPORT_AVAILABLE ? () => {
+  const openOtherImportDialog = STUDYAID_IMPORT_AVAILABLE ? () => {
     setActiveMenu(null);
     const bridge = getDesktopBridge();
     if (isDesktopApp && bridge?.file.openImportOtherDocument) {
@@ -6295,7 +6389,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           if (!result) {
             return;
           }
-          const baseName = result.filePath.split(/[\\/]/).pop() ?? DEFAULT_EDITOR_MATH_IMPORT_FILENAME;
+          const baseName = result.filePath.split(/[\\/]/).pop() ?? DEFAULT_STUDYAID_IMPORT_FILENAME;
           const binary = window.atob(result.dataBase64);
           const bytes = new Uint8Array(binary.length);
           for (let index = 0; index < binary.length; index += 1) {
@@ -6312,34 +6406,61 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     otherImportInputRef.current?.click();
   } : () => undefined;
 
-  const cancelEditorMathImport = () => {
-    setEditorMathPasswordRequest(null);
-    setEditorMathPassword("");
-    setEditorMathPasswordError(null);
-    setEditorMathImporting(false);
+  const cancelStudyAidImport = () => {
+    setStudyAidPasswordRequest(null);
+    setStudyAidPassword("");
+    setStudyAidPasswordError(null);
+    setStudyAidImporting(false);
   };
 
-  const submitEditorMathPassword = async () => {
-    if (!editorMathPasswordRequest || editorMathImporting) {
+  const submitStudyAidPassword = async () => {
+    if (!studyAidPasswordRequest || studyAidImporting) {
       return;
     }
-    if (!editorMathPassword) {
-      setEditorMathPasswordError(tEditor("status.passwordRequired"));
+    if (!studyAidPassword) {
+      setStudyAidPasswordError(tEditor("status.passwordRequired"));
       return;
     }
-    setEditorMathImporting(true);
-    setEditorMathPasswordError(null);
+    setStudyAidImporting(true);
+    setStudyAidPasswordError(null);
     try {
-      await importDocumentFile(editorMathPasswordRequest, { editorMathPassword });
-      cancelEditorMathImport();
+      await importDocumentFile(studyAidPasswordRequest, { studyAidPassword });
+      cancelStudyAidImport();
     } catch (error) {
-      if (error instanceof EditorMathPrtPasswordError) {
-        setEditorMathPasswordError(error.message);
+      if (error instanceof StudyAidPrtPasswordError) {
+        setStudyAidPasswordError(error.message);
       } else {
-        cancelEditorMathImport();
+        cancelStudyAidImport();
       }
     } finally {
-      setEditorMathImporting(false);
+      setStudyAidImporting(false);
+    }
+  };
+
+
+  /**
+   * ネイティブメニュー由来の Undo / Redo を、キーボード経路と同じポリシーで振り分ける。
+   *
+   * メニュー click には `event.target` も `isComposing` も `repeat` も無いので、フォーカスは
+   * `document.activeElement` から、IME 合成中かは自前の追跡 ref から読む。
+   *
+   * **オートリピートは通す (意図的)。** キーボード層は `event.repeat` を弾いて「押しっぱなしで
+   * 1 手だけ」にしているが、メニューのキー等価には repeat フラグが無く、OS の自動リピートと
+   * 連打を区別できない。時間しきい値で推測すると素早い連打を握り潰すので、**履歴を歩ける**
+   * ほうに倒した。結果としてデスクトップだけ「押しっぱなしで戻り続ける」になるが、
+   * これは多くのエディタの既定挙動でもある。
+   */
+  const runHistoryShortcutFromMenu = (direction: "undo" | "redo") => {
+    // 判定と配達は `command-shortcut-targets.ts` が持つ。ここは引数を集めて呼ぶだけ。
+    const outcome = deliverHistoryShortcutToFocusedSurface({
+      activeElement: window.document.activeElement,
+      direction,
+      isComposing: isImeCompositionActive(),
+      ownerDocument: window.document,
+      isModalSurfaceOpen,
+    });
+    if (outcome === "document") {
+      runShortcutCommandRef.current(direction === "undo" ? "edit.undo" : "edit.redo");
     }
   };
 
@@ -6350,6 +6471,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     printDocument: () => undefined as unknown,
     openSettings: () => undefined as unknown,
     checkUpdates: () => undefined as unknown,
+    undo: () => undefined as unknown,
+    redo: () => undefined as unknown,
   });
 
   useEffect(() => {
@@ -6358,6 +6481,15 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       openDocument: openDocumentViaDesktop,
       saveDocument: exportJson,
       printDocument: openPrintPreview,
+      // Edit メニューの Undo / Redo は ⌘Z / ⇧⌘Z を持ったままで、**キー押下もクリックも
+      // 同じ click ハンドラを通って**ここへ来る (ネイティブメニューが role: "undo" だった頃は
+      // click が無視されて webContents.undo() が走っていた。electron/main.ts 参照)。
+      //
+      // **メニュー経路は keydown を一切伴わない。** そのままコマンドを走らせると、キーボード層が
+      // 通しているフォーカス判定・モーダル抑止・IME 抑止を丸ごと迂回し、AI チャット欄で
+      // 打ち間違えて ⌘Z を押すと教材本体が巻き戻る。だから同じポリシーをここでも通す。
+      undo: () => runHistoryShortcutFromMenu("undo"),
+      redo: () => runHistoryShortcutFromMenu("redo"),
       openSettings: () => {
         setDesktopSettingsUpdateCheckRequest(0);
         setDesktopSettingsOpen(true);
@@ -6391,6 +6523,10 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         h.openSettings();
       } else if (action === "check-updates") {
         h.checkUpdates();
+      } else if (action === "undo") {
+        h.undo();
+      } else if (action === "redo") {
+        h.redo();
       }
     });
   }, [isDesktopApp]);
@@ -6453,17 +6589,22 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           }
 
           if (event.change === "deleted") {
+            // 教材ごと消えたので、溜めた提案 id を持ち越す先が無い。
+            pendingAutoAppliedProposalIdsByFileRef.current.delete(eventFileId);
             await switchAwayFromDeletedFile(eventFileId);
             return;
           }
 
-          if (hasPendingAiApprovalForFile(pendingAiApprovalAdoptionRef.current, eventFileId)) {
-            // The approval IPC already returned the authoritative payload and
-            // revision held by the pending guard. Its delayed watcher event must
-            // not lend that revision to the still-unbacked user payload or route
-            // it through generic external merge. Autosave remains blocked until
-            // explicit backup + adoption succeeds.
-            return;
+          // 進行中の保存が記録されるまで分類しない。self-write 判定は
+          // `successfulDocumentSavesRef` を読むが、そこへ書くのは保存完了後なので、
+          // **エコーが先に来ると 1 つ前の保存を見て「外部変更」と誤判定する** —— そのまま
+          // 古い lastSynced に対してマージし、衝突すれば履歴を全消しする。autosave 側
+          // (`inFlightSavePromiseRef` の drain) と同じ待ち方をここでも通す。
+          while (inFlightSavePromiseRef.current) {
+            await inFlightSavePromiseRef.current.catch(() => undefined);
+            if (cancelled || revision !== reloadRevision || eventFileId !== activeFileIdRef.current) {
+              return;
+            }
           }
 
           const loaded = await loadWorkspaceDocument(eventFileId);
@@ -6472,6 +6613,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           }
 
           if (!loaded) {
+            // 読めなかった以上この通知で採用は起きない。id を残すと次の書き込みへ持ち越す。
+            pendingAutoAppliedProposalIdsByFileRef.current.delete(eventFileId);
             setSaveState("error");
             setStatusMessage(tEditor("status.externalLoadFailed"));
             return;
@@ -6481,46 +6624,116 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             ensurePageLayout(loaded.document),
             DOCUMENT_BLOCK_OPERATION_PORTS,
           );
-          if (areSigmaDocumentsEquivalent(migrated, documentRef.current)) {
-            // Payloadが正本と構造的に同一だと確認できた場合だけ、新しいrevisionを採用する。
-            // approve/revert自身の通知はここでno-opになり、reject/rebase中の外部writerが
-            // 同一内容を再保存したケースでも、次の人手編集はstale revisionを使わない。
-            documentObservedRevisionRef.current = loaded.observedRevision;
-            lastSyncedDocumentRef.current = migrated;
-            pendingAutoAppliedProposalIdsByFileRef.current.delete(eventFileId);
-            return;
-          }
 
+          // **読んだら消す。** 取り残すと、次の純粋な他者書き込みが own automation と誤判定され、
+          // 1 手として積まれて ⌘Z + autosave で相手の変更をディスクから消す。
+          // ここから分類までは await を挟まないので、読み切ってしまってよい。
+          //
+          // 逆に、この行より**手前**の早期 return (通知が新しい実行に追い越された / タブが
+          // 変わった) では消さない —— 後続の実行が同じ蓄積を読む必要がある。
           const autoAppliedProposalIds = pendingAutoAppliedProposalIdsByFileRef.current.get(eventFileId)
             ?? event.autoAppliedProposalIds
             ?? [];
+          pendingAutoAppliedProposalIdsByFileRef.current.delete(eventFileId);
 
-          // タイピング中(dirty)にAI提案の自動承認などで外部変更が来た場合、従来は教材全体を
-          // リロードし人間の未保存編集を別教材へ退避していた。ブロック単位で安全にマージできる
-          // なら (同じ対象を両方が触っていなければ)、退避せずその場で取り込む — 人間の未保存編集
-          // はマージ結果にそのまま残るので、その後の自動保存(450msデバウンス)で自然に永続化される。
-          if (isCurrentDocumentDirty()) {
-            const mergeResult = mergeExternalDocumentChange(lastSyncedDocumentRef.current, documentRef.current, migrated);
-            if (mergeResult.ok) {
-              if (autoAppliedProposalIds.length > 0) {
-                applyAutoApprovedExternalDocument({
-                  nextDocument: mergeResult.merged,
-                  syncedDocument: migrated,
-                  syncedRevision: loaded.observedRevision,
-                  proposalIds: autoAppliedProposalIds,
-                });
-              } else {
-                applyMergedExternalDocument(mergeResult.merged, migrated, loaded.observedRevision);
-              }
-              await refreshDocumentMetadatas();
-              pendingAutoAppliedProposalIdsByFileRef.current.delete(eventFileId);
-              setSaveState("saved");
-              setStatusMessage(tEditor("status.aiMerged"));
-              return;
-            }
-            // マージできなかった場合は、以降の従来どおりの退避フローにフォールバックする。
+          // 分類だけは純関数へ出してある (`decideExternalDocumentChange`)。この関数は 2 つの
+          // await と 5 種の setState を抱えていて、そのままでは「どの入力でどこへ行くか」を
+          // 誰も確かめられなかった。
+          const outcome = decideExternalDocumentChange<SigmaDocument>({
+            fileId: eventFileId,
+            loadedDocument: migrated,
+            loadedRevision: loaded.observedRevision,
+            currentDocument: documentRef.current,
+            lastSyncedDocument: lastSyncedDocumentRef.current,
+            lastSuccessfulSave: successfulDocumentSavesRef.current.get(eventFileId),
+            isDirty: isCurrentDocumentDirty(),
+            // undo できるかは作者で決まる。AI 承認は自分たちの適用なので 1 手として積み、
+            // 他者の書き込みは積まない (積むと ⌘Z + autosave でディスク上の変更を消す)。
+            //
+            // 提案 id の有無で「自分たちのものか」を判定できるのは、**次の 2 つの前提が
+            // 成り立っている間だけ**:
+            //
+            // 1. `autoAppliedProposalIds` を付ける箇所が `electron/main.ts` の
+            //    `...(options.autoApplied ? { autoAppliedProposalIds: [proposalId] } : {})`
+            //    ただ 1 つで、発行元はこのアプリ自身の自動承認経路だけ。MCP 由来の書き込みも
+            //    「アプリ自身の自動化が提案を適用した」ものなので own で正しい。
+            // 2. `app.requestSingleInstanceLock()` と単一の `mainWindow` により、**エディタの
+            //    レンダラは常に 1 つ**。だから「別ウィンドウの自動適用を自分のものと誤認する」
+            //    経路が存在しない。
+            //
+            // **マルチウィンドウを入れるならここを見直すこと。** 他ウィンドウの自動適用が own と
+            // 誤判定されると、その変更が 1 手として積まれ、⌘Z でメモリから消えたあと dirty 判定の
+            // autosave が採用済み revision で書き戻して、相手の変更をディスク上から消す。
+            isOwnAutomation: autoAppliedProposalIds.length > 0,
+            areEquivalent: areSigmaDocumentsEquivalent,
+            merge: (base, mine, theirs) => mergeExternalDocumentChange(
+              base,
+              mine,
+              theirs,
+              autoAppliedProposalIds.length > 0 ? { resolution: "prefer-theirs" } : undefined,
+            ),
+          });
+
+          if (outcome.kind === "selfWrite" || outcome.kind === "alreadyInSync") {
+            // 自分の保存が返ってきただけ / Payloadが正本と構造的に同一。どちらも新しい
+            // revisionを採用するだけで、画面も履歴も動かさない。
+            //
+            // **観測 revision の採り方は結末ごとに違う** (`selfWrite` は後退させない /
+            // `alreadyInSync` はディスクの言い分をそのまま採る)。理由は関数側に書いてある。
+            documentObservedRevisionRef.current = nextObservedRevisionAfterQuietOutcome({
+              outcome: outcome.kind,
+              currentObservedRevision: documentObservedRevisionRef.current,
+              loadedRevision: loaded.observedRevision,
+            });
+            lastSyncedDocumentRef.current = migrated;
+            return;
           }
 
+          if (outcome.kind === "adoptAsHistoryStep") {
+            // 自分たちの自動適用 (AI 承認)。ユーザーから見れば自分の操作なので、現在の文書を
+            // 1 手として積んでから採用する。**どの並びでも履歴は消さない。**
+            const backup = outcome.backupFirst ? await saveUnsavedEditBackup() : null;
+            if (cancelled || revision !== reloadRevision || eventFileId !== activeFileIdRef.current) {
+              return;
+            }
+            applyAutoApprovedExternalDocument({
+              nextDocument: outcome.document,
+              syncedDocument: migrated,
+              syncedRevision: loaded.observedRevision,
+              proposalIds: autoAppliedProposalIds,
+            });
+            if (backup) {
+              // 退避先を開いておかないと、逃がした未保存の編集にユーザーが辿り着けない。
+              const nextOpenFileIds = uniqueStringIds([
+                ...openFileIdsRef.current,
+                backup.fileId,
+                eventFileId,
+              ]);
+              setOpenFileIds(nextOpenFileIds);
+              setActiveFileId(eventFileId);
+              await saveWorkspaceState({ openFileIds: nextOpenFileIds, activeFileId: eventFileId });
+            }
+            await refreshDocumentMetadatas();
+            setSaveState("saved");
+            setStatusMessage(backup
+              ? tEditor("status.externalLoadedSetAside")
+              : outcome.replacesWholeDocument
+                ? tEditor("status.externalLoaded")
+                : tEditor("status.aiMerged"));
+            return;
+          }
+
+          if (outcome.kind === "adoptMergedFromForeignWrite") {
+            // 他者の書き込みをマージして採用。**履歴には積みも消しもしない** (これは編集では
+            // なく同期)。打鍵中に着弾するので選択やパネルにも触らない軽量経路。
+            applyMergedExternalDocument(outcome.merged, migrated, loaded.observedRevision);
+            await refreshDocumentMetadatas();
+            setSaveState("saved");
+            setStatusMessage(tEditor("status.aiMerged"));
+            return;
+          }
+
+          // ここから下だけが履歴を失う経路 (他者の書き込みが未保存の編集とマージできなかった)。
           const backup = await saveUnsavedEditBackup();
           if (cancelled || revision !== reloadRevision || eventFileId !== activeFileIdRef.current) {
             return;
@@ -6536,19 +6749,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             eventFileId,
           ]);
 
-          if (autoAppliedProposalIds.length > 0) {
-            applyAutoApprovedExternalDocument({
-              nextDocument: migrated,
-              syncedDocument: migrated,
-              syncedRevision: loaded.observedRevision,
-              proposalIds: autoAppliedProposalIds,
-            });
-          } else {
-            resetEditorDocument(migrated, nextSelectedId, loaded.observedRevision);
-          }
+          resetEditorDocument(migrated, nextSelectedId, loaded.observedRevision);
           setOpenFileIds(nextOpenFileIds);
           setActiveFileId(eventFileId);
-          pendingAutoAppliedProposalIdsByFileRef.current.delete(eventFileId);
           await saveWorkspaceState({ openFileIds: nextOpenFileIds, activeFileId: eventFileId });
           await refreshDocumentMetadatas();
           setSaveState("saved");
@@ -6840,7 +7043,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       ))?.title;
       let approvedDocumentStayedDirty = false;
       let approvedDocumentWarning: string | null = null;
-      let approvedDocumentAdoptionBlocked = false;
       if (
         approvedDocument
         && approvedRevision !== null
@@ -6863,37 +7065,14 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           approvedRevision,
         });
         approvedDocumentStayedDirty = !adoption.adoptedDocumentMatchesDisk;
-        if (adoption.kind === "stay-dirty") {
-          // currentDocumentはapprovedRevisionから派生していないため、そのrevisionを借りて
-          // 保存してはいけない。先に別教材へ退避できた場合だけ、承認済み正本へ差し替える。
-          // 失敗時は承認結果をrefへ残し、現在のin-memory入力を保持したまま再試行可能にする。
-          const pendingAdoption: PendingAiApprovalAdoption = {
-            fileId: approvedFileId,
-            document: normalizedApprovedDocument,
-            revision: approvedRevision,
-            userDocument: documentRef.current,
-            userDocumentDirtyRevision: documentDirtyRevisionRef.current,
-          };
-          // 最初のbackup await中もautosave停止・beforeunload警告を有効にする。成功した場合だけ
-          // performApprovedDocumentAdoption内のclearPendingAiApprovalAdoptionで解除する。
-          beginPendingAiApprovalAdoption(
-            pendingAiApprovalAdoptionRef,
-            pendingAdoption,
-            setHasPendingAiApprovalAdoption,
-          );
-          const replacement = await adoptApprovedDocumentAfterBackup(pendingAdoption);
-          if (!replacement.ok) {
-            console.warn(tEditor("status.approvalSetAsideFailed"), replacement.error);
-            approvedDocumentAdoptionBlocked = true;
-            approvedDocumentWarning = tEditor("status.approvalKeptNotMerged");
-          } else {
-            approvedDocumentStayedDirty = false;
-            approvedDocumentWarning = replacement.backup
-              ? tEditor("status.aiMergedInputSetAside")
-              : tEditor("status.aiMergedDone");
-          }
+        if (adoption.kind === "merge" && adoption.resolvedConflicts.length > 0) {
+          // 承認待ちの間の入力とAIの変更が同じ対象で食い違った場合も、教材ファイルは増やさず
+          // この1ファイルの中で解決する — 競合した単位だけ承認された内容を採る。直前の入力は
+          // applyAiApprovedDocument が積んだundoエントリ (Ctrl+Z) から戻せる。
+          console.warn(tEditor("status.aiMergedPreferringAi"), adoption.resolvedConflicts);
+          approvedDocumentWarning = tEditor("status.aiMergedPreferringAi");
         }
-        if (adoption.kind !== "stay-dirty" && approvedDocumentStayedDirty) {
+        if (approvedDocumentStayedDirty) {
           scheduleAutosaveRetry();
         }
       }
@@ -6909,9 +7088,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         // 帰属情報を持たない旧提案だけはactive room全体へfallbackする。
         clearAiEditPreview("applied");
       }
-      setSaveState(approvedDocumentAdoptionBlocked
-        ? "error"
-        : approvedDocumentStayedDirty ? "saving" : "saved");
+      setSaveState(approvedDocumentStayedDirty ? "saving" : "saved");
       const approvedFileFeedback = deriveAiProposalApprovedFileFeedback({
         approvedFileId,
         currentFileId: activeFileIdRef.current,
@@ -6926,7 +7103,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       const highlight = (
         approvedFileFeedback.kind === "paint-active-document"
         && approvedFileId === requestedFileId
-        && !approvedDocumentAdoptionBlocked
         && group
       )
         ? derivePostApplyHighlightIds(group)
@@ -6945,9 +7121,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       } else {
         setAiApplyAnimation(null);
       }
-      if (approvedDocumentAdoptionBlocked) {
-        return { ok: false, reason: approvedDocumentWarning ?? tEditor("status.aiMergeFailed") };
-      }
       return applyDecision.outcome;
     } catch (error) {
       const reason = error instanceof Error ? error.message : tEditor("status.applyFailed");
@@ -6959,32 +7132,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       if (!options?.skipBusyGuard) {
         finishMcpPreviewBusy();
       }
-    }
-  };
-
-  const retryPendingAiApprovalAdoption = async () => {
-    const pending = pendingAiApprovalAdoptionRef.current;
-    if (!pending || mcpPreviewBusyRef.current) {
-      return;
-    }
-    mcpPreviewBusyRef.current = true;
-    setMcpPreviewBusy(true);
-    setSaveState("saving");
-    try {
-      const replacement = await adoptApprovedDocumentAfterBackup(pending);
-      if (!replacement.ok) {
-        console.warn(tEditor("status.approvalSetAsideFailed"), replacement.error);
-        setSaveState("error");
-        setStatusMessage(tEditor("status.approvalNoSetAsideTarget"));
-        return;
-      }
-      await refreshDocumentMetadatas();
-      setSaveState("saved");
-      setStatusMessage(replacement.backup
-        ? tEditor("status.aiMergedInputSetAside")
-        : tEditor("status.aiMergedDone"));
-    } finally {
-      finishMcpPreviewBusy();
     }
   };
 
@@ -7486,7 +7633,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         },
         updatedAt: new Date().toISOString(),
       };
-    }, options?.history === "coalesce" ? { coalesce: true } : undefined);
+      // running region (ヘッダ / フッタ) の overlay もここを通る。`writeOverlay` と
+      // 同じ解決を使わないと、そちらに属する図形を含む混在操作だけ 2 エントリになる。
+    }, resolveOverlayCommitOptions(options));
     if (isWhiteboardPageLayout(normalizedLayout) && !isWhiteboardDocument) {
       setCommentsPanelOpen(false);
     }
@@ -7528,18 +7677,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
 
   useEffect(() => {
     runShortcutCommandRef.current = (commandId: EditorCommandId) => {
-      setActiveMenu(null);
-      setExportMenuOpen(false);
-      setShapeMenuOpen(false);
-      setLineToolMenuOpen(false);
-      setFontFamilyMenuOpen(false);
-      setBlockStyleMenuOpen(false);
-      setFontSizeMenuOpen(false);
-      setBoxedTextMenuOpen(false);
-      setLineHeightMenuOpen(false);
-      setTextAlignMenuOpen(false);
-      setColorStylePanel(null);
-      setLineEndpointMenu(null);
+      closeTransientCommandSurfaces();
 
       const customCommand = customCommands.find((command) => command.id === commandId);
       if (customCommand) {
@@ -7804,21 +7942,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   useEffect(() => {
     const handleCommandShortcut = (event: KeyboardEvent) => {
       // 「いま他の面が前に出ているか」の抑止。ここは設定の読み込み状況とは無関係。
-      if (
-        event.isComposing ||
-        commandSettingsOpen ||
-        texCommandReferenceOpen ||
-        pageSettingsOpen ||
-        documentListOpen ||
-        previewOpen ||
-        aiSettingsOpen ||
-        desktopSettingsOpen ||
-        materialLibraryOpen ||
-        templateGalleryOpen ||
-        materialAddDialogOpen ||
-        ribbonBackstageOpen ||
-        commandPaletteOpen
-      ) {
+      // 判定はメニュー経路と共有する (`isModalSurfaceOpen`)。
+      if (event.isComposing || isModalSurfaceOpen) {
         return;
       }
 
@@ -7853,7 +7978,18 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       }
 
       const match = findCommandByShortcut(event, shortcutOverrides, customCommands);
-      if (!match || isCommandShortcutBlockedByTarget(event.target, match.binding)) {
+      if (!match) {
+        return;
+      }
+      // フォーカス面の判定はメニュー経路と共有する 1 箇所へ (`command-shortcut-targets.ts`)。
+      // ここでブロックされたときに**イベントを止めない**のが肝 —— 止めなければ MathLive /
+      // ProseMirror / ブラウザの既定 undo がそのまま処理する。
+      if (isCommandShortcutBlockedByTarget(
+        event.target,
+        getCommandTargetPolicy(match.commandId, customCommands),
+        match.binding,
+        historyShortcutDirection(match.commandId),
+      )) {
         return;
       }
 
@@ -7887,20 +8023,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     window.addEventListener("keydown", handleCommandShortcut, true);
     return () => window.removeEventListener("keydown", handleCommandShortcut, true);
   }, [
-    commandSettingsOpen,
-    texCommandReferenceOpen,
+    isModalSurfaceOpen,
     commandSettingsError,
     commandSettingsLoaded,
-    documentListOpen,
-    pageSettingsOpen,
-    previewOpen,
-    aiSettingsOpen,
-    desktopSettingsOpen,
-    materialLibraryOpen,
-    templateGalleryOpen,
-    materialAddDialogOpen,
-    ribbonBackstageOpen,
-    commandPaletteOpen,
     uiLayoutPreference.mode,
     aiLockedOverlaySelection,
     customCommands,
@@ -8254,7 +8379,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
               focusRoomRequest={aiFocusRoomRequest}
             />
           ) : (
-            <AiEditWebPlaceholder key={document.docId} instructionScopeId={document.docId} proposalSurfaceRef={setWebMcpPanelTarget} />
+            <AiEditWebPlaceholder key={document.docId} instructionScopeId={document.docId} />
           )}
         </aside>
       </>
@@ -8683,15 +8808,15 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     },
     appMenu: {
       activeDocumentOpenFailure, activeFileId, addBlock, aiMenuButtonRef, appUpdateState,
-      closeDocumentTab, commentsPanelOpen, createDocumentTab, createWhiteboardDocumentTab, degradedWatcherScopes,
+      closeDocumentTab, commentsPanelOpen, copyDocumentText, createDocumentTab, createWhiteboardDocumentTab, degradedWatcherScopes,
       deleteActiveDocument, documentMetadatas, documentTitle, duplicateActiveDocument, exportJson,
-      exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction, hasPendingAiApprovalAdoption,
-      importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId, mcpPreviewBusy,
+      exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction,
+      importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId,
       newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace,
       openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openOtherImportDialog,
-      openPrintPreview, otherImportInputRef,
+      openPrintPreview, openTextImportDialog, otherImportInputRef,
       openWorkspaceScreen, promoteAiToSidebar, reportIssue, requestOverlayImages,
-      resolvedDocumentTitle, retryPendingAiApprovalAdoption, scheduleCloseNewDocMenu,
+      resolvedDocumentTitle, scheduleCloseNewDocMenu,
       setAiSettingsOpen, setDesktopSettingsOpen: openDesktopSettingsFromChrome, setExportMenuOpen, setNewDocMenuOpen,
       setOutlineDialogOpen, setOverlayEditing, setPageSettingsOpen, setTemplateGalleryOpen,
       setTexCommandReferenceOpen, setTexEnvironmentSettingsOpen, setTitleInputFocused,
@@ -8741,8 +8866,6 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         commitDocumentChange={commitDocumentChange}
         navigateToTarget={navigateToWebMcpTarget}
         onPreviewGroupsChange={setWebMcpPreviewGroups}
-        sidebarOpen={aiDisplayMode === "sidebar" && aiSidebarOpen}
-        sidebarTarget={webMcpPanelTarget}
       />
       {/* 図形を選んでいる間、フォーカスを失った本文の選択を描き直す帯。
           「本文も図形も同時に選ばれている」ことが画面から読めないと混在コピーは事故になる。 */}
@@ -8877,16 +9000,16 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           {/* 「AIが今何をやっているか」を常時確認できるcockpitの入口。折りたたみ時は
               canvas左上のアイコン1つだけ (バッジで実行中/要対応を示す)。開閉はUIローカル
               stateなので、旧: メニューの開閉トグルは廃止した (redundant)。 */}
-          {isDesktopApp && workspaceReady && !activeDocumentOpenFailure && (
+          {(isDesktopApp || webMcpPreviewGroups.length > 0) && workspaceReady && !activeDocumentOpenFailure && (
             <AiTaskDock
-              documentIdentityKey={activeFileId}
+              documentIdentityKey={isDesktopApp ? activeFileId : document.docId}
               document={document}
-              previewGroups={aiEditPreviewGroups}
+              previewGroups={visibleAiEditPreviewGroups}
               staleGroups={staleProposalGroups}
               activeDocumentRevision={activeDocumentRevision}
               busy={mcpPreviewBusy}
-              onApplyGroup={applyAiEditPreviewGroup}
-              onDismissGroup={dismissAiEditPreviewGroup}
+              onApplyGroup={stableApplyVisibleAiEditPreviewGroup}
+              onDismissGroup={stableDismissVisibleAiEditPreviewGroup}
               onRebaseGroup={rebaseStaleProposals}
               onForceApplyGroup={forceApplyStaleProposals}
               onRevertProposal={revertAppliedProposals}
@@ -9223,47 +9346,61 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         onInsert={insertTemplate}
       />
 
-      {editorMathPasswordRequest && (
-        <div className="classic-password-backdrop" data-modal-backdrop="" role="presentation" onPointerDown={cancelEditorMathImport}>
+      {textImportOpen && (
+        <DocumentTextImportDialog
+          onImport={(file) => importDocumentFile(file)}
+          onClose={() => setTextImportOpen(false)}
+        />
+      )}
+
+      {documentTextCopyFallback !== null && (
+        <DocumentTextCopyDialog
+          text={documentTextCopyFallback}
+          onClose={() => setDocumentTextCopyFallback(null)}
+        />
+      )}
+
+      {studyAidPasswordRequest && (
+        <div className="studyaid-password-backdrop" data-modal-backdrop="" role="presentation" onPointerDown={cancelStudyAidImport}>
           <section
-            className="classic-password-dialog"
+            className="studyaid-password-dialog"
             role="dialog"
             aria-modal="true"
             aria-label={tE("password.title")}
             onPointerDown={(event) => event.stopPropagation()}
           >
-            <header className="classic-password-header">
+            <header className="studyaid-password-header">
               <h2>{tE("password.heading")}</h2>
-              <button type="button" className="icon-button" title={tE("common.close")} aria-label={tE("common.close")} onClick={cancelEditorMathImport}>
+              <button type="button" className="icon-button" title={tE("common.close")} aria-label={tE("common.close")} onClick={cancelStudyAidImport}>
                 <X size={16} />
               </button>
             </header>
-            <p className="classic-password-file" title={editorMathPasswordRequest.name}>{editorMathPasswordRequest.name}</p>
-            <p className="classic-password-note">{tE("password.note")}</p>
+            <p className="studyaid-password-file" title={studyAidPasswordRequest.name}>{studyAidPasswordRequest.name}</p>
+            <p className="studyaid-password-note">{tE("password.note")}</p>
             <form
-              className="classic-password-form"
+              className="studyaid-password-form"
               onSubmit={(event) => {
                 event.preventDefault();
-                void submitEditorMathPassword();
+                void submitStudyAidPassword();
               }}
             >
               <input
                 type="password"
-                value={editorMathPassword}
+                value={studyAidPassword}
                 placeholder={tE("password.label")}
                 aria-label={tE("password.label")}
                 autoFocus
-                disabled={editorMathImporting}
+                disabled={studyAidImporting}
                 onChange={(event) => {
-                  setEditorMathPassword(event.target.value);
-                  setEditorMathPasswordError(null);
+                  setStudyAidPassword(event.target.value);
+                  setStudyAidPasswordError(null);
                 }}
               />
-              {editorMathPasswordError && <p className="classic-password-error" role="alert">{editorMathPasswordError}</p>}
-              <div className="classic-password-actions">
-                <button type="button" onClick={cancelEditorMathImport} disabled={editorMathImporting}>{tE("common.cancel")}</button>
-                <button type="submit" className="primary" disabled={editorMathImporting || editorMathPassword.length === 0}>
-                  {editorMathImporting ? tE("password.importing") : tE("password.import")}
+              {studyAidPasswordError && <p className="studyaid-password-error" role="alert">{studyAidPasswordError}</p>}
+              <div className="studyaid-password-actions">
+                <button type="button" onClick={cancelStudyAidImport} disabled={studyAidImporting}>{tE("common.cancel")}</button>
+                <button type="submit" className="primary" disabled={studyAidImporting || studyAidPassword.length === 0}>
+                  {studyAidImporting ? tE("password.importing") : tE("password.import")}
                 </button>
               </div>
             </form>
@@ -9512,22 +9649,6 @@ function hasLostEditorFocus(): boolean {
 const FOCUS_RESTORE_ATTEMPTS = 3;
 const FOCUS_RESTORE_VERIFY_MS = 120;
 
-function comparableDocumentValue(document: SigmaDocument) {
-  return {
-    version: document.version,
-    docId: document.docId,
-    metadata: document.metadata,
-    content: document.content,
-    comments: document.comments,
-    outputProfiles: document.outputProfiles,
-    pageLayout: document.pageLayout,
-  };
-}
-
-function areSigmaDocumentsEquivalent(left: SigmaDocument, right: SigmaDocument): boolean {
-  return areStructurallyEqual(comparableDocumentValue(left), comparableDocumentValue(right));
-}
-
 /**
  * 埋め込みホストのエコー判定用に「文書の内容そのもの」をキー化する。
  * (使い方は emittedEchoKeysRef のコメントを参照)
@@ -9560,38 +9681,6 @@ function canonicalizeDocumentValue(value: unknown): unknown {
   );
 }
 
-function isCommandShortcutBlockedByTarget(target: EventTarget | null, binding: EditorShortcutBinding): boolean {
-  if (!(target instanceof Element)) {
-    return false;
-  }
-
-  const blockingSurface = target.closest<HTMLElement>(
-    "[role='dialog'], .find-widget, .command-settings-dialog, .page-settings-dialog, .document-library-dialog, .file-access-dialog, .preview-drawer",
-  );
-  // 非モーダルの浮遊サーフェス (グラフ設定パネル) は本文の編集を止めない。
-  // モーダルではないので、開いたままでも Undo / Delete / ズームが効かなければならない。
-  // 中の入力欄は後段の input / math-field / contenteditable 判定が引き続き守る。
-  if (blockingSurface && !blockingSurface.hasAttribute("data-non-modal-surface")) {
-    return true;
-  }
-
-  const textInput = target.closest("input, textarea, select, math-field");
-  if (textInput) {
-    return true;
-  }
-
-  const editable = target.closest("[contenteditable='true']");
-  if (!editable) {
-    return false;
-  }
-
-  return isSingleCharacterShortcut(binding);
-}
-
-function isTextEntryTarget(target: EventTarget | null): boolean {
-  return target instanceof Element
-    && target.closest("input, textarea, select, math-field, [contenteditable='true']") !== null;
-}
 
 /**
  * A field where a paste can only sensibly mean text.

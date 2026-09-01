@@ -583,7 +583,7 @@ const SigmaDocumentInputSchema = z.object({
   metadata: z.object({
     title: z.string(),
     source: z.object({
-      format: z.enum(["classic-format", "presentation"]).optional(),
+      format: z.enum(["studyaid-prt", "powerpoint"]).optional(),
       layoutMode: z.literal("fixedOverlay").optional(),
       printFlowContent: z.boolean().optional(),
       originalFileName: z.string().optional(),

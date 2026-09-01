@@ -67,13 +67,13 @@ export {
 export { renderMathHtml };
 import {
   getMathfieldLatex,
-  getEditorMathMathShortcut,
-  handleEditorMathMathShortcut,
-  isEditorMathMathModeShortcut,
-  isEditorMathReturnToTextShortcut,
-  type EditorMathMathShortcut,
-  type EditorMathMathfieldLike,
-} from "@/lib/math-editor-shortcuts";
+  getStudyAidMathShortcut,
+  handleStudyAidMathShortcut,
+  isStudyAidMathModeShortcut,
+  isStudyAidReturnToTextShortcut,
+  type StudyAidMathShortcut,
+  type StudyAidMathfieldLike,
+} from "@/lib/studyaid-math-shortcuts";
 import type { MathFractionSizing } from "@/features/document";
 
 declare module "@tiptap/core" {
@@ -151,7 +151,7 @@ type DesktopAsciiInputSession = {
   restored: boolean;
 };
 
-type InlineMathFieldElement = InlineMathLiveFieldElement & EditorMathMathfieldLike & {
+type InlineMathFieldElement = InlineMathLiveFieldElement & StudyAidMathfieldLike & {
   // MathLive の prompt API (クリックした placeholder に直接入る機能で使う)。
   getPromptRange?: (id: string) => [number, number] | null;
   getPrompts?: () => string[];
@@ -313,8 +313,8 @@ export function normalizeInlineMathLatexAliases(
   return normalizeInlineMathLatexAliasesWithCursor(tex, tex.length, options).tex;
 }
 
-export function createInlineMathTexFromEditorMathShortcut(
-  shortcut: EditorMathMathShortcut,
+export function createInlineMathTexFromStudyAidShortcut(
+  shortcut: StudyAidMathShortcut,
   selectedText = "",
 ): string {
   if (!shortcut.wrapsSelection || !selectedText) {
@@ -324,10 +324,10 @@ export function createInlineMathTexFromEditorMathShortcut(
   return shortcut.tex.replace("#?", selectedText);
 }
 
-export function insertEditorMathShortcutInlineMathAtSelection(
+export function insertStudyAidShortcutInlineMathAtSelection(
   state: EditorState,
   mathInlineType: NodeType,
-  shortcut: EditorMathMathShortcut,
+  shortcut: StudyAidMathShortcut,
   dispatch?: (tr: Transaction) => void,
 ): boolean {
   if (!canInsertInlineMathAtSelection(state.selection)) {
@@ -340,7 +340,7 @@ export function insertEditorMathShortcutInlineMathAtSelection(
     : state.doc.textBetween(state.selection.from, state.selection.to, "");
   const node = mathInlineType.create({
     id,
-    tex: createInlineMathTexFromEditorMathShortcut(shortcut, selectedText),
+    tex: createInlineMathTexFromStudyAidShortcut(shortcut, selectedText),
   });
   dispatch?.(state.tr.replaceSelectionWith(node).scrollIntoView());
   requestInlineMathEdit(id);
@@ -1271,7 +1271,7 @@ function InlineMathTexField({
             return;
           }
 
-          if (isEditorMathReturnToTextShortcut(event)) {
+          if (isStudyAidReturnToTextShortcut(event)) {
             event.preventDefault();
             event.stopPropagation();
             commit(input, "after");
@@ -1302,7 +1302,7 @@ function InlineMathTexField({
             return;
           }
 
-          const shortcut = getEditorMathMathShortcut(event);
+          const shortcut = getStudyAidMathShortcut(event);
           if (shortcut) {
             event.preventDefault();
             event.stopPropagation();
@@ -1310,7 +1310,7 @@ function InlineMathTexField({
             const selectionEnd = input.selectionEnd ?? selectionStart;
             const from = Math.min(selectionStart, selectionEnd);
             const to = Math.max(selectionStart, selectionEnd);
-            insertTexAtSelection(input, createInlineMathTexFromEditorMathShortcut(shortcut, input.value.slice(from, to)));
+            insertTexAtSelection(input, createInlineMathTexFromStudyAidShortcut(shortcut, input.value.slice(from, to)));
             return;
           }
 
@@ -1577,7 +1577,7 @@ function InlineMathLiveField({
 
         if (
           shouldCommitInlineMathOnKeyDown(event) ||
-          isEditorMathReturnToTextShortcut(event) ||
+          isStudyAidReturnToTextShortcut(event) ||
           event.key === "ArrowRight" ||
           event.key === "ArrowLeft" ||
           event.key === "Backspace"
@@ -1765,7 +1765,7 @@ function InlineMathLiveField({
         return;
       }
 
-      if (isEditorMathReturnToTextShortcut(event)) {
+      if (isStudyAidReturnToTextShortcut(event)) {
         event.preventDefault();
         event.stopPropagation();
         commit(mathField, "after");
@@ -1795,7 +1795,7 @@ function InlineMathLiveField({
         return;
       }
 
-      if (handleEditorMathMathShortcut(event, mathField)) {
+      if (handleStudyAidMathShortcut(event, mathField)) {
         onInput(getMathfieldLatex(mathField));
         return;
       }
@@ -2076,14 +2076,14 @@ export const InlineMathExtension = Node.create<MathNodeOptions>({
               return true;
             }
 
-            const shortcut = getEditorMathMathShortcut(event);
-            if (shortcut && insertEditorMathShortcutInlineMathAtSelection(view.state, this.type, shortcut, view.dispatch)) {
+            const shortcut = getStudyAidMathShortcut(event);
+            if (shortcut && insertStudyAidShortcutInlineMathAtSelection(view.state, this.type, shortcut, view.dispatch)) {
               event.preventDefault();
               event.stopPropagation();
               return true;
             }
 
-            if (!isEditorMathMathModeShortcut(event)) {
+            if (!isStudyAidMathModeShortcut(event)) {
               return false;
             }
 

@@ -546,6 +546,8 @@ export const ai = {
       draft_insert_table: "Adding a table",
       draft_insert_shape: "Adding a shape",
       draft_insert_graph: "Adding a graph",
+      draft_insert_graph3d: "Adding a 3D graph",
+      draft_update_graph3d: "Updating the 3D graph",
       draft_insert_text_block: "Adding text",
       draft_create_problem: "Adding a problem",
       draft_update_problem_answer: "Updating the answer",

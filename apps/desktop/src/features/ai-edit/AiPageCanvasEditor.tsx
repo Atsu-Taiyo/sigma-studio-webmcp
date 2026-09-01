@@ -341,7 +341,11 @@ function useAiPageCanvasExtension({
       ...[...finalShapeUpdates.values()].map((update) => ({
         key: `ai-diff-ghost-${update.after.id}`,
         shape: update.after,
-        assets: context.overlayAssets,
+        // 派生画像を差し替える更新は、その画像も一緒に運んでくる。文書側のassetsだけで描くと
+        // 「新しい図形に古い絵」というプレビューになる。
+        assets: update.replacedAssets
+          ? { ...context.overlayAssets, ...update.replacedAssets }
+          : context.overlayAssets,
         className: "ai-diff-after-shape ai-diff-ghost-shape",
       })),
     ];

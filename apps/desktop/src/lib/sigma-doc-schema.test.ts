@@ -77,7 +77,7 @@ describe("SigmaDoc schema", () => {
               type: "geo",
               x: 0,
               y: 0,
-              meta: { source: "slides" },
+              meta: { source: "pptx" },
               props: {
                 w: 20,
                 h: 20,
@@ -102,7 +102,7 @@ describe("SigmaDoc schema", () => {
     expect(snapshot?.extensions).toEqual({
       "sigma.legacy.metadata": {
         shapes: {
-          shape_with_meta: { source: "slides" },
+          shape_with_meta: { source: "pptx" },
         },
       },
     });

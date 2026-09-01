@@ -3,53 +3,11 @@ import {
   mergeExternalDocumentChange,
   type MergeExternalDocumentChangeResult,
 } from "@/lib/document-block-merge";
-import { areStructurallyEqual } from "@/lib/structural-equality";
-import { createCurrentLocaleTranslator } from "@/lib/i18n";
-
-const te = createCurrentLocaleTranslator("error");
+import { areSigmaDocumentsEquivalent } from "@/lib/document-equivalence";
 
 export type InFlightSavePromiseRef = {
   current: Promise<unknown> | null;
 };
-
-export type BackupFirstDocumentReplacementResult<T> =
-  | { ok: true; backup: T | null }
-  | { ok: false; error: unknown };
-
-/**
- * 未保存内容を別教材へ退避してから正本へ差し替えるための破壊防止ゲート。
- *
- * backupRequired のときは、退避が失敗するか、退避先を作れなかった場合に replace を
- * 絶対に呼ばない。承認済みAI文書への差し替えが、ユーザー入力の唯一のコピーを
- * 先に破棄する順序へ戻らないことをこの境界で保証する。
- */
-export async function replaceDocumentAfterRequiredBackup<T>(params: {
-  backupRequired: boolean;
-  createBackup: () => Promise<T | null>;
-  replace: (backup: T | null) => void | Promise<void>;
-}): Promise<BackupFirstDocumentReplacementResult<T>> {
-  let backup: T | null = null;
-  if (params.backupRequired) {
-    try {
-      backup = await params.createBackup();
-    } catch (error) {
-      return { ok: false, error };
-    }
-    if (backup === null) {
-      return {
-        ok: false,
-        error: new Error(te("runtime.unsavedBackupFailed")),
-      };
-    }
-  }
-
-  try {
-    await params.replace(backup);
-    return { ok: true, backup };
-  } catch (error) {
-    return { ok: false, error };
-  }
-}
 
 type SaveResult = {
   ok: boolean;
@@ -118,14 +76,17 @@ export type AiApprovedDocumentDecision =
       kind: "merge";
       document: SigmaDocument;
       adoptedDocumentMatchesDisk: boolean;
-    }
-  | {
-      kind: "stay-dirty";
-      document: SigmaDocument;
-      adoptedDocumentMatchesDisk: false;
-      reason: string;
+      /** prefer-theirs で解決した競合の説明。空なら競合はなかった。 */
+      resolvedConflicts: string[];
     };
 
+/**
+ * 承認済みAI文書を、承認待ちの間に入った人手編集と突き合わせて「今の教材へどう反映するか」を
+ * 決める。**必ず同じ教材ファイルの中で解決する** — 競合を理由に別教材へ退避したり、承認結果を
+ * 取り込まずに放置したりはしない。競合した単位だけAI側 (承認された内容) を採り、競合していない
+ * 人手編集はそのまま残す。採用の直前に現在の文書をundoスタックへ積むのは呼び出し側の責務で、
+ * これにより競合で置き換わった入力も Ctrl+Z で戻せる。
+ */
 export function decideAiApprovedDocument(params: {
   documentAtApprovalStart: SigmaDocument;
   currentDocument: SigmaDocument;
@@ -144,30 +105,37 @@ export function decideAiApprovedDocument(params: {
     normalizedApprovedDocument,
   } = params;
 
-  if (areStructurallyEqual(currentDocument, documentAtApprovalStart)) {
+  // 内容の比較には updatedAt のような記録用フィールドを混ぜない。保存経路が新しい updatedAt を
+  // 押した別コピーを lastSynced として覚えるため、素の構造比較では「承認のたびに人手編集あり」
+  // と誤判定し、必ずマージ経路へ落ちていた。
+  if (areSigmaDocumentsEquivalent(currentDocument, documentAtApprovalStart)) {
     return {
       kind: "adopt",
       document: normalizedApprovedDocument,
-      adoptedDocumentMatchesDisk: areStructurallyEqual(normalizedApprovedDocument, diskDocument),
+      adoptedDocumentMatchesDisk: areSigmaDocumentsEquivalent(normalizedApprovedDocument, diskDocument),
     };
   }
 
-  // JSON.stringify前提の3-way mergeは、承認待ち中に実際に人手編集が入った場合だけ使う。
-  // 通常承認やnormalize差分の判定には、キー順に依存しない構造比較を使う。
-  const merge = params.merge ?? mergeExternalDocumentChange;
+  // 承認待ちの間に実際に人手編集が入った場合だけ3-wayマージする。
+  const merge = params.merge ?? ((base, mine, theirs) => mergeExternalDocumentChange(base, mine, theirs, {
+    resolution: "prefer-theirs",
+  }));
   const mergeResult = merge(documentAtApprovalStart, currentDocument, normalizedApprovedDocument);
   if (!mergeResult.ok) {
+    // prefer-theirs では起きない想定。マージが諦めた場合でも教材を増やさず、承認された内容を
+    // 採用する (直前の入力は呼び出し側が積むundoエントリから戻せる)。
     return {
-      kind: "stay-dirty",
-      document: currentDocument,
-      adoptedDocumentMatchesDisk: false,
-      reason: mergeResult.reason,
+      kind: "merge",
+      document: normalizedApprovedDocument,
+      adoptedDocumentMatchesDisk: areSigmaDocumentsEquivalent(normalizedApprovedDocument, diskDocument),
+      resolvedConflicts: [mergeResult.reason],
     };
   }
 
   return {
     kind: "merge",
     document: mergeResult.merged,
-    adoptedDocumentMatchesDisk: areStructurallyEqual(mergeResult.merged, diskDocument),
+    adoptedDocumentMatchesDisk: areSigmaDocumentsEquivalent(mergeResult.merged, diskDocument),
+    resolvedConflicts: mergeResult.resolvedConflicts ?? [],
   };
 }

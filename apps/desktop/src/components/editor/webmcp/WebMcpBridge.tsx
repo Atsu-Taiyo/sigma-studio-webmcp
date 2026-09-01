@@ -1,10 +1,10 @@
 "use client";
 
-import { Bot, History, MapPin } from "lucide-react";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 
 import type { SigmaDocument } from "@/features/document";
+import type { AiProposalApplyOutcome } from "@/features/ai-edit/application/proposal-action-model";
+import type { AiEditPreviewState } from "@/features/ai-edit/model/preview";
 import { useT } from "@/lib/i18n/react";
 import { SigmaDocumentSchema } from "@/lib/sigma-doc-schema";
 import {
@@ -41,27 +41,13 @@ export interface WebMcpBridgeProps {
   getSelectedBlockId: SigmaWebMcpPorts["getSelectedBlockId"];
   getSelection: NonNullable<SigmaWebMcpPorts["getSelection"]>;
   navigateToTarget(target: { kind: "block" | "shape"; id: string }): void;
-  onPreviewGroupsChange(groups: WebMcpPreviewGroup[]): void;
-  sidebarOpen: boolean;
-  sidebarTarget: HTMLElement | null;
+  onPreviewGroupsChange(groups: AiEditPreviewState[]): void;
 }
 export interface WebMcpBridgeHandle {
-  applyProposalIds(proposalIds: string[]): Promise<WebMcpProposalApplyOutcome | null>;
+  applyProposalIds(proposalIds: string[]): Promise<AiProposalApplyOutcome | null>;
   dismissProposalIds(proposalIds: string[]): boolean;
 }
-export type WebMcpProposalApplyOutcome = { ok: true } | { ok: false; reason: string };
-export interface WebMcpPreviewGroup {
-  targetId: string;
-  draft: SigmaWebMcpProposal["previewDraft"];
-  createdAt: number;
-  proposalIds: string[];
-  baseRevision: number;
-  providers: ["chatgpt"];
-  sessionLabel: string;
-  lockTargets: false;
-}
-interface PendingDraft extends SigmaWebMcpProposal { error: string | null; createdAt: number }
-interface HistoryEntry { id: string; proposal: SigmaWebMcpProposal; status: "applied" | "rejected" }
+interface PendingDraft extends SigmaWebMcpProposal { createdAt: number }
 
 function publishStatus(status: WebMcpUiStatus): void {
   (window as typeof window & { __sigmaWebMcpStatus?: WebMcpUiStatus }).__sigmaWebMcpStatus = status;
@@ -71,18 +57,19 @@ function publishStatus(status: WebMcpUiStatus): void {
 export const WebMcpBridge = forwardRef<WebMcpBridgeHandle, WebMcpBridgeProps>(function WebMcpBridge(props, ref) {
   const t = useT("editor");
   const [proposal, setProposal] = useState<PendingDraft | null>(null);
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [registration, setRegistration] = useState<{ state: WebMcpRegistrationState; toolCount: number; failedToolNames: string[] }>({ state: "loading", toolCount: 0, failedToolNames: [] });
-  const { enabled, instructionScopeId, commitDocumentChange, getDocument, getRevision, getSelectedBlockId, getSelection, navigateToTarget, onPreviewGroupsChange, sidebarOpen, sidebarTarget } = props;
-  const previewGroups = useMemo<WebMcpPreviewGroup[]>(() => proposal ? [{ targetId: proposal.previewDraft.operations[0]?.targetId ?? proposal.targetId, draft: proposal.previewDraft, createdAt: proposal.createdAt, proposalIds: [proposal.id], baseRevision: proposal.baseRevision, providers: ["chatgpt"], sessionLabel: "WebMCP", lockTargets: false }] : [], [proposal]);
+  const { enabled, instructionScopeId, commitDocumentChange, getDocument, getRevision, getSelectedBlockId, getSelection, navigateToTarget, onPreviewGroupsChange } = props;
+  const previewGroups = useMemo<AiEditPreviewState[]>(() => proposal ? [{ targetId: proposal.previewDraft.operations[0]?.targetId ?? proposal.targetId, draft: proposal.previewDraft, createdAt: proposal.createdAt, proposalIds: [proposal.id], baseRevision: proposal.baseRevision, providers: ["chatgpt"], sessionLabel: "WebMCP", lockTargets: false }] : [], [proposal]);
 
   useEffect(() => { onPreviewGroupsChange(previewGroups); return () => onPreviewGroupsChange([]); }, [onPreviewGroupsChange, previewGroups]);
   useEffect(() => { publishStatus({ state: registration.state, registeredToolCount: registration.toolCount, failedToolNames: registration.failedToolNames, operationCount: proposal?.operationCount ?? 0, changedIds: [...(proposal?.targetIds ?? [])] }); }, [proposal, registration]);
 
   const proposeDocumentChange = useCallback((next: SigmaWebMcpProposal) => {
-    setProposal((current) => ({ ...next, error: null, createdAt: current?.createdAt ?? Date.now() }));
+    setProposal((current) => ({ ...next, createdAt: current?.createdAt ?? Date.now() }));
     const blockId = next.blockIds[0];
+    const shapeId = next.shapeIds[0];
     if (blockId) window.requestAnimationFrame(() => navigateToTarget({ kind: "block", id: blockId }));
+    else if (shapeId) window.requestAnimationFrame(() => navigateToTarget({ kind: "shape", id: shapeId }));
   }, [navigateToTarget]);
   const withdrawDocumentChange = useCallback(() => setProposal(null), []);
 
@@ -120,61 +107,30 @@ export const WebMcpBridge = forwardRef<WebMcpBridgeHandle, WebMcpBridgeProps>(fu
     return () => { controller.abort(); };
   }, [enabled, getDocument, getRevision, getSelectedBlockId, getSelection, instructionScopeId, proposeDocumentChange, withdrawDocumentChange]);
 
-  const navigateToProposal = useCallback((item: SigmaWebMcpProposal) => {
-    if (item.shapeIds[0]) navigateToTarget({ kind: "shape", id: item.shapeIds[0] });
-    else if (item.blockIds[0]) navigateToTarget({ kind: "block", id: item.blockIds[0] });
-  }, [navigateToTarget]);
-  const applyProposalIds = useCallback(async (ids: string[]): Promise<WebMcpProposalApplyOutcome | null> => {
+  const applyProposalIds = useCallback(async (ids: string[]): Promise<AiProposalApplyOutcome | null> => {
     if (!proposal || !ids.includes(proposal.id)) return null;
     try {
       commitDocumentChange((current) => SigmaDocumentSchema.parse(proposal.apply(current).document));
-      setHistory((current) => [{ id: `${proposal.id}:applied:${Date.now()}`, proposal, status: "applied" as const }, ...current].slice(0, 8));
       setProposal(null);
       return { ok: true };
     } catch (error) {
       console.error("WebMCP proposal application failed", error);
       const message = t("webMcpProposal.applyFailed");
-      setProposal((current) => current ? { ...current, error: message } : current);
       return { ok: false, reason: message };
     }
   }, [commitDocumentChange, proposal, t]);
   const dismissProposalIds = useCallback((ids: string[]): boolean => {
     if (!proposal || !ids.includes(proposal.id)) return false;
     proposal.dismiss();
-    setHistory((current) => [{ id: `${proposal.id}:rejected:${Date.now()}`, proposal, status: "rejected" as const }, ...current].slice(0, 8));
     setProposal(null);
     return true;
   }, [proposal]);
   useImperativeHandle(ref, () => ({ applyProposalIds, dismissProposalIds }), [applyProposalIds, dismissProposalIds]);
 
   if (!enabled) return null;
-  const content = (
-    <div className={sidebarOpen ? "webmcp-proposal-panel" : "webmcp-proposal-dock"} role="region" aria-label={t("webMcpProposal.regionLabel")}>
-      {!sidebarOpen && (proposal || history.length > 0) && <header className="webmcp-proposal-header">
-          <span className="webmcp-proposal-mark" aria-hidden="true"><Bot size={16} /></span>
-          <div><h2>{t("webMcpProposal.title")}</h2><p>{t("webMcpProposal.description")}</p></div>
-          <span className="webmcp-proposal-count" aria-label={t("webMcpProposal.operationCount", { operations: proposal?.operationCount ?? 0 })}>{proposal?.operationCount ?? 0}</span>
-        </header>}
-      {proposal?.error && <p className="webmcp-proposal-error" role="alert">{proposal.error}</p>}
-      {proposal && (
-        <div className="webmcp-proposal-actions">
-          <button type="button" className="webmcp-proposal-reject" onClick={() => dismissProposalIds([proposal.id])}>{t("webMcpProposal.reject")}</button>
-          <button type="button" className="webmcp-proposal-apply" onClick={() => void applyProposalIds([proposal.id])}>{t("webMcpProposal.apply")}</button>
-          <button type="button" onClick={() => navigateToProposal(proposal)}><MapPin size={12} aria-hidden="true" />{t("webMcpProposal.historyNavigate")}</button>
-        </div>
-      )}
-      {history.length > 0 && <section className="webmcp-proposal-history" aria-labelledby="webmcp-history-title"><h3 id="webmcp-history-title"><History size={14} aria-hidden="true" />{t("webMcpProposal.historyTitle")}</h3><ul>{history.map((entry) => <li key={entry.id}><span data-status={entry.status}>{entry.status === "applied" ? t("webMcpProposal.historyApplied") : t("webMcpProposal.historyRejected")}</span><button type="button" onClick={() => navigateToProposal(entry.proposal)}><MapPin size={12} aria-hidden="true" />{t("webMcpProposal.historyNavigate")}</button></li>)}</ul></section>}
-      <div className="webmcp-proposal-status" role="status" aria-live="polite">{proposal ? t("webMcpProposal.pendingOperationsAnnouncement", { operations: proposal.operationCount }) : t("webMcpProposal.noPendingAnnouncement")}</div>
+  return (
+    <div className="webmcp-proposal-status" role="status" aria-live="polite">
+      {proposal ? t("webMcpProposal.pendingOperationsAnnouncement", { operations: proposal.operationCount }) : t("webMcpProposal.noPendingAnnouncement")}
     </div>
   );
-  if (sidebarOpen) {
-    if (!sidebarTarget) return <div className="webmcp-proposal-status" role="status" aria-live="polite" />;
-    return createPortal(
-      proposal || history.length > 0
-        ? content
-        : <div className="webmcp-proposal-status" role="status" aria-live="polite" />,
-      sidebarTarget,
-    );
-  }
-  return proposal || history.length > 0 ? content : <div className="webmcp-proposal-status" role="status" aria-live="polite" />;
 });

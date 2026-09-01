@@ -8,6 +8,8 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { pasteAsSingleBlockInlineContent } from "@/components/editor/text-flow/inline-block-paste";
 import { InlineMathExtension, requestInlineMathEdit } from "@/components/tiptap/inline-math-extension";
+import { LOCAL_EDIT_HISTORY_ATTRIBUTE } from "@/components/editor/editor-shell/command-shortcut-targets";
+import { NativeHistoryGuardExtension } from "@/components/tiptap/native-history-guard";
 import { useT } from "@/lib/i18n/react";
 import type {
   InlineNode,
@@ -49,21 +51,37 @@ export function CommentRichTextEditor({
   const mathEnvironment = useMathRenderEnvironment(mathFractionSizing);
   const editor = useEditor({
     extensions: [
+      // **`undoRedo` を落とさない。** ここが編むのはコメントの下書きで、
+      // SigmaDoc には投稿するまで 1 文字も入らない (下書きの置き場は
+      // `EditorShell` の `pendingCommentDraft` / editorStore の `commentReplyDrafts` /
+      // `CommentThreadsPanel` の `editDrafts` で、いずれも React 側の state)。
+      // 「SigmaDoc に入らない面は自前の履歴を持ち、そこへ戻す」— `BoxTitleEditor` と同じ扱い。
       StarterKit.configure({
         heading: false,
-        undoRedo: false,
         underline: false,
       }),
       Placeholder.configure({ placeholder: resolvedPlaceholder }),
       // prop の組版設定と文書コンテキストを 1 つの環境に畳んでから渡す
       // (別々に読むと、片方だけ差し替わったときに静的と編集中が食い違う)。
       InlineMathExtension.configure({ mathEnvironment }),
+      // 共通エンジンを通らないので個別に積む。既定の SigmaDoc への委譲は**使わない** —
+      // それだとコメントを打ち間違えて取り消したときに、コメントはそのままで無関係な
+      // 本文編集が巻き戻り、ユーザーには何が起きたか分からない。
+      NativeHistoryGuardExtension.configure({
+        onHistoryCommand: (direction, activeEditor) => (direction === "undo"
+          ? activeEditor.commands.undo()
+          : activeEditor.commands.redo()),
+      }),
     ],
     content: initialContent,
     immediatelyRender: false,
     editorProps: {
       attributes: {
         class: "comment-rich-text-editor",
+        // ⌘Z をこの欄自身の履歴へ届けるための目印
+        // (`editor-shell/command-shortcut-targets.ts`)。無いと文書の undo が走り、
+        // 打ったコメントは残ったまま無関係な本文が巻き戻る。
+        [LOCAL_EDIT_HISTORY_ATTRIBUTE]: "true",
       },
       // 保存できるのは 1 ブロックぶんの inline だけ。段落のまま貼らせると画面には出るのに
       // 保存で 2 行目以降が消えるので、貼るものを畳んでこのブロックの中へ入れる。
@@ -87,7 +105,15 @@ export function CommentRichTextEditor({
     }
 
     previousSerializedRef.current = serializedValue;
-    editor.commands.setContent(inlineNodesToTiptapDoc(valueRef.current), { emitUpdate: false });
+    // **外から入れた内容は自分の履歴に載せない** (`addToHistory: false`)。
+    // 載せると、投稿・確定でこの欄がクリアされたあとの undo で消えたはずの本文が復活し、
+    // `onUpdate` がそれを呼び出し元へ書き戻す。`setContent` の options には無いので
+    // 同じトランザクションに meta を置く。
+    editor
+      .chain()
+      .setMeta("addToHistory", false)
+      .setContent(inlineNodesToTiptapDoc(valueRef.current), { emitUpdate: false })
+      .run();
   }, [editor, serializedValue]);
 
   useEffect(() => {

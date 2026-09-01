@@ -1,13 +1,11 @@
 import type { SigmaDocument } from "@/features/document";
 import type { AppLocale } from "@/lib/i18n";
 
-export const PRESENTATION_IMPORT_ACCEPT = "";
+export const POWERPOINT_IMPORT_ACCEPT = "";
 
-export function isPresentationSlidesFilename(_filename: string): boolean {
-  return false;
-}
+export function isPowerPointPptxFilename(_filename: string): boolean { return false; }
 
-export async function importPresentationSlidesBuffer(
+export async function importPowerPointPptxBuffer(
   _input: ArrayBuffer,
   _filename: string,
   _options: { locale: AppLocale },

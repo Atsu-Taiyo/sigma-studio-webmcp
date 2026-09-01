@@ -1,4 +1,4 @@
-export interface EditorMathKeyboardEventLike {
+export interface StudyAidKeyboardEventLike {
   altKey: boolean;
   code: string;
   ctrlKey: boolean;
@@ -6,7 +6,7 @@ export interface EditorMathKeyboardEventLike {
   metaKey: boolean;
 }
 
-export interface EditorMathMathfieldLike {
+export interface StudyAidMathfieldLike {
   getValue?: () => string;
   insert: (tex: string, options?: {
     focus?: boolean;
@@ -17,12 +17,12 @@ export interface EditorMathMathfieldLike {
   value?: string;
 }
 
-export interface EditorMathShortcutEventLike extends EditorMathKeyboardEventLike {
+export interface StudyAidShortcutEventLike extends StudyAidKeyboardEventLike {
   preventDefault: () => void;
   stopPropagation: () => void;
 }
 
-export interface EditorMathMathShortcut {
+export interface StudyAidMathShortcut {
   altKey: boolean;
   codes?: string[];
   id: string;
@@ -31,7 +31,7 @@ export interface EditorMathMathShortcut {
   wrapsSelection?: boolean;
 }
 
-export const EDITOR_MATH_MATH_SHORTCUTS: EditorMathMathShortcut[] = [
+export const STUDYAID_MATH_SHORTCUTS: StudyAidMathShortcut[] = [
   { id: "superscript", altKey: false, keys: ["^"], tex: "{}^{#?}" },
   { id: "subscript", altKey: false, keys: ["]"], codes: ["BracketRight"], tex: "{}_{#?}" },
   { id: "subscript-superscript", altKey: true, keys: ["^"], tex: "{}_{#?}^{#?}" },
@@ -74,28 +74,28 @@ export const EDITOR_MATH_MATH_SHORTCUTS: EditorMathMathShortcut[] = [
   { id: "plus-minus", altKey: false, keys: [";"], tex: "\\pm" },
 ];
 
-export function isEditorMathMathModeShortcut(event: EditorMathKeyboardEventLike): boolean {
+export function isStudyAidMathModeShortcut(event: StudyAidKeyboardEventLike): boolean {
   return isCtrlOnlyShortcut(event) && normalizeShortcutKey(event.key) === "m";
 }
 
-export function isEditorMathReturnToTextShortcut(event: EditorMathKeyboardEventLike): boolean {
+export function isStudyAidReturnToTextShortcut(event: StudyAidKeyboardEventLike): boolean {
   return isCtrlOnlyShortcut(event) && normalizeShortcutKey(event.key) === "t";
 }
 
-export function getEditorMathMathShortcut(event: EditorMathKeyboardEventLike): EditorMathMathShortcut | null {
+export function getStudyAidMathShortcut(event: StudyAidKeyboardEventLike): StudyAidMathShortcut | null {
   if (!event.ctrlKey || event.metaKey) {
     return null;
   }
 
   const key = normalizeShortcutKey(event.key);
-  return EDITOR_MATH_MATH_SHORTCUTS.find((shortcut) => (
+  return STUDYAID_MATH_SHORTCUTS.find((shortcut) => (
     shortcut.altKey === event.altKey &&
     (shortcut.codes?.includes(event.code) ||
       shortcut.keys.some((candidate) => normalizeShortcutKey(candidate) === key))
   )) ?? null;
 }
 
-export function insertEditorMathMathTemplate(mathField: EditorMathMathfieldLike, tex: string): boolean {
+export function insertStudyAidMathTemplate(mathField: StudyAidMathfieldLike, tex: string): boolean {
   mathField.insert(tex, {
     focus: true,
     format: "latex",
@@ -105,19 +105,19 @@ export function insertEditorMathMathTemplate(mathField: EditorMathMathfieldLike,
   return true;
 }
 
-export function handleEditorMathMathShortcut(event: EditorMathShortcutEventLike, mathField: EditorMathMathfieldLike): boolean {
-  const shortcut = getEditorMathMathShortcut(event);
+export function handleStudyAidMathShortcut(event: StudyAidShortcutEventLike, mathField: StudyAidMathfieldLike): boolean {
+  const shortcut = getStudyAidMathShortcut(event);
   if (!shortcut) {
     return false;
   }
 
   event.preventDefault();
   event.stopPropagation();
-  insertEditorMathMathTemplate(mathField, shortcut.tex);
+  insertStudyAidMathTemplate(mathField, shortcut.tex);
   return true;
 }
 
-export function getMathfieldLatex(mathField: EditorMathMathfieldLike): string {
+export function getMathfieldLatex(mathField: StudyAidMathfieldLike): string {
   if (typeof mathField.getValue === "function") {
     return mathField.getValue();
   }
@@ -125,7 +125,7 @@ export function getMathfieldLatex(mathField: EditorMathMathfieldLike): string {
   return typeof mathField.value === "string" ? mathField.value : "";
 }
 
-function isCtrlOnlyShortcut(event: EditorMathKeyboardEventLike): boolean {
+function isCtrlOnlyShortcut(event: StudyAidKeyboardEventLike): boolean {
   return event.ctrlKey && !event.metaKey && !event.altKey && normalizeShortcutKey(event.key).length === 1;
 }
 

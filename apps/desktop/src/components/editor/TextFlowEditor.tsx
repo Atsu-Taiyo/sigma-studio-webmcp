@@ -18,10 +18,12 @@ import {
 } from "@/components/editor/text-flow/caret-scroll";
 import {
   caretAtTextblockEdgeLine,
+  flushPendingCaret,
   focusCaretAddress,
   moveCaretHorizontally,
   moveCaretVertically,
   registerCaretSurface,
+  requestCaret,
   updateCaretSurfaceFacets,
   type CaretSurfaceFacets,
 } from "@/components/editor/text-flow/caret-router";
@@ -188,6 +190,16 @@ import {
   groupTextFlowTransaction,
 } from "./text-flow/history-grouping";
 import { pasteAsInlineContent } from "./text-flow/inline-block-paste";
+import {
+  buildLargeTextPastePlan,
+  commitLargeTextPastePlan,
+  findLargeTextPasteBlockedBlockId,
+  isLargeTextPasteSelectionAtTopLevel,
+  largeLiteralTextPasteBlocks,
+  largeTextPasteBlocks,
+  localClipboardPayloadMatchesPlainText,
+  shouldUseLargeTextPaste,
+} from "./text-flow/large-text-paste";
 import { parsePastedMarkdown } from "./text-flow/markdown-paste";
 import type {
   TextFlowBoundaryDeleteRequest,
@@ -199,6 +211,12 @@ import {
   beginTextFlowDocumentChange,
   publishTextFlowSelectionBookmark,
 } from "./text-flow/caret-bookmark-events";
+import {
+  MIXED_CLIPBOARD_HISTORY_GROUP_META,
+  createMixedClipboardHistoryGroup,
+  markBodyCutHistoryGroup,
+  peekBodyCutHistoryGroup,
+} from "./text-flow/clipboard-history-group";
 import { refreshManualColumnFlowHeights } from "./text-flow/manual-column-flow";
 import {
   insertTextSliceWithFreshBlockIds,
@@ -1499,9 +1517,18 @@ function TextFlowEditorImpl({
    * the mutation's caret bookmark so the focused editor lands on it without waiting for the
    * scheduled restore.
    */
-  const crossEditorSyncRef = useRef<{ selection: TextFlowSelectionBookmark | null } | null>(null);
+  const crossEditorSyncRef = useRef<{ selection: TextFlowSelectionBookmark | null; historyGroup?: string } | null>(null);
   const [historyGroupScope] = useState(() => createId("text_history"));
   const historyGroupingRef = useRef(createTextFlowHistoryGroupingState());
+  /**
+   * 混在ペースト / 混在カットの強制コアレスキーと、それが属する本文グルーピング区間。
+   *
+   * 1 回のペーストは **2 つの transaction** を起こしうる (本体の挿入 + id 列が変わったときの
+   * `setTextFlowContentPreservingSelection`)。最初の 1 つにだけキーを付けると 2 つ目が
+   * 時間ベースのキーになり、履歴が 2 段積まれて ⌘Z 1 回では戻らない (実測)。
+   * 「同じ操作か」は既に時間・隣接で判定されているので、その区間が続く限りキーも保つ。
+   */
+  const forcedClipboardHistoryGroupRef = useRef<{ group: string; sequence: number } | null>(null);
   // Tiptap reads `content` only while it creates an editor, and it creates one only when the
   // `useEditor` dependency list below changes. Converting on every render meant every keystroke
   // paid a full textFlowToTiptap() per unit for a value nothing reads. **This dependency list
@@ -1959,6 +1986,10 @@ function TextFlowEditorImpl({
           if (!event.clipboardData) {
             return false;
           }
+          // 本文と図形をまとめて 1 つの undo エントリにするキー。図形側の保存は 250ms
+          // 遅れて別の commitDocumentChange として届くので、同じキーを配って畳む
+          // (clipboard-history-group.ts の宣言コメント参照)。
+          const historyGroup = createMixedClipboardHistoryGroup();
           if (isMultiEditorTextRunSpan()) {
             if (!copyActiveTextRunSpan(event.clipboardData)) {
               return false;
@@ -1966,13 +1997,15 @@ function TextFlowEditorImpl({
             event.preventDefault();
             const written = readTextSliceClipboardData(event.clipboardData);
             if (written) {
-              markBodyTextCut(event, written);
+              markBodyTextCut(event, { ...written, historyGroup });
             }
             // 本文を消すのはイベントを抜けてから。overlay の window ハンドラは同じ
             // イベントの中で本文の矩形を測って図形のアンカーを引き直すので、先に
             // 本文が消えていると測り直しがずれる。マイクロタスクではリスナーの合間に
             // 走ってしまうので、イベント 1 つ分あとになるタイマーへ逃がす。
-            window.setTimeout(() => replaceActiveTextRunSpan([]), 0);
+            // 跨ぎ経路は onUpdate を通らない (writer.onChange を直接呼ぶ) ので、キーは
+            // 印ではなく引数で渡す。ここで印を置くと誰も読まずに次のカットへ持ち越す。
+            window.setTimeout(() => replaceActiveTextRunSpan([], { historyGroup }), 0);
             return true;
           }
           if (view.state.selection.empty) {
@@ -1981,7 +2014,14 @@ function TextFlowEditorImpl({
           // PM 本体の cut はこの後で `clipboardData.clearData()` を呼ぶので、private MIME
           // ではなくモジュール側の印で overlay へ渡す (混在切り取りの本文側)。
           const slice = view.state.selection.content();
-          markBodyTextCut(event, { slice: slice.toJSON(), text: sliceTextForClipboard(slice) });
+          markBodyTextCut(event, {
+            slice: slice.toJSON(),
+            text: sliceTextForClipboard(slice),
+            historyGroup,
+          });
+          // 単一エディタ経路は必ず PM 本体の cut が view.dispatch を続けるので、
+          // 本文側は onUpdate でこの印を読む。
+          markBodyCutHistoryGroup(historyGroup);
           return false;
         },
       },
@@ -2035,12 +2075,76 @@ function TextFlowEditorImpl({
         if (pasteAsInlineContent(view, event, slice)) {
           return true;
         }
+        const payload = event.clipboardData ? readEditorClipboardPayload(event.clipboardData) : null;
+        if (!literalPasteRequested && payload?.kind === "textAndShapes") {
+          return pasteTextAndShapesFromClipboard(view, event, slice, payload);
+        }
+        // トップレベル本文だけの大量 plain-text paste は PM に数千ノードを dispatch しない。
+        // ネストしたリスト・引用・囲み枠は native PM paste で入れ物を保つ。
+        const plainText = event.clipboardData?.getData("text/plain") ?? "";
+        const hasRichHtml = Boolean(event.clipboardData?.getData("text/html").trim());
+        const localClipboardPayload = getLocalEditorClipboardPayload();
+        if (
+          textRunScopeId === "document"
+          && !hasRichHtml
+          && shouldUseLargeTextPaste(plainText)
+          && isLargeTextPasteSelectionAtTopLevel(view.state)
+          && (literalPasteRequested || (
+            payload === null
+            && !localClipboardPayloadMatchesPlainText(localClipboardPayload, plainText)
+          ))
+        ) {
+          const plan = buildLargeTextPastePlan({
+            state: view.state,
+            previousBlocks: blocksRef.current,
+            pastedBlocks: literalPasteRequested
+              ? largeLiteralTextPasteBlocks(plainText, view.state.selection.$from.marks())
+              : largeTextPasteBlocks(plainText, view.state.selection.$from.marks()),
+            scopeId: textRunScopeId,
+            unitId: textRunUnitId ?? previousIdsRef.current[0] ?? "document",
+          });
+          if (plan) {
+            const blockedBlockId = findLargeTextPasteBlockedBlockId(
+              plan,
+              blocksRef.current,
+              new Set(editGuardsRef.current.keys()),
+            );
+            if (blockedBlockId) {
+              event.preventDefault();
+              onEditGuardBlockedAttemptRef.current(blockedBlockId);
+              return true;
+            }
+            event.preventDefault();
+            const activeEditor = tiptapEditorRef.current;
+            const beforeSelection = activeEditor
+              ? getTextFlowSelectionBookmark(activeEditor, verticalNavigationXRef.current)
+              : null;
+            beginTextFlowDocumentChange(beforeSelection);
+            crossEditorSyncRef.current = { selection: plan.selection ?? null };
+            commitLargeTextPastePlan(
+              plan,
+              `${historyGroupScope}:large-paste:${createId("paste")}`,
+              onChangeRef.current,
+              (selection) => {
+                // 跨ぎ選択置換と同じ caret router へ、commit と一緒に復元を予約する。
+                // 挿入末尾が新規 unit の場合は今の面では解決できないが、予約は
+                // registerCaretSurface が mount 時に消化する。React commit 直後の
+                // microtask と次フレームでも再試行し、DOM focus と scrollIntoView を
+                // ネイティブ paste 相当のタイミングで完了させる。
+                requestCaret(selection);
+                window.queueMicrotask(() => flushPendingCaret());
+                window.requestAnimationFrame(() => flushPendingCaret());
+              },
+            );
+            if (plan.focusBlockId) {
+              selectedIdRef.current = plan.focusBlockId;
+              onSelectRef.current(plan.focusBlockId);
+            }
+            return true;
+          }
+        }
         if (literalPasteRequested) {
           return pasteClipboardAsLiteralText(view, event);
-        }
-        const payload = event.clipboardData ? readEditorClipboardPayload(event.clipboardData) : null;
-        if (payload?.kind === "textAndShapes") {
-          return pasteTextAndShapesFromClipboard(view, event, slice, payload);
         }
         return pasteTextFlowBlocksFromClipboard(view, event, (blockId) => {
           selectedIdRef.current = blockId;
@@ -2118,6 +2222,11 @@ function TextFlowEditorImpl({
       // このエディタ自身の編集が始まった時点で、未消化の跨ぎ置換マークは古い (置換がこの
       // ユニットの内容を変えなかったときだけ残る)。放置すると、この編集の blocksSyncKey
       // 変化でタイピング途中の setContent + 古い選択復元が走り、キャレットが飛ぶ。
+      //
+      // ただし混在ペースト / 混在カットのコアレスキーだけは消す前に拾う。跨ぎ置換は
+      // `onUpdate` を通らずに本文を書くので、再チャンクが起こすこの `onUpdate` に
+      // キーが乗らないと、本文書き込みと 250ms 後の図形保存の**間に別エントリが挟まる**。
+      const crossEditorClipboardGroup = crossEditorSyncRef.current?.historyGroup ?? null;
       crossEditorSyncRef.current = null;
       refreshInlineQueries(activeEditor);
       const nextBlocks = measurePerformance(
@@ -2140,8 +2249,35 @@ function TextFlowEditorImpl({
       // 跨ぎ選択への IME 合成中は、compositionstart で流した他ユニット削除・compositionend
       // 後の境界結合と同じグループに載せる (undo 1 回で IME 置換全体が戻る)。
       const spanCompositionGroup = getTextRunSpanCompositionHistoryGroup(activeEditor);
+      // 混在ペースト / 混在カットは、図形側と同じキーを強制する (undo 1 回で両方戻す)。
+      // カットの判別子に PM 本体が付ける `uiEvent === "cut"` を使うのが肝 —— 切り取りの
+      // 削除トランザクションだけを正確に掴める。
+      const mintedClipboardGroup = crossEditorClipboardGroup
+        ?? (transaction.getMeta("uiEvent") === "cut"
+          ? peekBodyCutHistoryGroup()
+          : (transaction.getMeta(MIXED_CLIPBOARD_HISTORY_GROUP_META) as string | undefined) ?? null);
+      if (mintedClipboardGroup) {
+        forcedClipboardHistoryGroupRef.current = {
+          group: mintedClipboardGroup,
+          sequence: historyGrouping.group,
+        };
+      }
+      // 同じ操作 (= 同じグルーピング区間) の後続 transaction にも同じキーを配る。
+      // 区間が変わったら捨てる — 持ち越すと無関係な編集が畳まれて戻せなくなる。
+      const activeForcedClipboardGroup = forcedClipboardHistoryGroupRef.current;
+      const forcedClipboardGroup = activeForcedClipboardGroup?.sequence === historyGrouping.group
+        ? activeForcedClipboardGroup.group
+        : null;
+      if (!forcedClipboardGroup) {
+        forcedClipboardHistoryGroupRef.current = null;
+      }
       onChange(previousIdsRef.current, normalizedBlocks, activeBlockId, {
-        historyGroup: spanCompositionGroup ?? `${historyGroupScope}:${historyGrouping.group}`,
+        // 合成グループを先に見る。跨ぎ選択の IME 置換が混在操作と同じグルーピング区間で
+        // 始まると、このユニットだけクリップボードのキーになって **1 回の IME 置換が
+        // 2 エントリに割れる** (span の他ユニットは合成グループのまま)。合成のほうが強い括り。
+        historyGroup: spanCompositionGroup
+          ?? forcedClipboardGroup
+          ?? `${historyGroupScope}:${historyGrouping.group}`,
         selection: selectionBookmark,
       });
       if (selectionBookmark) {
@@ -2361,6 +2497,10 @@ function TextFlowEditorImpl({
     // 履歴復元はこの下で内容を丸ごと入れ直すので、未消化の跨ぎ置換マークはここで役目を
     // 終える。残すと復元後の最初の同期で古い選択復元が走る。
     crossEditorSyncRef.current = null;
+    // クリップボードのコアレスキーも捨てる。一致条件は**一意でない sequence 番号**なので、
+    // 残したまま undo でカウンタが 0 に戻ると、番号が同じ値まで登り直したところで
+    // 無関係な編集が古い mixed_clipboard_history_* キーで刻印される。
+    forcedClipboardHistoryGroupRef.current = null;
     if (!editor.isDestroyed) {
       setTextFlowContentPreservingSelection(editor, blocks);
       // Tell the passive sync below that this render's content is already in the editor, so it
@@ -2833,8 +2973,8 @@ function TextFlowEditorImpl({
           // 跨ぎ選択の置換 (エディタの外で組み立てた変更) の印。焦点があるエディタの受動
           // 同期は「id が同じなら何もしない」ため、そのままでは古い内容へ次の入力が入る。
           // 次の同期で必ず流し込むよう印を付けておく (writer 以外の関与ユニットにも付く)。
-          markCrossEditorSync: (selection) => {
-            crossEditorSyncRef.current = { selection };
+          markCrossEditorSync: (selection, historyGroup) => {
+            crossEditorSyncRef.current = { selection, historyGroup };
           },
           // キャレットの乗るユニットの即時同期 (受動同期の再適用は同内容なので冪等)。
           // ここはルーター経由にしない: 受動同期を待つと置換前の doc に次の打鍵が入る。
@@ -4873,12 +5013,16 @@ function pasteTextFlowBlocksFromClipboard(
   } else if (clipboardPayload) {
     return false;
   } else {
-    const markdownBlocks = parsePastedMarkdown(clipboardData.getData("text/plain"));
+    const plainText = clipboardData.getData("text/plain");
+    const markdownBlocks = parsePastedMarkdown(plainText);
     if (markdownBlocks) {
       pastedBlocks = markdownBlocks;
     } else {
       const localPayload = getLocalEditorClipboardPayload();
-      if (localPayload?.kind !== "textFlowBlocks") {
+      if (
+        localPayload?.kind !== "textFlowBlocks"
+        || !localClipboardPayloadMatchesPlainText(localPayload, plainText)
+      ) {
         return false;
       }
       pastedBlocks = cloneTextFlowBlocksForPaste(localPayload.blocks);
@@ -4951,10 +5095,18 @@ function pasteTextAndShapesFromClipboard(
 
   const { transaction, anchorBlockIdMap } = insertTextSliceWithFreshBlockIds(view.state, textSlice);
   event.preventDefault();
-  view.dispatch(transaction.scrollIntoView().setMeta("paste", true).setMeta("uiEvent", "paste"));
+  // 本文と図形を 1 つの undo エントリに畳むキー。本文の record が必ず先 (この dispatch は
+  // 同期で onUpdate を呼ぶ) で、図形は 250ms 後に同じキーで届いて畳まれる。
+  const historyGroup = createMixedClipboardHistoryGroup();
+  view.dispatch(transaction
+    .scrollIntoView()
+    .setMeta("paste", true)
+    .setMeta("uiEvent", "paste")
+    .setMeta(MIXED_CLIPBOARD_HISTORY_GROUP_META, historyGroup));
   requestOverlayShapesPaste({
     payload: toOverlayShapesClipboardPayload(payload),
     anchorBlockIdMap,
+    historyGroup,
     source: view.dom,
   });
   return true;
@@ -4981,13 +5133,15 @@ function pasteTextAndShapesIntoTextRunSpan(
     return;
   }
   const pastedBlocks = cloneTextFlowBlocksForPaste(sourceBlocks);
-  const mutations = replaceActiveTextRunSpan(pastedBlocks);
+  const historyGroup = createMixedClipboardHistoryGroup();
+  const mutations = replaceActiveTextRunSpan(pastedBlocks, { historyGroup });
   if (!mutations) {
     return;
   }
   requestOverlayShapesPaste({
     payload: toOverlayShapesClipboardPayload(payload),
     anchorBlockIdMap: resolveTextRunSpanAnchorBlockIdMap(sourceBlocks, pastedBlocks, mutations),
+    historyGroup,
     source: view.dom,
   });
 }

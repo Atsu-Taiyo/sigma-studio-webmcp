@@ -265,6 +265,8 @@ export interface EditorChromeAppMenu {
   commentsPanelOpen: boolean;
   createDocumentTab: () => Promise<void>;
   createWhiteboardDocumentTab: () => Promise<void>;
+  /** 教材をクリップボードのテキストとして書き出す。 */
+  copyDocumentText: () => Promise<void>;
   degradedWatcherScopes: ("library" | "mcpProposal" | "documents")[];
   deleteActiveDocument: () => Promise<void>;
   documentMetadatas: DocumentMetadata[];
@@ -274,12 +276,10 @@ export interface EditorChromeAppMenu {
   exportMenuOpen: boolean;
   fileMenuButtonRef: RefObject<HTMLButtonElement | null>;
   handleTitleUpdateAction: () => Promise<void>;
-  hasPendingAiApprovalAdoption: boolean;
   importDocumentFile: (file: File) => Promise<void>;
   importInputRef: RefObject<HTMLInputElement | null>;
   insertMenuButtonRef: RefObject<HTMLButtonElement | null>;
   loadingFileId: string | null;
-  mcpPreviewBusy: boolean;
   newDocButtonRef: RefObject<HTMLButtonElement | null>;
   newDocMenuOpen: boolean;
   openCommandSettings: () => void;
@@ -290,13 +290,14 @@ export interface EditorChromeAppMenu {
   openNewDocMenu: () => void;
   openOtherImportDialog: () => void;
   openPrintPreview: () => void;
+  /** 貼り付けたテキストから教材を取り込む面を開く。 */
+  openTextImportDialog: () => void;
   otherImportInputRef: RefObject<HTMLInputElement | null>;
   openWorkspaceScreen: () => Promise<void>;
   promoteAiToSidebar: () => void;
   reportIssue: () => void;
   requestOverlayImages: (files: ArrayLike<File> | Iterable<File>, point?: OverlayPoint) => void;
   resolvedDocumentTitle: string;
-  retryPendingAiApprovalAdoption: () => Promise<void>;
   scheduleCloseNewDocMenu: () => void;
   setAiSettingsOpen: Dispatch<SetStateAction<boolean>>;
   setDesktopSettingsOpen: Dispatch<SetStateAction<boolean>>;

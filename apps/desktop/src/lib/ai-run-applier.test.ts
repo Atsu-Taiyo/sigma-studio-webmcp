@@ -4,7 +4,6 @@ import type { SigmaDocument } from "@/features/document";
 import {
   applyMcpEditPreview,
   decideAiApprovedDocument,
-  replaceDocumentAfterRequiredBackup,
 } from "@/lib/ai-run-applier";
 import { createBlankDocument } from "@/lib/blank-document";
 
@@ -48,7 +47,7 @@ describe("decideAiApprovedDocument", () => {
     expect(decision.adoptedDocumentMatchesDisk).toBe(false);
   });
 
-  it("keeps the user's current document dirty when both sides changed the same block", () => {
+  it("keeps editing the same file when both sides changed the same block", () => {
     const base = createDocument();
     const current = {
       ...editParagraph(base, "p_1", "入力中の変更"),
@@ -63,11 +62,36 @@ describe("decideAiApprovedDocument", () => {
       normalizedApprovedDocument: approved,
     });
 
+    // 競合しても別教材へ退避しない: 競合した単位だけ承認された内容を採り、同じファイルを更新する。
+    expect(decision.kind).toBe("merge");
+    expect(paragraphText(decision.document, "p_1")).toBe("AIの変更");
+    expect(decision.adoptedDocumentMatchesDisk).toBe(true);
+    expect(decision.kind === "merge" && decision.resolvedConflicts.length).toBeGreaterThan(0);
+  });
+
+  it("adopts the approval when only the save timestamp moved since the last sync", () => {
+    // 保存経路は `{...doc, updatedAt: now}` という別コピーを lastSynced として覚えるため、
+    // 承認開始時点の文書は現在の文書と updatedAt だけが違う。これを人手編集と数えると
+    // 毎回マージ経路へ落ち、メタ競合で退避教材が生まれていた。
+    const base = createDocument();
+    const current = structuredClone(base);
+    const documentAtApprovalStart = { ...base, updatedAt: "2026-07-26T00:00:05.000Z" };
+    const approved = {
+      ...editParagraph(base, "p_1", "AIの変更"),
+      updatedAt: "2026-07-26T00:00:09.000Z",
+    };
+
+    const decision = decideAiApprovedDocument({
+      documentAtApprovalStart,
+      currentDocument: current,
+      diskDocument: approved,
+      normalizedApprovedDocument: approved,
+    });
+
     expect(decision).toMatchObject({
-      kind: "stay-dirty",
-      document: current,
-      adoptedDocumentMatchesDisk: false,
-      reason: expect.stringContaining("両方で変更"),
+      kind: "adopt",
+      document: approved,
+      adoptedDocumentMatchesDisk: true,
     });
   });
 
@@ -128,45 +152,6 @@ describe("applyMcpEditPreview", () => {
       approvalResult: { ok: true },
     });
     expect(order).toEqual(["flushed", "save-finished", "approved"]);
-  });
-});
-
-describe("replaceDocumentAfterRequiredBackup", () => {
-  it("keeps concurrent user input in memory when its backup fails during approval", async () => {
-    const currentDocument = editParagraph(createDocument(), "p_1", "承認中の入力");
-    const documentRef = { current: currentDocument };
-    const approvedDocument = editParagraph(createDocument(), "p_1", "AIの変更");
-    const replace = vi.fn(() => {
-      documentRef.current = approvedDocument;
-    });
-
-    const result = await replaceDocumentAfterRequiredBackup({
-      backupRequired: true,
-      createBackup: vi.fn().mockRejectedValue(new Error("ディスク容量がありません")),
-      replace,
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      error: expect.objectContaining({ message: "ディスク容量がありません" }),
-    });
-    expect(replace).not.toHaveBeenCalled();
-    expect(documentRef.current).toBe(currentDocument);
-    expect(paragraphText(documentRef.current, "p_1")).toBe("承認中の入力");
-  });
-
-  it("keeps recovery active when persistence fails after the backup succeeds", async () => {
-    const backup = { fileId: "backup_1" };
-    const result = await replaceDocumentAfterRequiredBackup({
-      backupRequired: true,
-      createBackup: vi.fn().mockResolvedValue(backup),
-      replace: vi.fn().mockRejectedValue(new Error("workspace.jsonを保存できません")),
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      error: expect.objectContaining({ message: "workspace.jsonを保存できません" }),
-    });
   });
 });
 

@@ -111,6 +111,30 @@ describe("DocumentHistoryController", () => {
     expect(history.undoDepth).toBe(4);
   });
 
+  it("always records when no key is given", () => {
+    const history = new DocumentHistoryController<TestDocument, null>(10);
+
+    history.record({ document: { id: "a" }, selection: null });
+    history.record({ document: { id: "b" }, selection: null });
+
+    expect(history.undoDepth).toBe(2);
+  });
+
+  it("records a keyed change that follows an unrelated one", () => {
+    // 混在ペースト / カットが 1 エントリに畳まれる仕組みの裏返し。本文が同じキーで先に
+    // record 済みなら図形側は畳まれるが、**本文が変わっていない (図形だけの操作) なら
+    // 直前のキーと違うので必ず積まれる**。ここが崩れると図形だけの操作が永久に undo
+    // できなくなる (`coalesce: true` を使う設計だとまさにそれが起きる)。
+    const history = new DocumentHistoryController<TestDocument, null>(10);
+    const beforeShapeOnlyCut = { id: "before-shape-only-cut" };
+
+    history.record({ document: { id: "typed" }, selection: null }, { coalescingKey: "typing:1" });
+    history.record({ document: beforeShapeOnlyCut, selection: null }, { coalescingKey: "mixed_clipboard_history_1" });
+
+    expect(history.undoDepth).toBe(2);
+    expect(history.undo({ document: { id: "after" }, selection: null })?.document).toBe(beforeShapeOnlyCut);
+  });
+
   it("starts a fresh group after undo even when the caller reuses a key", () => {
     const history = new DocumentHistoryController<TestDocument, null>(10);
     const before = { id: "before" };

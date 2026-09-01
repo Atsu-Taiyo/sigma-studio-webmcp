@@ -1230,6 +1230,14 @@ export interface AiEditPreviewShapeUpdate {
   shapeId: string;
   /** The shape as it will look AFTER the proposal is applied (patch merged / alignment applied), using the exact same merge semantics as the real apply path. */
   after: OverlayShape;
+  /**
+   * Assets the proposal replaces along with the shape — a picture derived from the shape itself
+   * (a 3D figure's preview PNG), which an update rewrites. Merge these over the document's assets
+   * when drawing `after`, or the new shape is drawn with the picture of the old one. Carried
+   * forward onto every later update in the same run, so collapsing updates per shape cannot drop
+   * it. Absent when the run replaces no asset (the overwhelmingly common case).
+   */
+  replacedAssets?: Record<string, OverlayAsset>;
 }
 
 /**
@@ -1271,6 +1279,24 @@ export function resolveMutationOpShapeResults(op: SigmaDocMutationOp, currentSha
 }
 
 /**
+ * Overlay assets as they will look AFTER the op is applied.
+ *
+ * An `updateOverlayShape` may carry a replacement for a picture derived from the shape it
+ * updates (a 3D figure's preview PNG). Rendering the after-state against the live document's
+ * assets would draw the new spec with the old picture — exactly the drift the assets channel
+ * exists to prevent — so the op's own assets win, the same way apply merges them.
+ */
+export function resolveMutationOpAssets(
+  op: SigmaDocMutationOp,
+  currentAssets: Record<string, OverlayAsset>,
+): Record<string, OverlayAsset> {
+  if (op.operation !== "updateOverlayShape" || !op.assets || Object.keys(op.assets).length === 0) {
+    return currentAssets;
+  }
+  return { ...currentAssets, ...op.assets };
+}
+
+/**
  * For every `updateOverlayShape`/`alignOverlayShapes` op across `previews` (in group then
  * array order — the same order `applySigmaDocMutationOp` would apply them in), computes the
  * after-state of the affected shapes against `currentShapes` (the live document's resolved
@@ -1283,6 +1309,10 @@ export function deriveAiEditPreviewShapeUpdates(
   currentShapes: OverlayShape[],
 ): AiEditPreviewShapeUpdate[] {
   let shapes = currentShapes;
+  // Replacement assets accumulate across ops, exactly like `shapes` does: a caller that keeps
+  // only the last update per shape (the canvas ghost does) must still get the picture an earlier
+  // op replaced, or a follow-up resize/align silently restores the stale drawing.
+  let replacedAssets: Record<string, OverlayAsset> = {};
   const updates: AiEditPreviewShapeUpdate[] = [];
 
   for (const preview of previews) {
@@ -1300,8 +1330,10 @@ export function deriveAiEditPreviewShapeUpdates(
 
       const resultsById = new Map(results.map((shape) => [shape.id, shape]));
       shapes = shapes.map((shape) => resultsById.get(shape.id) ?? shape);
+      replacedAssets = resolveMutationOpAssets(op, replacedAssets);
+      const carried = Object.keys(replacedAssets).length > 0 ? replacedAssets : undefined;
       for (const shape of results) {
-        updates.push({ shapeId: shape.id, after: shape });
+        updates.push({ shapeId: shape.id, after: shape, ...(carried ? { replacedAssets: carried } : {}) });
       }
     }
   }

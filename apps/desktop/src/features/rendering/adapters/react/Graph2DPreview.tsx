@@ -604,10 +604,10 @@ function Graph2DPreviewComponent({
   // `renderToStaticMarkup` for the SVG export. Each stored value is checked *before* the preset
   // default is applied, so rejecting one falls back to the preset instead of losing the axis style.
   const storedAxisColor = isSafeCssColor(spec.axes.axisColor) ? spec.axes.axisColor : undefined;
-  const axisColor = storedAxisColor ?? (spec.axes.renderStyle === "classic" ? "#0d0d0d" : undefined);
+  const axisColor = storedAxisColor ?? (spec.axes.renderStyle === "studyaid" ? "#0d0d0d" : undefined);
   const storedAxisStrokeWidth = isFiniteNumber(spec.axes.axisStrokeWidth) ? spec.axes.axisStrokeWidth : undefined;
-  const axisStrokeWidth = storedAxisStrokeWidth ?? (spec.axes.renderStyle === "classic" ? 0.85 : undefined);
-  const axisStrokeDasharray = axisDasharray(spec.axes.axisDash ?? (spec.axes.renderStyle === "classic" ? "dashed" : undefined));
+  const axisStrokeWidth = storedAxisStrokeWidth ?? (spec.axes.renderStyle === "studyaid" ? 0.85 : undefined);
+  const axisStrokeDasharray = axisDasharray(spec.axes.axisDash ?? (spec.axes.renderStyle === "studyaid" ? "dashed" : undefined));
   const axisStyle = axisColor || axisStrokeWidth !== undefined || axisStrokeDasharray
     ? {
         ...(axisColor ? { stroke: axisColor } : {}),

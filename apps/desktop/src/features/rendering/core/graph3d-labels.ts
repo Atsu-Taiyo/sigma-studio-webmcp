@@ -4,6 +4,8 @@ import type {
   Graph3DSpec,
 } from "@/features/document";
 
+import { createGraph3DProjector } from "./graph3d-projection";
+
 const AXIS_LABEL_DISTANCE = 3.3;
 
 export interface Graph3DDisplayAnnotation {
@@ -57,59 +59,19 @@ export function createGraph3DDisplayAnnotations(
   ];
 }
 
-/** Projects a mathematical z-up point into the authored 3D viewport. */
+/**
+ * Projects a mathematical z-up point into the authored 3D viewport.
+ *
+ * A thin wrapper over {@link createGraph3DProjector} — the label layer only needs the pixel, while
+ * the headless renderer also needs the depth to sort by. Keeping one implementation is what stops
+ * a label and the surface it names from drifting apart.
+ */
 export function projectGraph3DLabel(
   point: { x: number; y: number; z: number },
   camera: Graph3DCamera,
   width: number,
   height: number,
 ): { x: number; y: number } | null {
-  const forward = normalize3(subtract3(camera.target, camera.position));
-  if (!forward) return null;
-  const right = normalize3(cross3(forward, camera.up));
-  if (!right) return null;
-  const screenUp = normalize3(cross3(right, forward));
-  if (!screenUp) return null;
-  const relative = subtract3(point, camera.position);
-  const depth = dot3(relative, forward);
-  if (!(depth > 0.01)) return null;
-  const aspect = Math.max(1e-6, width / Math.max(1, height));
-  let ndcX: number;
-  let ndcY: number;
-  if (camera.projection === "orthographic") {
-    const halfHeight = 3 / Math.max(1e-6, camera.zoom ?? 1);
-    ndcX = dot3(relative, right) / (halfHeight * aspect);
-    ndcY = dot3(relative, screenUp) / halfHeight;
-  } else {
-    const halfHeight = Math.tan(((camera.fov ?? 45) * Math.PI) / 360) * depth;
-    ndcX = dot3(relative, right) / (halfHeight * aspect);
-    ndcY = dot3(relative, screenUp) / halfHeight;
-  }
-  if (!Number.isFinite(ndcX) || !Number.isFinite(ndcY)) return null;
-  return {
-    x: (ndcX * 0.5 + 0.5) * width,
-    y: (-ndcY * 0.5 + 0.5) * height,
-  };
-}
-
-function subtract3(
-  a: { x: number; y: number; z: number },
-  b: { x: number; y: number; z: number },
-) {
-  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
-}
-
-function dot3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) {
-  return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-function cross3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) {
-  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x };
-}
-
-function normalize3(vector: { x: number; y: number; z: number }) {
-  const magnitude = Math.hypot(vector.x, vector.y, vector.z);
-  return magnitude > 1e-9
-    ? { x: vector.x / magnitude, y: vector.y / magnitude, z: vector.z / magnitude }
-    : null;
+  const projected = createGraph3DProjector(camera, width, height).project(point);
+  return projected ? { x: projected.x, y: projected.y } : null;
 }

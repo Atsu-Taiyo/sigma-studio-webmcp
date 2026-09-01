@@ -15,6 +15,11 @@ export interface OverlayShapesPasteRequestDetail {
   payload: Extract<EditorClipboardPayload, { kind: "overlayShapes" }>;
   /** コピー元ブロック id → 貼り付けで生まれたブロック id。 */
   anchorBlockIdMap: Record<string, string>;
+  /**
+   * 本文側が鋳造した undo のコアレスキー。図形側はこれを使って保存し、⌘Z 1 回で
+   * 本文と図形が同時に戻る (`clipboard-history-group.ts`)。
+   */
+  historyGroup: string;
   /** 貼り付けたエディタの DOM。シェルが「文書本文のエディタか」を判定する。 */
   source: HTMLElement;
 }

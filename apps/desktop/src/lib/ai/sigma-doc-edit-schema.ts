@@ -187,6 +187,12 @@ const SigmaDocUpdateOverlayShapeOpSchema = z.object({
   summary: z.string().min(1),
   shapeId: z.string().min(1),
   patch: z.record(z.string(), z.unknown()),
+  // Some shapes carry a derived picture in the overlay's asset store (a 3D figure's headless
+  // preview PNG). Changing such a shape's spec without being able to replace that picture in the
+  // same operation would leave the document showing the old figure, so an update writes its
+  // replacement assets here. The same `AiOverlayAssetsSchema` the insert path uses gates the
+  // source, so an update cannot smuggle in a form insertion is not allowed to write either.
+  assets: AiOverlayAssetsSchema.optional(),
 });
 
 const SigmaDocAlignOverlayShapesOpSchema = z.object({
@@ -581,9 +587,16 @@ export const AiEditSessionDraftSchema = z.object({
     });
   }
 
-  const assets = draft.operations.flatMap((operation) => (
-    operation.operation === "insertOverlayShape" ? Object.values(operation.assets ?? {}) : []
-  ));
+  const assets = [
+    ...draft.operations.flatMap((operation) => (
+      operation.operation === "insertOverlayShape" ? Object.values(operation.assets ?? {}) : []
+    )),
+    // Replacement assets on an update cost the proposal exactly what an insertion's do, so they
+    // are weighed on the same scale — otherwise a run of updates could carry unbounded bytes.
+    ...(draft.mutationOperations ?? []).flatMap((operation) => (
+      operation.operation === "updateOverlayShape" ? Object.values(operation.assets ?? {}) : []
+    )),
+  ];
   if (assets.length > MAX_AI_OVERLAY_ASSETS_PER_PROPOSAL) {
     context.addIssue({
       code: z.ZodIssueCode.too_big,
@@ -987,6 +1000,10 @@ function applyUpdateOverlayShape(
   const snapshot = getOverlaySnapshotForRead(document);
   const nextSnapshot: OverlaySnapshot = {
     ...snapshot,
+    // Unlike insertion, a same-id asset here is overwritten rather than rejected: the picture is
+    // derived from the shape being updated, so replacing it is the whole point (and the shared
+    // `asset_..._<shapeId>` id keeps the store from growing an orphan per update).
+    assets: { ...snapshot.assets, ...(op.assets ?? {}) },
     shapes: computeUpdatedOverlayShapes(snapshot.shapes, op),
   };
   if (!isValidOverlaySnapshot(nextSnapshot)) {

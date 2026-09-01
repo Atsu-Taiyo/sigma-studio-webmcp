@@ -40,6 +40,8 @@ export interface TextFlowChangeContext {
    * schedule the `selection` restore even when the caret block id already existed.
    */
   crossEditor?: boolean;
+  /** Large body paste: block ids whose PM editors may be hydrated after the first paint. */
+  deferredPasteBlockIds?: string[];
 }
 
 /** 本文置換をホストへ渡すときの、編集内容ではなく**描き方**の指定。 */

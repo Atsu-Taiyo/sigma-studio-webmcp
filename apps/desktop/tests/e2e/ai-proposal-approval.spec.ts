@@ -102,6 +102,11 @@ async function setup(page: Page, document: SigmaDocument = createDocument()): Pr
 }
 
 async function selectParagraphText(page: Page, blockId: string): Promise<void> {
+  // プレビュー描画やロック表示の再レンダー中は、対象段落が一瞬DOMから消える。掴めるまで待つ。
+  await expect.poll(async () => page.evaluate((targetBlockId) => Array.from(
+    document.querySelectorAll<HTMLElement>(`.text-flow-editor [data-sigma-doc-id="${targetBlockId}"]`),
+  ).filter((element) => element.getClientRects().length > 0 && Boolean(element.textContent?.trim())).length, blockId))
+    .toBeGreaterThan(0);
   await page.evaluate((targetBlockId) => {
     const target = Array.from(document.querySelectorAll<HTMLElement>(
       `.text-flow-editor [data-sigma-doc-id="${targetBlockId}"]`,
@@ -349,6 +354,38 @@ test("auto-applied proposal is one undo step and preserves earlier document hist
   // 2手目で自動承認より前の通常編集も引き続き戻せる。
   await page.keyboard.press("ControlOrMeta+Z");
   await expect(paragraphB).toContainText(originalB.slice(0, 12));
+});
+
+test("適用はいま開いている教材だけを編集する: 打鍵した入力も残り、退避用の教材を作らない", async ({ page }) => {
+  await setup(page);
+
+  const paragraphA = page.locator('.text-flow-editor [data-sigma-doc-id="para_a"]').first();
+  const paragraphB = page.locator('.text-flow-editor [data-sigma-doc-id="para_b"]').first();
+
+  // 未保存の入力を持ったまま承認する状況を作る。
+  await selectParagraphText(page, "para_b");
+  await page.keyboard.type("承認前に打鍵した本文");
+  await expect(paragraphB).toContainText("承認前に打鍵した本文");
+
+  await startInlineRun(page, "para_a", "PROPOSAL この段落を書き換えて");
+  await closeInlineSurface(page);
+
+  const previewDialogs = page.locator(".ai-inline-preview-dialog");
+  await expect(previewDialogs).toHaveCount(1, { timeout: 20_000 });
+  await previewDialogs.first().locator('.ai-inline-preview-action.apply[aria-label="適用"]').click();
+  await expect(previewDialogs).toHaveCount(0);
+
+  // AIの変更と自分の入力が同じ教材に共存する。
+  await expect(paragraphA).toContainText("E2E提案で書き換えた本文");
+  await expect(paragraphB).toContainText("承認前に打鍵した本文");
+
+  // 「〇〇（アプリ内編集の退避）」のような教材ファイルを増やさない。
+  await expect
+    .poll(async () => page.evaluate(() => (
+      window as unknown as { __sigmaCreatedFileCount: number }
+    ).__sigmaCreatedFileCount))
+    .toBe(0);
+  await expect(page.locator(".document-tab")).toHaveCount(1);
 });
 
 test("applied chat result shows the real diff and reverts the apply in one click", async ({ page }) => {

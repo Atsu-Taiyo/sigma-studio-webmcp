@@ -8,6 +8,8 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { pasteAsSingleBlockInlineContent } from "@/components/editor/text-flow/inline-block-paste";
 import { InlineMathExtension, requestInlineMathEdit } from "@/components/tiptap/inline-math-extension";
+import { LOCAL_EDIT_HISTORY_ATTRIBUTE } from "@/components/editor/editor-shell/command-shortcut-targets";
+import { NativeHistoryGuardExtension } from "@/components/tiptap/native-history-guard";
 import { IconButton } from "@/components/ui/Button";
 import type { InlineNode, MathFractionSizing } from "@/features/document";
 import { useMathRenderEnvironment } from "@/features/rendering/adapters/react";
@@ -61,6 +63,15 @@ export function BoxTitleEditor({
       }),
       Placeholder.configure({ placeholder }),
       InlineMathExtension.configure({ mathEnvironment }),
+      // 振り分けの規則: **その面の内容が SigmaDoc に入るなら SigmaDoc へ戻す /
+      // 入らない (ローカルな下書き state) なら、その面自身の履歴へ戻す。**
+      // 箱タイトルは後者 — ダイアログを閉じるまで React state なので、戻す先は
+      // 裏の教材ではなくこの欄自身。だから StarterKit の undoRedo も落とさない。
+      NativeHistoryGuardExtension.configure({
+        onHistoryCommand: (direction, activeEditor) => (direction === "undo"
+          ? activeEditor.commands.undo()
+          : activeEditor.commands.redo()),
+      }),
     ],
     content: initialContent,
     immediatelyRender: false,
@@ -69,6 +80,9 @@ export function BoxTitleEditor({
       attributes: {
         class: styles.field,
         "aria-label": t("box.titleSection"),
+        // ⌘Z をこの欄自身の履歴へ届けるための目印
+        // (`editor-shell/command-shortcut-targets.ts`)。無いとダイアログ背後の文書が巻き戻る。
+        [LOCAL_EDIT_HISTORY_ATTRIBUTE]: "true",
       },
       // タイトルは 1 ブロックぶんの inline しか持てない。改行や複数段落を作らせると
       // 画面には出るのに保存で 2 行目以降が消えるので、入り口で畳んでおく。
@@ -93,7 +107,15 @@ export function BoxTitleEditor({
     }
 
     previousSerializedRef.current = serializedValue;
-    editor.commands.setContent(inlineNodesToTiptapDoc(valueRef.current), { emitUpdate: false });
+    // **外から入れた内容は自分の履歴に載せない** (`addToHistory: false`)。
+    // 載せると、投稿・確定でこの欄がクリアされたあとの undo で消えたはずの本文が復活し、
+    // `onUpdate` がそれを呼び出し元へ書き戻す。`setContent` の options には無いので
+    // 同じトランザクションに meta を置く。
+    editor
+      .chain()
+      .setMeta("addToHistory", false)
+      .setContent(inlineNodesToTiptapDoc(valueRef.current), { emitUpdate: false })
+      .run();
   }, [editor, serializedValue]);
 
   const insertMath = () => {

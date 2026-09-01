@@ -101,9 +101,289 @@ export type CaretSurfaceFacets = Omit<CaretSurfaceHandle, "editor">;
 
 const surfaces = new Map<Editor, CaretSurfaceHandle>();
 const unregisterListeners = new Set<(handle: CaretSurfaceHandle) => void>();
+const caretKeeperTargetListeners = new Set<(blockId: string) => void>();
+
+let focusTraceInstalled = false;
+let lastFocusedSurfaceEditor: Editor | null = null;
+
+const CARET_KEEPER_MAX_REDELIVERIES = 3;
+
+interface CaretKeeperState {
+  checkFrameId: number | null;
+  closeFrameIds: number[];
+  generation: number;
+  reanchorFrameId: number | null;
+  redeliveries: number;
+  redelivering: boolean;
+  targetEditor: Editor | null;
+}
+
+let caretKeeper: CaretKeeperState | null = null;
+let nextCaretKeeperGeneration = 1;
+
+function surfaceForFocusTarget(target: EventTarget | null): CaretSurfaceHandle | null {
+  if (!(target instanceof Node)) {
+    return null;
+  }
+  return getCaretSurfaces().find((handle) => handle.editor.view.dom.contains(target)) ?? null;
+}
+
+function installFocusTrace(): void {
+  if (focusTraceInstalled || typeof window === "undefined") {
+    return;
+  }
+  focusTraceInstalled = true;
+  window.addEventListener("focusout", (event) => {
+    handleCaretKeeperFocusOut(event);
+  });
+  window.addEventListener("focusin", (event) => {
+    const focusedSurface = surfaceForFocusTarget(event.target);
+    // surface の DOM が消えたときは focusin 無しで BODY へ落ちる。その間だけ直前の
+    // surface を覚えておき、明示的に別の要素へ focus したときは stale な候補を消す。
+    lastFocusedSurfaceEditor = focusedSurface?.editor ?? null;
+    if (caretKeeper && !focusedSurface && isIntentionalFocusTarget(event.target)) {
+      closeCaretKeeperWindow();
+    }
+  });
+  window.addEventListener("focus", () => {
+    if (caretKeeper) {
+      scheduleCaretKeeperCheck(caretKeeper);
+    }
+  });
+  window.addEventListener("pointerdown", cancelCaretKeeperForUserNavigation, true);
+  window.addEventListener("touchstart", cancelCaretKeeperForUserNavigation, true);
+  window.addEventListener("wheel", cancelCaretKeeperForUserNavigation, { capture: true, passive: true });
+  window.addEventListener("keydown", (event) => {
+    if (CARET_KEEPER_NAVIGATION_KEYS.has(event.key)) {
+      cancelCaretKeeperForUserNavigation();
+    }
+  }, true);
+}
+
+const CARET_KEEPER_NAVIGATION_KEYS = new Set([
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "End",
+  "Home",
+  "PageDown",
+  "PageUp",
+  " ",
+]);
+
+function cancelCaretKeeperForUserNavigation(): void {
+  if (caretKeeper) {
+    closeCaretKeeperWindow();
+  }
+}
+
+/**
+ * 大量 paste 後の段階的 hydrate 中だけ、配送済みキャレットの DOM focus を守る。
+ * 通常編集では state 自体が存在しないため、恒久的な focus trace listener は挙動へ介入しない。
+ */
+export function startCaretKeeperWindow(): void {
+  closeCaretKeeperWindow();
+  caretKeeper = {
+    checkFrameId: null,
+    closeFrameIds: [],
+    generation: nextCaretKeeperGeneration,
+    reanchorFrameId: null,
+    redeliveries: 0,
+    redelivering: false,
+    targetEditor: null,
+  };
+  nextCaretKeeperGeneration += 1;
+}
+
+/** hydrate 完了後も React/EditorContent の付け替えを 2 frame 見届けてから監視を閉じる。 */
+export function finishCaretKeeperWindow(): void {
+  const keeper = caretKeeper;
+  if (!keeper || typeof window === "undefined") {
+    return;
+  }
+  cancelKeeperCloseFrames(keeper);
+  const firstFrame = window.requestAnimationFrame(() => {
+    if (caretKeeper !== keeper) {
+      return;
+    }
+    const secondFrame = window.requestAnimationFrame(() => {
+      if (caretKeeper === keeper) {
+        closeCaretKeeperWindow();
+      }
+    });
+    keeper.closeFrameIds.push(secondFrame);
+  });
+  keeper.closeFrameIds.push(firstFrame);
+}
+
+/** PageCanvasEditor の unmount 用。終了 frame を待たず、監視と予約済み check を必ず外す。 */
+export function cancelCaretKeeperWindow(): void {
+  closeCaretKeeperWindow();
+}
+
+/**
+ * hydrate / pagination の DOM commit 後に、配送済みのキャレットを再び可視域へ入れる。
+ * 同じ frame の複数の実測は 1 回に畳み、手動ナビゲーションで keeper が閉じた後は何もしない。
+ */
+export function requestCaretKeeperReanchor(): void {
+  const keeper = caretKeeper;
+  if (!keeper?.targetEditor || keeper.reanchorFrameId !== null || typeof window === "undefined") {
+    return;
+  }
+  keeper.reanchorFrameId = window.requestAnimationFrame(() => {
+    keeper.reanchorFrameId = null;
+    if (caretKeeper !== keeper || !document.hasFocus()) {
+      return;
+    }
+    const handle = keeper.targetEditor ? surfaces.get(keeper.targetEditor) : null;
+    if (!handle || handle.editor.isDestroyed) {
+      return;
+    }
+    handle.ensureCaretVisible();
+  });
+}
+
+/**
+ * keeper が守る論理キャレットの block を通知する。未 mount の配送先も通知するので、
+ * PageCanvasEditor はその unit を背景 hydrate の順番待ちから外せる。
+ */
+export function subscribeCaretKeeperTarget(listener: (blockId: string) => void): () => void {
+  caretKeeperTargetListeners.add(listener);
+  return () => {
+    caretKeeperTargetListeners.delete(listener);
+  };
+}
+
+function publishCaretKeeperTarget(blockId: string): void {
+  if (!caretKeeper) {
+    return;
+  }
+  caretKeeperTargetListeners.forEach((listener) => listener(blockId));
+}
+
+function handleCaretKeeperFocusOut(event: FocusEvent): void {
+  const keeper = caretKeeper;
+  if (!keeper?.targetEditor || event.target !== keeper.targetEditor.view.dom) {
+    return;
+  }
+  const nextSurface = surfaceForFocusTarget(event.relatedTarget);
+  if (nextSurface) {
+    return;
+  }
+  if (isIntentionalFocusTarget(event.relatedTarget)) {
+    closeCaretKeeperWindow();
+    return;
+  }
+  scheduleCaretKeeperCheck(keeper);
+}
+
+function scheduleCaretKeeperCheck(keeper: CaretKeeperState): void {
+  if (caretKeeper !== keeper || keeper.checkFrameId !== null || typeof window === "undefined") {
+    return;
+  }
+  keeper.checkFrameId = window.requestAnimationFrame(() => {
+    keeper.checkFrameId = null;
+    if (caretKeeper !== keeper) {
+      return;
+    }
+    // OS / browser window 自体が非アクティブなら DOM focus の喪失ではない。復帰時の
+    // window focus で改めて検査し、再配送上限も消費しない。
+    if (!document.hasFocus()) {
+      return;
+    }
+    const activeElement = document.activeElement;
+    if (!isDocumentFocusEmpty(activeElement)) {
+      if (!keeper.targetEditor?.view.dom.contains(activeElement)) {
+        closeCaretKeeperWindow();
+      }
+      return;
+    }
+    if (keeper.redeliveries >= CARET_KEEPER_MAX_REDELIVERIES) {
+      closeCaretKeeperWindow();
+      return;
+    }
+    const handle = keeper.targetEditor ? surfaces.get(keeper.targetEditor) : null;
+    if (!handle || handle.editor.isDestroyed) {
+      closeCaretKeeperWindow();
+      return;
+    }
+    let anchorAddress: CaretAddress | null = null;
+    let headAddress: CaretAddress | null = null;
+    try {
+      const { anchor, head } = handle.editor.state.selection;
+      anchorAddress = handle.addressAt(anchor);
+      headAddress = handle.addressAt(head);
+    } catch {
+      // 次の frame では EditorContent の付け替えが終わっている可能性がある。
+    }
+    keeper.redeliveries += 1;
+    if (!anchorAddress || !headAddress) {
+      scheduleCaretKeeperCheck(keeper);
+      return;
+    }
+    keeper.redelivering = true;
+    requestCaretFromKeeper(
+      { anchor: anchorAddress, head: headAddress, preferredX: null },
+      keeper.generation,
+    );
+    const redelivered = flushPendingCaret();
+    if (!redelivered) {
+      keeper.redelivering = false;
+      scheduleCaretKeeperCheck(keeper);
+    }
+  });
+}
+
+function isDocumentFocusEmpty(element: Element | null): boolean {
+  return element === null || element === document.body || element === document.documentElement;
+}
+
+function isIntentionalFocusTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && !isDocumentFocusEmpty(target);
+}
+
+function armCaretKeeper(handle: CaretSurfaceHandle): void {
+  const keeper = caretKeeper;
+  if (!keeper) {
+    return;
+  }
+  keeper.targetEditor = handle.editor;
+}
+
+function cancelKeeperCloseFrames(keeper: CaretKeeperState): void {
+  if (typeof window !== "undefined") {
+    keeper.closeFrameIds.forEach((frameId) => window.cancelAnimationFrame(frameId));
+  }
+  keeper.closeFrameIds = [];
+}
+
+function closeCaretKeeperWindow(): void {
+  const keeper = caretKeeper;
+  if (!keeper) {
+    return;
+  }
+  if (typeof window !== "undefined" && keeper.checkFrameId !== null) {
+    window.cancelAnimationFrame(keeper.checkFrameId);
+  }
+  if (typeof window !== "undefined" && keeper.reanchorFrameId !== null) {
+    window.cancelAnimationFrame(keeper.reanchorFrameId);
+  }
+  cancelKeeperCloseFrames(keeper);
+  // keeper の寿命を越えて遅延 mount が起きても focus を奪い返さない。同じ slot にある
+  // undo 等の通常予約 (generation が null) や、後続 keeper の予約は消さない。
+  if (pendingCaret?.caretKeeperGeneration === keeper.generation) {
+    pendingCaret = null;
+  }
+  caretKeeper = null;
+}
 
 export function registerCaretSurface(handle: CaretSurfaceHandle): () => void {
+  installFocusTrace();
   surfaces.set(handle.editor, handle);
+  if (handle.editor.isFocused) {
+    lastFocusedSurfaceEditor = handle.editor;
+  }
   // 待っていた宛先が現れたかもしれない。タイマーではなくここで消化する。
   if (pendingCaret) {
     flushPendingCaret();
@@ -112,6 +392,10 @@ export function registerCaretSurface(handle: CaretSurfaceHandle): () => void {
     const current = surfaces.get(handle.editor);
     if (!current) {
       return;
+    }
+    rememberFocusedCaretBeforeUnregister(current);
+    if (lastFocusedSurfaceEditor === current.editor) {
+      lastFocusedSurfaceEditor = null;
     }
     surfaces.delete(handle.editor);
     // 実際に面が消えたときだけ通知する。ファセットの書き換えでは通知しないので、
@@ -203,6 +487,8 @@ let fragmentSources: Readonly<Record<string, CaretFragmentSourceLayout>> = {};
 let fragmentReplicas: Readonly<Record<string, readonly CaretFragmentPlacement[]>> = {};
 
 interface PendingCaret {
+  /** keeper が再配送のために作った予約だけを外部 focus 時に識別して破棄する。 */
+  caretKeeperGeneration: number | null;
   selection: TextFlowSelectionBookmark;
   /** マウント要求を出した宛先。同じ宛先へ何度も要求を投げないための鍵。 */
   requestedKey: string | null;
@@ -283,17 +569,34 @@ function rerouteFocusedCaret(): void {
 
 /** 描き直しの後に配る予約。まだ配らない。 */
 export function requestCaret(selection: TextFlowSelectionBookmark): void {
-  pendingCaret = { requestedContainerId: null, requestedKey: null, selection };
+  pendingCaret = {
+    caretKeeperGeneration: null,
+    requestedContainerId: null,
+    requestedKey: null,
+    selection,
+  };
+}
+
+function requestCaretFromKeeper(
+  selection: TextFlowSelectionBookmark,
+  caretKeeperGeneration: number,
+): void {
+  pendingCaret = {
+    caretKeeperGeneration,
+    requestedContainerId: null,
+    requestedKey: null,
+    selection,
+  };
 }
 
 /** 予約を消化する。描き直しが終わった後に 1 回だけ呼ぶ。 */
-export function flushPendingCaret(): void {
+export function flushPendingCaret(): boolean {
   const pending = pendingCaret;
   if (!pending) {
-    return;
+    return false;
   }
   pendingCaret = null;
-  deliverCaret(pending.selection);
+  return deliverCaretWithGeneration(pending.selection, pending.caretKeeperGeneration);
 }
 
 /**
@@ -304,16 +607,28 @@ export function flushPendingCaret(): void {
  * ここで宛先を 1 つに決め、他の面には dispatch しない。
  */
 export function deliverCaret(selection: TextFlowSelectionBookmark): boolean {
+  return deliverCaretWithGeneration(selection, null);
+}
+
+function deliverCaretWithGeneration(
+  selection: TextFlowSelectionBookmark,
+  caretKeeperGeneration: number | null,
+): boolean {
   const blockId = selection.head.blockId;
   const owners = getCaretSurfaces().filter((handle) => handle.ownsBlock(blockId));
   if (owners.length === 0) {
-    rememberPending(selection, { containerBlockId: null, handle: null, key: null, surface: null });
+    publishCaretKeeperTarget(blockId);
+    rememberPending(
+      selection,
+      { containerBlockId: null, handle: null, key: null, surface: null },
+      caretKeeperGeneration,
+    );
     return false;
   }
 
   const target = resolveTargetSurface(owners, selection);
   if (!target.handle) {
-    rememberPending(selection, target);
+    rememberPending(selection, target, caretKeeperGeneration);
     if (target.surface) {
       const requested = target.surface;
       mountListeners.forEach((listener) => listener(requested));
@@ -321,7 +636,7 @@ export function deliverCaret(selection: TextFlowSelectionBookmark): boolean {
     return false;
   }
 
-  return applyToSurface(target.handle, selection, target);
+  return applyToSurface(target.handle, selection, target, caretKeeperGeneration);
 }
 
 /**
@@ -344,11 +659,60 @@ export function subscribeCaretSurfaceMount(
   };
 }
 
-function rememberPending(selection: TextFlowSelectionBookmark, target: CaretTarget): void {
+function rememberPending(
+  selection: TextFlowSelectionBookmark,
+  target: CaretTarget,
+  caretKeeperGeneration: number | null = null,
+): void {
   pendingCaret = {
+    caretKeeperGeneration,
     requestedContainerId: target.containerBlockId,
     requestedKey: target.key,
     selection,
+  };
+}
+
+/**
+ * 再チャンクで focused な面が消えると DOM focus は BODY へ落ちる。その面がまだ持っている
+ * **現在の**選択を bookmark に戻しておき、後継面の登録時に通常の配送経路で復元する。
+ * paste 時に予約した古い位置を使わないので、配送後に打鍵済みでも巻き戻らない。
+ */
+function rememberFocusedCaretBeforeUnregister(handle: CaretSurfaceHandle): {
+  rearmed: boolean;
+  reason: string;
+} {
+  // undo や跨ぎ置換が予約した変更後の正しい位置を、消える旧 surface の選択で潰さない。
+  if (pendingCaret) {
+    return { rearmed: false, reason: "pending-caret-already-exists" };
+  }
+  const wasLastFocusedSurface = lastFocusedSurfaceEditor === handle.editor;
+  if (!handle.editor.isFocused && !wasLastFocusedSurface) {
+    return {
+      rearmed: false,
+      reason: "editor-not-focused",
+    };
+  }
+  let anchorAddress: CaretAddress | null = null;
+  let headAddress: CaretAddress | null = null;
+  try {
+    const { anchor, head } = handle.editor.state.selection;
+    anchorAddress = handle.addressAt(anchor);
+    headAddress = handle.addressAt(head);
+  } catch {
+    return { rearmed: false, reason: "selection-read-failed" };
+  }
+  if (!anchorAddress || !headAddress) {
+    return { rearmed: false, reason: "selection-address-unresolved" };
+  }
+  rememberPending(
+    { anchor: anchorAddress, head: headAddress, preferredX: null },
+    { containerBlockId: null, handle: null, key: null, surface: null },
+  );
+  return {
+    rearmed: true,
+    reason: handle.editor.isFocused
+      ? "focused-selection-captured"
+      : "last-focused-selection-captured",
   };
 }
 
@@ -477,6 +841,7 @@ function applyToSurface(
   handle: CaretSurfaceHandle,
   selection: TextFlowSelectionBookmark,
   target: CaretTarget,
+  caretKeeperGeneration: number | null = null,
 ): boolean {
   if (handle.editor.isDestroyed) {
     return false;
@@ -484,7 +849,7 @@ function applyToSurface(
   if (handle.editor.view.composing) {
     // 予約として持ち直す。合成が終わってから **その時点の表で** 配り直すので、合成中に
     // 確定した文字より前へキャレットが戻らない。待ち受けは面ごとに 1 つだけにする。
-    rememberPending(selection, target);
+    rememberPending(selection, target, caretKeeperGeneration);
     if (!composingRetries.has(handle.editor)) {
       composingRetries.add(handle.editor);
       handle.editor.view.dom.addEventListener("compositionend", () => {
@@ -494,11 +859,22 @@ function applyToSurface(
     }
     return false;
   }
-  if (handle.applyCaret(selection)) {
+  const applied = handle.applyCaret(selection);
+  if (applied) {
+    const keeper = caretKeeper;
+    armCaretKeeper(handle);
+    publishCaretKeeperTarget(selection.head.blockId);
+    if (keeper?.redelivering) {
+      keeper.redelivering = false;
+      handle.ensureCaretVisible();
+      // EditorContent の DOM がまだ detached なら applyCaret 自体は成功しても focus は BODY の
+      // ままになりうる。次 frame に実フォーカスを検査し、上限内でもう一度だけ配送経路へ戻す。
+      scheduleCaretKeeperCheck(keeper);
+    }
     return true;
   }
   // この面の doc では解決できなかった (再描画の途中など)。捨てずに持ち直す。
-  rememberPending(selection, target);
+  rememberPending(selection, target, caretKeeperGeneration);
   return false;
 }
 

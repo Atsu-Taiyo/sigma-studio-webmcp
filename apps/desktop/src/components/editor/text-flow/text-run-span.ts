@@ -60,10 +60,17 @@ import {
   subscribeCaretSurfaceUnregister,
 } from "./caret-router";
 import type { TextFlowChangeContext } from "./types";
+import {
+  createDragAutoScroller,
+  findDragAutoScrollScroller,
+  getDragAutoScrollViewportBounds,
+  panDragAutoScrollElement,
+} from "../drag-auto-scroll";
 
 const DRAG_SELECTION_THRESHOLD_PX = 2;
-const AUTO_SCROLL_EDGE_PX = 32;
-const AUTO_SCROLL_MAX_STEP_PX = 32;
+// 本文選択は文字を狙う操作なので、図形運搬の 1100px/s とは分ける。従来の最大
+// 8px/frame を 60Hz 換算した 480px/s に留め、選択範囲が飛びすぎないようにする。
+const TEXT_SELECTION_AUTO_SCROLL_MAX_SPEED_PX_PER_SEC = 480;
 
 export interface TextRunEditorHandle {
   /**
@@ -83,7 +90,12 @@ export interface TextRunEditorHandle {
    * 受動同期は「ブロック id 列が同じなら何もしない」ため、印が無いと id 列不変のまま
    * 内容だけ変わったユニットに旧内容が残る。
    */
-  markCrossEditorSync: (selection: TextFlowSelectionBookmark | null) => void;
+  /**
+   * 跨ぎ置換の印。`historyGroup` は混在ペースト / 混在カットのコアレスキーで、
+   * 再チャンクが起こす後続の `onUpdate` にも同じキーを刻ませるために配る
+   * (配らないと本文書き込みと図形保存の間に別エントリが挟まる)。
+   */
+  markCrossEditorSync: (selection: TextFlowSelectionBookmark | null, historyGroup?: string) => void;
   onChange: (
     previousIds: string[],
     nextBlocks: TextFlowBlock[],
@@ -587,41 +599,25 @@ export function startTextRunPointerSelection(
   // preventDefault でネイティブ選択を全面代替しているため、ビューポート端へのドラッグで
   // 画面が流れるネイティブの自動スクロールも自前で行う。mousemove はポインタが止まると
   // 来ないので、端の帯にいる間は rAF で回し続ける。
-  const scrollContainer = findAutoScrollContainer(editor.view.dom);
-  const lastClient = { x: event.clientX, y: event.clientY };
-  let autoScrollFrame: number | null = null;
-
-  const stepAutoScroll = () => {
-    autoScrollFrame = null;
-    if (!scrollContainer) {
-      return;
-    }
-    const bounds = getAutoScrollViewportBounds(scrollContainer, ownerWindow);
-    const step = resolveTextRunAutoScrollStep(lastClient.y, bounds.top, bounds.bottom);
-    if (step === 0) {
-      return;
-    }
-    const previousScrollTop = scrollContainer.scrollTop;
-    scrollContainer.scrollTop += step;
-    if (scrollContainer.scrollTop === previousScrollTop) {
-      // スクロール端に到達。ポインタが動けば mousemove が再スケジュールする。
-      return;
-    }
-    updateSelection(lastClient.x, lastClient.y);
-    autoScrollFrame = ownerWindow.requestAnimationFrame(stepAutoScroll);
-  };
+  const scrollContainer = findDragAutoScrollScroller(editor.view.dom);
+  const autoScroller = scrollContainer
+    ? createDragAutoScroller({
+        ownerWindow,
+        getViewportBounds: () => getDragAutoScrollViewportBounds(scrollContainer, ownerWindow),
+        panBy: (_dx, dy) => panDragAutoScrollElement(scrollContainer, 0, dy),
+        onPan: updateSelection,
+        maxSpeedPxPerSec: TEXT_SELECTION_AUTO_SCROLL_MAX_SPEED_PX_PER_SEC,
+        horizontal: false,
+      })
+    : null;
 
   const handleMouseMove = (moveEvent: MouseEvent) => {
     if (!hasDragged(startPoint, moveEvent.clientX, moveEvent.clientY)) {
       return;
     }
     moveEvent.preventDefault();
-    lastClient.x = moveEvent.clientX;
-    lastClient.y = moveEvent.clientY;
     updateSelection(moveEvent.clientX, moveEvent.clientY);
-    if (autoScrollFrame === null) {
-      autoScrollFrame = ownerWindow.requestAnimationFrame(stepAutoScroll);
-    }
+    autoScroller?.update(moveEvent.clientX, moveEvent.clientY);
   };
 
   const handleMouseUp = (upEvent: MouseEvent) => {
@@ -632,68 +628,13 @@ export function startTextRunPointerSelection(
       // アンカー位置の collapsed 選択になる)。
       syncFocusedEditorDomSelectionToSpan();
     }
-    if (autoScrollFrame !== null) {
-      ownerWindow.cancelAnimationFrame(autoScrollFrame);
-      autoScrollFrame = null;
-    }
+    autoScroller?.stop();
     ownerWindow.removeEventListener("mousemove", handleMouseMove);
   };
 
   ownerWindow.addEventListener("mousemove", handleMouseMove);
   ownerWindow.addEventListener("mouseup", handleMouseUp, { once: true });
   return true;
-}
-
-/**
- * ドラッグ選択中の自動スクロール量 (px/フレーム)。ポインタがビューポート端の帯
- * (`AUTO_SCROLL_EDGE_PX`) に入ったら、端への食い込みに比例した速さでスクロールする。
- */
-export function resolveTextRunAutoScrollStep(
-  clientY: number,
-  viewportTop: number,
-  viewportBottom: number,
-  edge = AUTO_SCROLL_EDGE_PX,
-  maxStep = AUTO_SCROLL_MAX_STEP_PX,
-): number {
-  if (viewportBottom - viewportTop <= edge * 2) {
-    return 0;
-  }
-  if (clientY < viewportTop + edge) {
-    return -Math.min(maxStep, Math.ceil((viewportTop + edge - clientY) / 4));
-  }
-  if (clientY > viewportBottom - edge) {
-    return Math.min(maxStep, Math.ceil((clientY - (viewportBottom - edge)) / 4));
-  }
-  return 0;
-}
-
-function findAutoScrollContainer(start: HTMLElement): Element | null {
-  const ownerDocument = start.ownerDocument;
-  const ownerWindow = ownerDocument.defaultView;
-  for (let element = start.parentElement; element; element = element.parentElement) {
-    if (element.scrollHeight <= element.clientHeight + 1) {
-      continue;
-    }
-    const overflowY = ownerWindow?.getComputedStyle(element).overflowY;
-    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
-      return element;
-    }
-  }
-  return ownerDocument.scrollingElement;
-}
-
-function getAutoScrollViewportBounds(
-  container: Element,
-  ownerWindow: Window,
-): { bottom: number; top: number } {
-  if (container === container.ownerDocument.scrollingElement) {
-    return { top: 0, bottom: ownerWindow.innerHeight };
-  }
-  const rect = container.getBoundingClientRect();
-  return {
-    top: Math.max(rect.top, 0),
-    bottom: Math.min(rect.bottom, ownerWindow.innerHeight),
-  };
 }
 
 export function selectEntireTextRun(editor: Editor): boolean {
@@ -849,7 +790,13 @@ function serializeSliceToHtml(editor: Editor, slice: Slice): string {
 
 export function replaceActiveTextRunSpan(
   insertion: TextFlowBlock[],
-  options?: Pick<TextRunReplacementOptions, "splitAtBoundary">,
+  options?: Pick<TextRunReplacementOptions, "splitAtBoundary"> & {
+    /**
+     * 呼び出し側が鋳造した undo のコアレスキー。混在ペースト / 混在カットは図形側の保存と
+     * 同じキーを共有して 1 エントリに畳む (`clipboard-history-group.ts`)。
+     */
+    historyGroup?: string;
+  },
 ): TextRunReplacementMutation[] | null {
   const span = activeSpan;
   if (!span || !isMultiEditorTextRunSpan()) {
@@ -875,14 +822,14 @@ export function replaceActiveTextRunSpan(
   }
 
   clearTextRunSpan();
-  const historyGroup = createId("text_run_span_history");
+  const historyGroup = options?.historyGroup ?? createId("text_run_span_history");
   // 書き込みは scope ごとに先頭ユニットの onChange 1 本へ束ねられるが、内容が変わり得る
   // のは span に関与した全エディタ (再チャンクで span 外のユニットも動く)。writer だけに
   // 印を付けると、id 列が不変のまま内容だけ変わった焦点ユニットが受動同期をすり抜け、
   // 次の打鍵で削除済みテキストが復活する。グループ全体へ印を付ける。
   const mutationsByUnitId = new Map(mutations.map((mutation) => [mutation.unitId, mutation]));
   for (const handle of runEditors) {
-    handle.markCrossEditorSync(mutationsByUnitId.get(handle.unitId)?.selection ?? null);
+    handle.markCrossEditorSync(mutationsByUnitId.get(handle.unitId)?.selection ?? null, options?.historyGroup);
   }
   for (const mutation of mutations) {
     const writer = runEditors.find((candidate) => candidate.unitId === mutation.unitId);
@@ -2055,4 +2002,3 @@ function clamp(value: number, min: number, max: number): number {
   }
   return Math.min(Math.max(value, min), max);
 }
-

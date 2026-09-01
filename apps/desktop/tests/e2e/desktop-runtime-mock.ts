@@ -91,6 +91,18 @@ export interface DesktopRuntimeMockOptions {
   uiLayout?: { mode?: "docs" | "word"; onboardingCompleted?: boolean };
   documentLoadFailure?: DesktopRuntimeMockDocumentLoadFailure;
   ledgerSchemaFailure?: LedgerSchemaFailure;
+  /**
+   * 自分の保存でも fs watcher の通知を返す。
+   *
+   * **実機はこれが常に起きる** — main の store はファイルを書けば watcher が発火し、
+   * 保存した本人にも `storage:changed` が返る。レンダラがそれを「外部変更」と誤読すると
+   * `documentHistory.clear()` まで走る (WI-4 の症状)。
+   *
+   * 既定 off なのは、この通知が既存 spec の想定していない再入を増やすため。**この経路を
+   * 測る spec だけが on にする** (= 既定の mock はこのクラスの不具合を再現しない、という
+   * 限界がここにある)。
+   */
+  emitWatcherEventOnSave?: boolean;
 }
 
 export async function installDesktopRuntimeMock(
@@ -98,7 +110,7 @@ export async function installDesktopRuntimeMock(
   document: SigmaDocument,
   options: DesktopRuntimeMockOptions = {},
 ): Promise<void> {
-  await page.addInitScript(({ initialDocument, initialMaterials, initialTemplates, aiEnabled, omitBatchApproveFileMetadata, storageLoadDelayMs, runtimePlatform, preserveAiModelPreferences, preserveStorageKeys, initialUiLayout, initialDocumentLoadFailure, initialLedgerSchemaFailure }: {
+  await page.addInitScript(({ initialDocument, initialMaterials, initialTemplates, aiEnabled, omitBatchApproveFileMetadata, storageLoadDelayMs, runtimePlatform, preserveAiModelPreferences, preserveStorageKeys, initialUiLayout, initialDocumentLoadFailure, initialLedgerSchemaFailure, emitWatcherEventOnSave }: {
     initialDocument: SigmaDocument;
     initialMaterials: MaterialItem[];
     initialTemplates: TemplateItem[];
@@ -111,6 +123,7 @@ export async function installDesktopRuntimeMock(
     initialUiLayout: { mode: "docs" | "word"; onboardingCompleted: boolean };
     initialDocumentLoadFailure: DesktopRuntimeMockDocumentLoadFailure | null;
     initialLedgerSchemaFailure: LedgerSchemaFailure | null;
+    emitWatcherEventOnSave: boolean;
   }) => {
     const fileId = "file_e2e_document";
     const workspaceId = "workspace_e2e";
@@ -383,6 +396,9 @@ export async function installDesktopRuntimeMock(
     let runCounter = 0;
     const runPayloads: unknown[] = [];
     (window as unknown as { __aiEditRunPayloads: unknown[] }).__aiEditRunPayloads = runPayloads;
+    // 教材ファイルが増えたかをspecから見るためのカウンタ (AI承認は増やしてはいけない)。
+    const createdFileCounter = (window as unknown as { __sigmaCreatedFileCount: number });
+    createdFileCounter.__sigmaCreatedFileCount = 0;
     (window as unknown as { __autoApplyFirstPendingProposal?: () => string | null }).__autoApplyFirstPendingProposal = () => {
       const proposal = mcpProposals.find((item) => item.status === "pending");
       if (!proposal) {
@@ -1089,10 +1105,21 @@ export async function installDesktopRuntimeMock(
           currentDocument = structuredClone(nextDocument);
           currentRevision += 1;
           saveSnapshot();
+          if (emitWatcherEventOnSave) {
+            // 実機の fs watcher は「誰が書いたか」を知らないので、自分の保存でも返ってくる。
+            // 書き込みより後に届くのでマイクロタスクへ逃がす。
+            window.queueMicrotask(() => emitStorageChange({
+              type: "document",
+              fileId,
+              change: "changed",
+              timestamp: Date.now(),
+            }));
+          }
           return { ok: true, revision: currentRevision };
         },
         createDocument: async () => ({ file: metadata(), document: cloneDocument() }),
         createFileFromDocument: async ({ document: nextDocument }: { document: SigmaDocument }) => {
+          createdFileCounter.__sigmaCreatedFileCount += 1;
           currentDocument = structuredClone(nextDocument);
           saveSnapshot();
           return { file: metadata(), document: cloneDocument() };
@@ -1153,6 +1180,7 @@ export async function installDesktopRuntimeMock(
           proposal.updatedAt = new Date().toISOString();
           applyProposalDraft(proposal);
           currentRevision += 1;
+          currentDocument = { ...currentDocument, updatedAt: new Date().toISOString() };
           proposal.appliedRevision = currentRevision;
           proposal.appliedDiff = buildAppliedDiff(revertDocument, currentDocument, proposal);
           saveSnapshot();
@@ -1176,6 +1204,9 @@ export async function installDesktopRuntimeMock(
           }
           if (approvedProposals.length > 0) {
             currentRevision += 1;
+            // main側の書き込みヘルパは承認保存のたびに updatedAt を押す。ここを省くと、
+            // 「保存時刻だけが動いた文書」を人手編集と誤認する退行をe2eで captureできない。
+            currentDocument = { ...currentDocument, updatedAt: new Date().toISOString() };
           }
           approvedProposals.forEach((proposal) => {
             proposal.appliedDiff = buildAppliedDiff(revertDocument, currentDocument, proposal);
@@ -1269,5 +1300,6 @@ export async function installDesktopRuntimeMock(
     },
     initialDocumentLoadFailure: options.documentLoadFailure ?? null,
     initialLedgerSchemaFailure: options.ledgerSchemaFailure ?? null,
+    emitWatcherEventOnSave: options.emitWatcherEventOnSave ?? false,
   });
 }

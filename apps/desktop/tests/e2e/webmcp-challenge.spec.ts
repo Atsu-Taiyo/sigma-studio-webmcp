@@ -12,47 +12,52 @@ test("single agent draft reports a stale guard after a human edits the document"
   });
   await page.goto("/");
   await expect(page.locator(".startup-splash")).toBeHidden();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(28);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }).__sigmaWebMcpTools.size)).toBe(18);
 
   await page.evaluate(async () => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
-    const context = JSON.parse(await tools.get("get_edit_context")!.execute({}) as string) as { revision: number };
-    await tools.get("insert_body_content")!.execute({
+    const context = JSON.parse(await tools.get("inspect_document")!.execute({}) as string) as { revision: number };
+    await tools.get("insert_markdown")!.execute({
       expectedRevision: context.revision,
       targetId: "END_OF_DOCUMENT",
-      blocks: [{ type: "paragraph", id: "webmcp_stale_target", text: "基準となる説明です。" }],
+      markdown: "基準となる説明です。",
     });
   });
-  await expect(page.locator(".webmcp-proposal-dock")).toBeVisible();
-  await page.locator(".webmcp-proposal-dock").getByRole("button", { name: "変更を適用" }).click();
-  const humanTarget = page.locator('[data-sigma-doc-type="paragraph"][data-sigma-doc-id="webmcp_stale_target"]');
+  await expect(page.locator(".webmcp-proposal-dock")).toHaveCount(0);
+  const taskDock = page.locator(".ai-task-dock-root");
+  await taskDock.getByRole("button", { name: /AIタスク/ }).hover();
+  await taskDock.getByRole("button", { name: "適用", exact: true }).click();
+  const humanTarget = page.locator("[data-sigma-doc-id]").filter({ hasText: "基準となる説明です。" }).last();
   await expect(humanTarget).toContainText("基準となる説明です。");
+  const targetId = await humanTarget.getAttribute("data-sigma-doc-id");
+  expect(targetId).toBeTruthy();
 
-  const proposalRevision = await page.evaluate(async () => {
+  const proposalRevision = await page.evaluate(async (blockId) => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
-    const context = JSON.parse(await tools.get("get_edit_context")!.execute({ targetId: "webmcp_stale_target" }) as string) as { revision: number };
-    const current = JSON.parse(await tools.get("get_block")!.execute({ blockId: "webmcp_stale_target" }) as string) as { block: { children: Array<{ text?: string }> } };
-    const expectedContent = current.block.children.map((child) => child.text ?? "").join("");
-    await tools.get("update_rich_content")!.execute({ expectedRevision: context.revision, blockId: "webmcp_stale_target", expectedContent, text: "AIが提案した説明です。" });
+    const context = JSON.parse(await tools.get("inspect_document")!.execute({ targetId: blockId }) as string) as { revision: number };
+    await tools.get("edit_text")!.execute({
+      expectedRevision: context.revision,
+      operations: [{ op: "replace_text", target: { type: "block", blockId }, replacement: "AIが提案した説明です。" }],
+    });
     return context.revision;
-  });
-  await expect(page.locator(".webmcp-proposal-dock")).toBeVisible();
-
+  }, targetId);
   await humanTarget.click();
   await humanTarget.press("End");
   await humanTarget.pressSequentially(" 人間の追記");
   await expect(humanTarget).toContainText("人間の追記");
 
-  await page.locator(".webmcp-proposal-dock").getByRole("button", { name: "変更を適用" }).click();
-  await expect(page.locator(".webmcp-proposal-error")).toHaveText("変更を適用できませんでした。エージェントに現在の内容を読み直してもらい、もう一度依頼してください。");
+  await taskDock.getByRole("button", { name: /AIタスク/ }).hover();
+  await expect(taskDock.locator(".ai-task-dock")).toBeVisible();
+  await taskDock.getByRole("button", { name: "適用", exact: true }).click();
+  await expect(taskDock.locator(".ai-task-dock-error")).toHaveText("変更を適用できませんでした。エージェントに現在の内容を読み直してもらい、もう一度依頼してください。");
 
   const nextWriteError = await page.evaluate(async (expectedRevision) => {
     const tools = (window as unknown as { __sigmaWebMcpTools: Map<string, { execute(input: unknown): Promise<unknown> | unknown }> }).__sigmaWebMcpTools;
     try {
-      await tools.get("insert_body_content")!.execute({
+      await tools.get("insert_markdown")!.execute({
         expectedRevision,
         targetId: "END_OF_DOCUMENT",
-        blocks: [{ type: "paragraph", id: "must_not_be_inserted", text: "stale write" }],
+        markdown: "stale write",
       });
       return "";
     } catch (error) {
@@ -61,5 +66,5 @@ test("single agent draft reports a stale guard after a human edits the document"
   }, proposalRevision);
   expect(nextWriteError).toContain("STALE_DRAFT");
   expect(nextWriteError).toContain("read the current context");
-  await expect(page.locator('[data-sigma-doc-id="must_not_be_inserted"]')).toHaveCount(0);
+  await expect(page.locator("[data-sigma-doc-id]").filter({ hasText: "stale write" })).toHaveCount(0);
 });

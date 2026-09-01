@@ -32,9 +32,9 @@ import { LINE_HEIGHT_STEP, MAX_LINE_HEIGHT, MIN_LINE_HEIGHT } from "@/features/d
 import { DocumentTitleText } from "@/features/rendering/adapters/react";
 import type { Translate } from "@/lib/i18n";
 import { SUPPORTED_OVERLAY_IMAGE_MIME_TYPES } from "@/lib/overlay-image-files";
-import { EDITOR_MATH_IMPORT_ACCEPT, EDITOR_MATH_IMPORT_AVAILABLE } from "@/lib/classic-format-import";
-import { PRESENTATION_IMPORT_ACCEPT } from "@/lib/presentation-import";
-import { AlertTriangle, AppWindow, ArrowDownRight, ArrowLeft, Bold, Braces, BringToFront, Building2, ChartSpline, Check, ChevronDown, ChevronRight, ChevronUp, Code, Columns3, Copy, Cuboid, Download, FileCog, FilePlus, FileQuestion, FileText, FolderOpen, Highlighter, ImageIcon, Italic, Keyboard, LayoutTemplate, Library, List, ListChevronsUpDown, ListOrdered, ListPlus, ListTree, Loader2, MessageSquare, Minus, MinusCircle, MoreHorizontal, MoveDown, MoveUp, PaintBucket, PenLine, Plus, PlusCircle, Quote, Redo2, Replace, Rows3, Search, SendToBack, SeparatorHorizontal, Sigma, SlidersHorizontal, Sparkles, Square, SquareFunction, Trash2, Type, Underline, Undo2, X } from "lucide-react";
+import { STUDYAID_IMPORT_ACCEPT, STUDYAID_IMPORT_AVAILABLE } from "@/lib/studyaid-prt-import";
+import { POWERPOINT_IMPORT_ACCEPT } from "@/lib/powerpoint-import";
+import { AlertTriangle, AppWindow, ArrowDownRight, ArrowLeft, Bold, Braces, BringToFront, Building2, ChartSpline, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardCopy, ClipboardPaste, Code, Columns3, Copy, Cuboid, Download, FileCog, FilePlus, FileQuestion, FileText, FolderOpen, Highlighter, ImageIcon, Italic, Keyboard, LayoutTemplate, Library, List, ListChevronsUpDown, ListOrdered, ListPlus, ListTree, Loader2, MessageSquare, Minus, MinusCircle, MoreHorizontal, MoveDown, MoveUp, PaintBucket, PenLine, Plus, PlusCircle, Quote, Redo2, Replace, Rows3, Search, SendToBack, SeparatorHorizontal, Sigma, SlidersHorizontal, Sparkles, Square, SquareFunction, Trash2, Type, Underline, Undo2, X } from "lucide-react";
 import { Fragment } from "react";
 import type { ReactNode } from "react";
 import type { DesktopUpdateState } from "@/types/desktop";
@@ -67,7 +67,7 @@ interface RibbonGroupDefinition {
 }
 
 export function renderEditorChrome(chrome: EditorChromeValue) {
-  const { activeDocumentOpenFailure, activeFileId, addBlock, aiMenuButtonRef, appUpdateState, closeDocumentTab, commentsPanelOpen, createDocumentTab, createWhiteboardDocumentTab, degradedWatcherScopes, deleteActiveDocument, documentMetadatas, documentTitle, duplicateActiveDocument, exportJson, exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction, hasPendingAiApprovalAdoption, importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId, mcpPreviewBusy, newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace, openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openOtherImportDialog, openPrintPreview, openWorkspaceScreen, otherImportInputRef, promoteAiToSidebar, reportIssue, requestOverlayImages, resolvedDocumentTitle, retryPendingAiApprovalAdoption, scheduleCloseNewDocMenu, setAiSettingsOpen, setDesktopSettingsOpen, setExportMenuOpen, setNewDocMenuOpen, setOutlineDialogOpen, setOverlayEditing, setPageSettingsOpen, setTemplateGalleryOpen, setTexCommandReferenceOpen, setTexEnvironmentSettingsOpen, setTitleInputFocused, settingsMenuButtonRef, showRichTitle, showTitleUpdateButton, titleInputValue, titleRichNodes, titleUpdateButtonDisabled, toggleCommentsPanel, uiLayoutPreference, updateMetadata } = chrome.appMenu;
+  const { activeDocumentOpenFailure, activeFileId, addBlock, aiMenuButtonRef, appUpdateState, closeDocumentTab, commentsPanelOpen, copyDocumentText, createDocumentTab, createWhiteboardDocumentTab, degradedWatcherScopes, deleteActiveDocument, documentMetadatas, documentTitle, duplicateActiveDocument, exportJson, exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction, importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId, newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace, openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openOtherImportDialog, openPrintPreview, openTextImportDialog, openWorkspaceScreen, otherImportInputRef, promoteAiToSidebar, reportIssue, requestOverlayImages, resolvedDocumentTitle, scheduleCloseNewDocMenu, setAiSettingsOpen, setDesktopSettingsOpen, setExportMenuOpen, setNewDocMenuOpen, setOutlineDialogOpen, setOverlayEditing, setPageSettingsOpen, setTemplateGalleryOpen, setTexCommandReferenceOpen, setTexEnvironmentSettingsOpen, setTitleInputFocused, settingsMenuButtonRef, showRichTitle, showTitleUpdateButton, titleInputValue, titleRichNodes, titleUpdateButtonDisabled, toggleCommentsPanel, uiLayoutPreference, updateMetadata } = chrome.appMenu;
   const { commandTooltip, renderMenuShortcut } = chrome.commands;
   const { setMaterialLibraryOpen } = chrome.editing;
   const { ActiveTextAlignIcon, activeFontFamilyLabel, activeTextAlignOption, activeTextFontSize, applyBlockStructure, applyBoxedTextPaddingY, applyInlineFormat, applyLineHeight, applyTextAlign, applyTextStyle, blockStyleState, boldActive, boxedTextActive, boxedTextButtonRef, boxedTextMenuOpen, boxedTextPaddingY, boxedTextVariant, canUseBlockStructure, canUseLineHeight, canUseTextAlign, canUseTextBlockStyle, canUseTextToolbar, fontFamily, fontFamilyButtonRef, fontFamilyIsKnownOption, fontFamilyIsMixed, fontFamilyMenuOpen, fontFamilyQuery, handleLineHeightStepClick, italicActive, lineHeight, lineHeightButtonRef, lineHeightCustomOpen, lineHeightInput, lineHeightInputError, lineHeightMenuOpen, moreBlocksMenuButtonRef, moreBlocksMenuOpen, orderedListMenuButtonRef, orderedListMenuOpen, setMoreBlocksMenuOpen, setOrderedListMenuOpen, saveEditorFontFamilyPreference, selectBoxedTextVariant, selectedTextAlign, selectedTextStyle, setFontFamily, setFontFamilyQuery, setLineHeightCustomOpen, setLineHeightInput, setLineHeightInputError, setTextBackgroundColor, setTextColor, setTextFontSize, startLineHeightStepping, stopLineHeightStepping, textAlignButtonRef, textAlignMenuOpen, textBackgroundColor, textBackgroundColorButtonRef, textColor, textColorButtonRef, toggleBoxedText, underlineActive, visibleCustomFontOptions, visibleFontFamilyGroups, blockStyleButtonRef, blockStyleMenuOpen, fontSizeButtonRef, fontSizeMenuOpen } = chrome.format;
@@ -168,10 +168,14 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
             <FolderOpen size={16} />
             <span>{t("appMenu.file.import")}</span>
           </button>
-          {EDITOR_MATH_IMPORT_AVAILABLE && <button type="button" role="menuitem" onClick={openOtherImportDialog}>
+          {STUDYAID_IMPORT_AVAILABLE && <button type="button" role="menuitem" onClick={openOtherImportDialog}>
             <FolderOpen size={16} />
             <span>{t("appMenu.file.importOther")}</span>
           </button>}
+          <button type="button" role="menuitem" onClick={openTextImportDialog}>
+            <ClipboardPaste size={16} />
+            <span>{t("appMenu.file.importText")}</span>
+          </button>
           <div
             className={`app-menu-submenu ${exportMenuOpen ? "open" : ""}`}
             role="none"
@@ -205,6 +209,10 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
               <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); setExportMenuOpen(false); openPrintPreview(); }}>
                 <Download size={16} />
                 <span>{t("appMenu.file.exportPdf")}</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setActiveMenu(null); setExportMenuOpen(false); void copyDocumentText(); }}>
+                <ClipboardCopy size={16} />
+                <span>{t("appMenu.file.copyText")}</span>
               </button>
             </div>
           </div>
@@ -428,18 +436,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
       )}
       {/* 保存状態と状況メッセージは **この葉だけが購読する** (`SaveStatusIndicators`)。
           リボンや EditorShell 本体で受け取ると、打鍵のたびに動く値で画面全体が再描画される。 */}
-      <SaveStatusBadge>
-        {hasPendingAiApprovalAdoption && (
-          <button
-            type="button"
-            className="save-state-retry"
-            disabled={mcpPreviewBusy}
-            onClick={() => void retryPendingAiApprovalAdoption()}
-          >
-            {t("tabs.retryImport")}
-          </button>
-        )}
-      </SaveStatusBadge>
+      <SaveStatusBadge />
     </div>
   );
 
@@ -2227,11 +2224,11 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
     />
   );
 
-  const otherImportInput = EDITOR_MATH_IMPORT_AVAILABLE ? (
+  const otherImportInput = STUDYAID_IMPORT_AVAILABLE ? (
     <input
       ref={otherImportInputRef}
       type="file"
-      accept={`${EDITOR_MATH_IMPORT_ACCEPT},${PRESENTATION_IMPORT_ACCEPT}`}
+      accept={`${STUDYAID_IMPORT_ACCEPT},${POWERPOINT_IMPORT_ACCEPT}`}
       hidden
       onChange={(event) => {
         const file = event.target.files?.[0];
@@ -2401,12 +2398,16 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
               <FolderOpen size={18} aria-hidden="true" />
               <span>{t("appMenu.file.import")}</span>
             </button>
-            {EDITOR_MATH_IMPORT_AVAILABLE && (
+            {STUDYAID_IMPORT_AVAILABLE && (
               <button type="button" className="ribbon-backstage-command" title={t("appMenu.file.importOther")} aria-label={t("appMenu.file.importOther")} onClick={() => runBackstageCommand(openOtherImportDialog)}>
                 <FolderOpen size={18} aria-hidden="true" />
                 <span>{t("appMenu.file.importOther")}</span>
               </button>
             )}
+            <button type="button" className="ribbon-backstage-command" title={t("appMenu.file.importText")} aria-label={t("appMenu.file.importText")} onClick={() => runBackstageCommand(openTextImportDialog)}>
+              <ClipboardPaste size={18} aria-hidden="true" />
+              <span>{t("appMenu.file.importText")}</span>
+            </button>
           </div>
         )}
 
@@ -2437,6 +2438,10 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
             <button type="button" className="ribbon-backstage-command" title={t("appMenu.file.exportPdf")} aria-label={t("appMenu.file.exportPdf")} onClick={() => runBackstageCommand(openPrintPreview)}>
               <Download size={18} aria-hidden="true" />
               <span>{t("appMenu.file.exportPdf")}</span>
+            </button>
+            <button type="button" className="ribbon-backstage-command" title={t("appMenu.file.copyText")} aria-label={t("appMenu.file.copyText")} onClick={() => runBackstageCommand(() => void copyDocumentText())}>
+              <ClipboardCopy size={18} aria-hidden="true" />
+              <span>{t("appMenu.file.copyText")}</span>
             </button>
           </div>
         )}

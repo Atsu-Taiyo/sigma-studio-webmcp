@@ -24,12 +24,25 @@ function shortcutEffectSource(handlerName: string): string {
 }
 
 describe("EditorShell のコマンドパレット中のキー入力抑止", () => {
+  it("パレットのフラグが共有の抑止条件に入っている", () => {
+    // WI-5 で、`handleCommandShortcut` の列挙は `isModalSurfaceOpen` へまとめた
+    // (**ネイティブメニュー経路と同じ抑止を使うため** — 片方だけに書くと、メニューが
+    // パレットを飛び越えて背後の文書を戻す)。フラグはそちらに載っていればよい。
+    const guard = source.slice(
+      source.indexOf("const isModalSurfaceOpen ="),
+      source.indexOf(";", source.indexOf("const isModalSurfaceOpen =")),
+    );
+    expect(guard).toContain("commandPaletteOpen");
+  });
+
   it.each(["handleCommandShortcut", "handleInlineShortcut"])(
     "%s の抑止条件と依存配列にパレットが入っている",
     (handlerName) => {
       const effect = shortcutEffectSource(handlerName);
       // 条件式で1回、依存配列で1回。並び順や整形には依存させない。
-      expect(effect.split("commandPaletteOpen").length - 1).toBeGreaterThanOrEqual(2);
+      // `handleCommandShortcut` は共有ガード越しなので、その名前で同じことを見る。
+      const flag = handlerName === "handleCommandShortcut" ? "isModalSurfaceOpen" : "commandPaletteOpen";
+      expect(effect.split(flag).length - 1).toBeGreaterThanOrEqual(2);
     },
   );
 

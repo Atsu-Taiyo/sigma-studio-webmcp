@@ -201,6 +201,11 @@ describe("rendering feature dependency boundary", () => {
       // 束ねる index を経由させるのは、three を引く経路をこの1つに保つため
       // (`@/features/rendering/adapters` に載せると全消費者が three を抱える)。
       "@/features/rendering/adapters/three",
+      // ヘッドレスな3D静止画の描画だけは深いパスで引く。`adapters/svg` の index は
+      // react-static-renderers を再輸出するので、index 経由にすると MCP プロセス
+      // (stdio の素の node) とブラウザバンドルへ react-dom/server が入る。
+      // three の例外と同じ形で、React を引く経路を index の消費者だけに閉じ込める。
+      "@/features/rendering/adapters/svg/graph3d-scene-svg",
       "@/features/rendering/core",
     ]);
     const renderingRoot = fileURLToPath(new URL("./", import.meta.url));
@@ -839,7 +844,7 @@ describe("rendering feature dependency boundary", () => {
     });
 
     it("keeps every HTML sink in a shape whose injected value can be read", () => {
-      // `{{ __html: x, ...archiveead }}` や計算プロパティは、DOM に入る値を構文木から
+      // `{{ __html: x, ...spread }}` や計算プロパティは、DOM に入る値を構文木から
       // 特定できない = 出所を検査できない。形の時点で落とす。
       const opaque = injectionSiteFiles().flatMap((file) => collectHtmlSinks(parseSource(file))
         .filter((sink) => sink.expression === null)

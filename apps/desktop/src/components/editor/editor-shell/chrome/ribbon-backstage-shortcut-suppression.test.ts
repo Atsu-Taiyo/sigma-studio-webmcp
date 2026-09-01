@@ -34,12 +34,24 @@ function shortcutEffectSource(handlerName: string): string {
 }
 
 describe("EditorShell の Backstage 中のキー入力抑止", () => {
+  it("Backstage のフラグが共有の抑止条件に入っている", () => {
+    // WI-5 で、`handleCommandShortcut` の列挙は `isModalSurfaceOpen` へまとめた
+    // (**ネイティブメニュー経路と同じ抑止を使うため**)。フラグはそちらに載っていればよい。
+    const guard = source.slice(
+      source.indexOf("const isModalSurfaceOpen ="),
+      source.indexOf(";", source.indexOf("const isModalSurfaceOpen =")),
+    );
+    expect(guard).toContain("ribbonBackstageOpen");
+  });
+
   it.each(["handleCommandShortcut", "handleInlineShortcut"])(
     "%s の抑止条件と依存配列に Backstage が入っている",
     (handlerName) => {
       const effect = shortcutEffectSource(handlerName);
       // 条件式で1回、依存配列で1回。並び順や整形には依存させない。
-      expect(effect.split("ribbonBackstageOpen").length - 1).toBeGreaterThanOrEqual(2);
+      // `handleCommandShortcut` は共有ガード越しなので、その名前で同じことを見る。
+      const flag = handlerName === "handleCommandShortcut" ? "isModalSurfaceOpen" : "ribbonBackstageOpen";
+      expect(effect.split(flag).length - 1).toBeGreaterThanOrEqual(2);
     },
   );
 

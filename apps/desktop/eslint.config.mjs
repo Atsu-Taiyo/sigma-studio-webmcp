@@ -90,8 +90,8 @@ const eslintConfig = [
       "src/lib/tex-command-reference.ts",
       "src/lib/tex-environment-examples.ts",
       "src/lib/tex-import.ts",
-      "src/lib/classic-format-import.ts",
-      "src/lib/classic-format/**",
+      "src/lib/studyaid-prt-import.ts",
+      "src/lib/studyaid-prt/**",
       "src/lib/inline-math-symbol-buttons.ts",
       // OSフォント名、永続化互換値、教材内容・二言語検索語。
       "src/components/editor/editor-shell/constants.ts",
