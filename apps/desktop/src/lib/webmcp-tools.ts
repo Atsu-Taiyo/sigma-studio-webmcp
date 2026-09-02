@@ -48,7 +48,12 @@ import { collectOutline } from "@/lib/document-tree";
 import { SigmaDocumentSchema } from "@/lib/sigma-doc-schema";
 import { areStructurallyEqual } from "@/lib/structural-equality";
 import { inlineNodesToOverlayTextBlocks } from "@/lib/tiptap-adapter";
-import type { AiEditSessionOperationOrderEntry } from "@/lib/ai/sigma-doc-edit-schema";
+import {
+  createAiEditSessionDocumentDraft,
+  type AiEditDraft,
+  type AiEditSessionDraft,
+  type AiEditSessionOperationOrderEntry,
+} from "@/lib/ai/sigma-doc-edit-schema";
 import { getGraphPlotBox } from "@/lib/graph2d";
 import { parseInlineMarkdown, parseMarkdownToTextFlowBlocks } from "@/lib/markdown-to-text-flow";
 import {
@@ -63,7 +68,17 @@ import { resolveCommentAgentVendor } from "@/lib/comment-agents";
 
 export const END_OF_DOCUMENT_TARGET = "END_OF_DOCUMENT";
 export const WEB_MCP_PROPOSAL_ID = "webmcp_single_draft";
+export const WEB_MCP_HEAVY_FALLBACK_COUNTER = "__sigmaWebMcpHeavyFallbackCount";
 const WEBMCP_AGENT_INSTRUCTIONS_STORAGE_KEY_PREFIX = "sigma-studio:webmcp-agent-instructions:v2";
+
+export type WebMcpFallbackCounterTarget = { __sigmaWebMcpHeavyFallbackCount?: number };
+export function initializeWebMcpHeavyFallbackCounter(target: WebMcpFallbackCounterTarget): void {
+  if (!Number.isFinite(target.__sigmaWebMcpHeavyFallbackCount)) target.__sigmaWebMcpHeavyFallbackCount = 0;
+}
+export function recordWebMcpHeavyFallback(target: WebMcpFallbackCounterTarget): void {
+  initializeWebMcpHeavyFallbackCounter(target);
+  target.__sigmaWebMcpHeavyFallbackCount = (target.__sigmaWebMcpHeavyFallbackCount ?? 0) + 1;
+}
 
 export function getWebMcpAgentInstructionsStorageKey(documentScopeId: string): string {
   return `${WEBMCP_AGENT_INSTRUCTIONS_STORAGE_KEY_PREFIX}:${encodeURIComponent(documentScopeId)}`;
@@ -157,7 +172,9 @@ export interface SigmaWebMcpProposal {
   operationCount: number;
   baseRevision: number;
   previewDraft: ReturnType<typeof getSigmaDocAgentSessionDraft>["draft"];
+  refresh(current: SigmaDocument): SigmaWebMcpProposal;
   apply(current: SigmaDocument): SigmaWebMcpProposalApplication;
+  accept(): void;
   dismiss(): void;
 }
 
@@ -406,8 +423,252 @@ function contentChangedTargets(base: SigmaDocument, current: SigmaDocument): str
   return changedDocumentTargets(base, current).filter((id) => id !== "comments" && id !== "updatedAt");
 }
 
+interface WebMcpInsertionPlacement {
+  operationIndex: number;
+  anchorId: string;
+  successorId: string | null;
+  atDocumentEnd: boolean;
+}
+
+interface WebMcpBlockPlacement {
+  containerKey: string;
+  previousId: string | null;
+  nextId: string | null;
+}
+
+interface WebMcpMovePlacement {
+  mutationIndex: number;
+  sourcePlacements: Record<string, WebMcpBlockPlacement>;
+  targetId: string;
+  targetPlacement: WebMcpBlockPlacement | null;
+  atDocumentEnd: boolean;
+}
+
+interface WebMcpReplayCheckpoint {
+  operationOrderLength: number;
+  implicitBlockIds: string[];
+}
+
+class WebMcpStaleDraftError extends Error {
+  constructor(readonly targetIds: string[]) {
+    super(`STALE_DRAFT: The document changed after this draft started. Changed target(s): ${targetIds.join(", ")}. Withdraw the pending proposal, read the current context, and retry.`);
+    this.name = "WebMcpStaleDraftError";
+  }
+}
+
+function blockSiblingIds(document: SigmaDocument, targetId: string): string[] | null {
+  const visit = (blocks: readonly unknown[]): string[] | null => {
+    const blockIds = blocks.flatMap((block) => (
+      block && typeof block === "object" && typeof (block as { id?: unknown }).id === "string"
+        ? [(block as { id: string }).id]
+        : []
+    ));
+    if (blockIds.includes(targetId)) return blockIds;
+    for (const value of blocks) {
+      if (!value || typeof value !== "object") continue;
+      const block = value as Record<string, unknown>;
+      const childGroups = block.type === "problem"
+        ? [block.lead, block.prompt, block.solution, block.hints]
+        : block.type === "layoutSection"
+          ? [block.children]
+          : block.type === "boxBlock" || block.type === "quote"
+            ? [block.blocks]
+            : [];
+      for (const children of childGroups) {
+        if (!Array.isArray(children)) continue;
+        const found = visit(children);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  return visit(document.content);
+}
+
+function blockPlacement(document: SigmaDocument, targetId: string): WebMcpBlockPlacement | null {
+  const visit = (blocks: readonly unknown[], containerKey: string): WebMcpBlockPlacement | null => {
+    const ids = blocks.flatMap((block) => (
+      block && typeof block === "object" && typeof (block as { id?: unknown }).id === "string"
+        ? [(block as { id: string }).id]
+        : []
+    ));
+    const index = ids.indexOf(targetId);
+    if (index >= 0) {
+      return { containerKey, previousId: ids[index - 1] ?? null, nextId: ids[index + 1] ?? null };
+    }
+    for (const value of blocks) {
+      if (!value || typeof value !== "object") continue;
+      const block = value as Record<string, unknown>;
+      const ownerId = typeof block.id === "string" ? block.id : containerKey;
+      for (const key of ["lead", "prompt", "solution", "hints", "children", "blocks"] as const) {
+        const children = block[key];
+        if (!Array.isArray(children)) continue;
+        const found = visit(children, `${ownerId}:${key}`);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  return visit(document.content, "document");
+}
+
+function blockIdsInOrder(document: SigmaDocument): string[] {
+  return collectOutline(document, { includeBodyBlocks: true }).map((item) => item.id);
+}
+
+function replaceDocumentIds(document: SigmaDocument, replacements: ReadonlyMap<string, string>): SigmaDocument {
+  const replace = (value: unknown): unknown => {
+    if (typeof value === "string") return replacements.get(value) ?? value;
+    if (Array.isArray(value)) return value.map(replace);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, replace(child)]));
+  };
+  return SigmaDocumentSchema.parse(replace(document));
+}
+
+function layoutWithoutOverlay(document: SigmaDocument): unknown {
+  if (!document.pageLayout) return null;
+  return Object.fromEntries(Object.entries(document.pageLayout).filter(([key]) => key !== "overlay"));
+}
+
+function collectPersistedIds(value: unknown, ids: Set<string>): void {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectPersistedIds(item, ids));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  if (typeof record.id === "string") ids.add(record.id);
+  Object.values(record).forEach((child) => collectPersistedIds(child, ids));
+}
+
+function insertedDraftIds(draft: AiEditSessionDraft): Set<string> {
+  const ids = new Set<string>();
+  for (const operation of draft.operations) {
+    if (operation.operation === "insertAfter") collectPersistedIds(operation.insertedBlock, ids);
+    else if (operation.operation === "insertTableShape") collectPersistedIds(operation.tableShape, ids);
+    else if (operation.operation === "insertOverlayShape") {
+      collectPersistedIds(operation.overlayShape, ids);
+      Object.keys(operation.assets ?? {}).forEach((id) => ids.add(id));
+      collectPersistedIds(operation.assets, ids);
+    }
+  }
+  return ids;
+}
+
+function wrapRangeConflictIds(
+  base: SigmaDocument,
+  current: SigmaDocument,
+  blockIds: readonly string[],
+  draftOwnedPlacementIds: ReadonlySet<string>,
+): string[] {
+  const missingCurrentIds = blockIds.filter((id) => !blockPlacement(current, id));
+  if (missingCurrentIds.length > 0) return missingCurrentIds;
+
+  const humanPlacedIds = blockIds.filter((id) => !draftOwnedPlacementIds.has(id));
+  if (humanPlacedIds.length > 0) {
+    const basePlacements = humanPlacedIds.map((id) => blockPlacement(base, id));
+    const baseContainerKey = basePlacements[0]?.containerKey;
+    if (!baseContainerKey || basePlacements.some((placement) => placement?.containerKey !== baseContainerKey)) return [...humanPlacedIds];
+    const wrongContainerIds = humanPlacedIds.filter((id) => blockPlacement(current, id)?.containerKey !== baseContainerKey);
+    if (wrongContainerIds.length > 0) return wrongContainerIds;
+  }
+
+  const currentSiblings = blockSiblingIds(current, blockIds[0]!) ?? [];
+  const currentIndexes = blockIds.map((id) => currentSiblings.indexOf(id));
+  const currentStart = Math.min(...currentIndexes);
+  const currentEnd = Math.max(...currentIndexes);
+  const currentRange = currentSiblings.slice(currentStart, currentEnd + 1);
+  if (
+    currentRange.length !== blockIds.length
+    || !sameValue(currentRange, blockIds)
+  ) return [...blockIds];
+  return [];
+}
+
+function replayConflictIds(
+  base: SigmaDocument,
+  current: SigmaDocument,
+  draft: AiEditSessionDraft,
+  checkpoints: readonly WebMcpReplayCheckpoint[],
+): string[] {
+  const conflicts = new Set<string>();
+  if (base.docId !== current.docId) return ["docId"];
+  const insertedIds = new Set([
+    ...insertedDraftIds(draft),
+    ...checkpoints.flatMap((checkpoint) => checkpoint.implicitBlockIds),
+  ]);
+  const compareBlock = (id: string): void => {
+    if (insertedIds.has(id)) return;
+    if (!sameValue(findBlock(base, id), findBlock(current, id))) conflicts.add(id);
+  };
+  const compareShape = (id: string): void => {
+    if (insertedIds.has(id)) return;
+    const before = shapes(base).find((shape) => shape.id === id);
+    const after = shapes(current).find((shape) => shape.id === id);
+    if (!sameValue(before, after)) conflicts.add(id);
+  };
+
+  for (const operation of draft.operations) {
+    if (operation.operation === undefined || operation.operation === "replace") compareBlock(operation.targetId);
+  }
+  for (const operation of draft.mutationOperations ?? []) {
+    if (operation.operation === "deleteBlocks") {
+      // Deletion is content-targeted, not placement-targeted: a refreshed preview shows the
+      // block at its current location, so an informed approval may still delete it after a move.
+      operation.blockIds.forEach(compareBlock);
+    }
+    else if (operation.operation === "updateOverlayShape") compareShape(operation.shapeId);
+    else if (operation.operation === "alignOverlayShapes" || operation.operation === "deleteOverlayShapes") operation.shapeIds.forEach(compareShape);
+    else if (operation.operation === "updateLayoutSection") compareBlock(operation.sectionId);
+    else if (operation.operation === "updatePageLayout" && !sameValue(layoutWithoutOverlay(base), layoutWithoutOverlay(current))) conflicts.add("pageLayout");
+    else if (operation.operation === "setDocumentColumns" && !sameValue(base.pageLayout?.flow, current.pageLayout?.flow)) conflicts.add("pageLayout.flow");
+  }
+  return [...conflicts];
+}
+
+function replayMoveConflictIds(
+  current: SigmaDocument,
+  operation: Extract<NonNullable<AiEditSessionDraft["mutationOperations"]>[number], { operation: "moveBlocks" }>,
+  placement: WebMcpMovePlacement | undefined,
+  draftOwnedIds: ReadonlySet<string>,
+): string[] {
+  const conflicts = new Set<string>();
+  for (const id of operation.blockIds) {
+    if (draftOwnedIds.has(id)) continue;
+    if (!sameValue(placement?.sourcePlacements[id] ?? null, blockPlacement(current, id))) conflicts.add(id);
+  }
+  if (!placement?.atDocumentEnd && !draftOwnedIds.has(operation.targetId)) {
+    if (!sameValue(placement?.targetPlacement ?? null, blockPlacement(current, operation.targetId))) conflicts.add(operation.targetId);
+  }
+  return [...conflicts];
+}
+
+function replayFailureTargetIds(current: SigmaDocument, draft: AiEditSessionDraft): string[] {
+  const ids = new Set<string>();
+  const currentIds = new Set<string>();
+  collectPersistedIds(current, currentIds);
+  insertedDraftIds(draft).forEach((id) => { if (currentIds.has(id)) ids.add(id); });
+  for (const operation of draft.operations) {
+    if (operation.operation === "insertAfter") {
+      if (!findBlock(current, operation.targetId)) ids.add(operation.targetId);
+    } else if (operation.operation === "insertTableShape") {
+      if (!findBlock(current, operation.targetId)) ids.add(operation.targetId);
+    } else if (operation.operation === "insertOverlayShape") {
+      if (!findBlock(current, operation.targetId) && operation.targetId !== "CANVAS") ids.add(operation.targetId);
+    }
+  }
+  return [...ids];
+}
+
+function insertedIdCollisionIds(current: SigmaDocument, draft: AiEditSessionDraft): string[] {
+  const currentIds = new Set<string>();
+  collectPersistedIds(current, currentIds);
+  return [...insertedDraftIds(draft)].filter((id) => currentIds.has(id));
+}
+
 function formatStaleError(ids: readonly string[]): Error {
-  return new Error(`STALE_DRAFT: The document changed after this draft started. Changed target(s): ${ids.join(", ")}. Withdraw the pending proposal, read the current context, and retry.`);
+  return new WebMcpStaleDraftError([...ids]);
 }
 const MISSING_EXPECTED_SHAPE_ERROR = "MISSING_EXPECTED_SHAPE: Pass the exact shape object returned by inspect_document (overlayShapes) as expectedShape.";
 function assertExpectedShape(document: SigmaDocument, expected: unknown, shapeId: string): OverlayShape {
@@ -680,8 +941,13 @@ export function createSigmaWebMcpTools(
 ): WebMcpToolDefinition[] {
   let session: SigmaDocAgentSession | null = null;
   let baseRevision: number | null = null;
+  let baseLiveRevision: number | null = null;
   let baseLiveDocument: SigmaDocument | null = null;
   let operationOrder: AiEditSessionOperationOrderEntry[] = [];
+  let insertionPlacements: WebMcpInsertionPlacement[] = [];
+  let movePlacements: WebMcpMovePlacement[] = [];
+  let replayCheckpoints: WebMcpReplayCheckpoint[] = [];
+  let replayConflict: { targetIds: string[]; liveRevision: number } | null = null;
   // コメントは文書の revision を進めるが、本文の前提は動かさない。エージェントへ見せる
   // revision からコメントぶんを差し引き、「コメントを書いたら expectedRevision が使えなくなる」
   // 事故を防ぐ。人がパネルからコメントしたぶんも、内容が同じなら同じように吸収する。
@@ -708,18 +974,205 @@ export function createSigmaWebMcpTools(
     absorbCommentRevisionDrift();
     return ports.getRevision() - commentRevisionDrift;
   };
-  const agentRevision = (): number => baseRevision ?? contentRevision();
+  const agentRevision = (): number => replayConflict?.liveRevision ?? baseRevision ?? contentRevision();
 
-  const activeDocument = (): SigmaDocument => session?.draftDocument ?? ports.getDocument();
-  const clearDraft = (): void => { session = null; baseRevision = null; baseLiveDocument = null; operationOrder = []; };
+  const clearDraft = (): void => {
+    session = null;
+    baseRevision = null;
+    baseLiveRevision = null;
+    baseLiveDocument = null;
+    operationOrder = [];
+    insertionPlacements = [];
+    movePlacements = [];
+    replayCheckpoints = [];
+    replayConflict = null;
+  };
+  const sessionDraft = (current: SigmaDocAgentSession): AiEditSessionDraft => ({
+    summary: "WebMCP pending draft",
+    plan: ["Review every changed location, then apply or discard the single draft"],
+    operations: structuredClone(current.operations),
+    mutationOperations: structuredClone(current.mutationOperations),
+    operationOrder: structuredClone(operationOrder),
+    warnings: [],
+  });
+  const resolveInsertionForReplay = (
+    currentDocument: SigmaDocument,
+    operation: AiEditDraft,
+    operationIndex: number,
+    placements: readonly WebMcpInsertionPlacement[],
+  ): AiEditDraft => {
+    if (operation.operation !== "insertAfter") return operation;
+    const placement = placements.find((item) => item.operationIndex === operationIndex);
+    if (!placement) return operation;
+    if (placement.atDocumentEnd) {
+      const targetId = currentDocument.content.at(-1)?.id;
+      return targetId ? { ...operation, targetId } : operation;
+    }
+    const siblings = blockSiblingIds(currentDocument, placement.anchorId);
+    if (!siblings) return operation;
+    const anchorIndex = siblings.indexOf(placement.anchorId);
+    if (anchorIndex < 0) return operation;
+    if (placement.successorId) {
+      const successorIndex = siblings.indexOf(placement.successorId);
+      if (successorIndex > anchorIndex) {
+        return { ...operation, targetId: siblings[successorIndex - 1] ?? placement.anchorId };
+      }
+    } else {
+      return { ...operation, targetId: siblings.at(-1) ?? placement.anchorId };
+    }
+    return { ...operation, targetId: placement.anchorId };
+  };
+  const replayDraft = (
+    base: SigmaDocument,
+    currentDocument: SigmaDocument,
+    draft: AiEditSessionDraft,
+    placements: readonly WebMcpInsertionPlacement[],
+    capturedMovePlacements: readonly WebMcpMovePlacement[],
+    capturedCheckpoints: readonly WebMcpReplayCheckpoint[],
+  ) => {
+    const insertedIdConflicts = insertedIdCollisionIds(currentDocument, draft);
+    if (insertedIdConflicts.length > 0) throw formatStaleError(insertedIdConflicts);
+    const conflicts = replayConflictIds(base, currentDocument, draft, capturedCheckpoints);
+    if (conflicts.length > 0) throw formatStaleError(conflicts);
+    try {
+      const replayableDraft = structuredClone(draft);
+      const normalizedOperations = [...replayableDraft.operations];
+      const normalizedMutationOperations = [...(replayableDraft.mutationOperations ?? [])];
+      const draftOwnedIds = new Set([
+        ...insertedDraftIds(replayableDraft),
+        ...capturedCheckpoints.flatMap((checkpoint) => checkpoint.implicitBlockIds),
+      ]);
+      const draftOwnedPlacementIds = new Set<string>();
+      const operationResults: ReturnType<typeof createAiEditSessionDocumentDraft>["operationResults"] = [];
+      let nextDocument = currentDocument;
+      let checkpointBase = currentDocument;
+      for (let orderIndex = 0; orderIndex < (replayableDraft.operationOrder ?? []).length; orderIndex += 1) {
+        const entry = replayableDraft.operationOrder![orderIndex]!;
+        const operation = entry.kind === "operation"
+          ? resolveInsertionForReplay(nextDocument, normalizedOperations[entry.index]!, entry.index, placements)
+          : null;
+        if (operation) normalizedOperations[entry.index] = operation;
+        const followingEntry = replayableDraft.operationOrder![orderIndex + 1];
+        const followingOperation = followingEntry?.kind === "operation" ? normalizedOperations[followingEntry.index]! : null;
+        const materializedProblemBody = operation?.operation === "insertAfter"
+          && operation.insertedBlock.type === "problem"
+          && followingOperation?.operation === "insertAfter"
+          && followingOperation.targetId === operation.insertedBlock.id;
+        let mutationOperation = entry.kind === "mutation" ? normalizedMutationOperations[entry.index]! : null;
+        if (mutationOperation?.operation === "moveBlocks") {
+          const placement = capturedMovePlacements.find((item) => item.mutationIndex === entry.index);
+          const moveConflicts = replayMoveConflictIds(nextDocument, mutationOperation, placement, draftOwnedIds);
+          if (moveConflicts.length > 0) throw formatStaleError(moveConflicts);
+          if (placement?.atDocumentEnd) {
+            const movedBlockIds = mutationOperation.blockIds;
+            const targetId = [...nextDocument.content].reverse().find((block) => !movedBlockIds.includes(block.id))?.id;
+            if (targetId) mutationOperation = { ...mutationOperation, targetId };
+          }
+          normalizedMutationOperations[entry.index] = mutationOperation;
+        }
+        if (mutationOperation?.operation === "wrapBlocksInColumns") {
+          const wrapConflicts = wrapRangeConflictIds(base, nextDocument, mutationOperation.blockIds, draftOwnedPlacementIds);
+          if (wrapConflicts.length > 0) throw formatStaleError(wrapConflicts);
+        }
+        const singleDraft: AiEditSessionDraft = {
+          ...replayableDraft,
+          operations: entry.kind === "operation"
+            ? materializedProblemBody ? [operation, followingOperation] : [operation!]
+            : [],
+          mutationOperations: mutationOperation ? [mutationOperation] : [],
+          operationOrder: materializedProblemBody
+            ? [{ kind: "operation", index: 0 }, { kind: "operation", index: 1 }]
+            : [{ kind: entry.kind, index: 0 }],
+        };
+        const result = createAiEditSessionDocumentDraft(nextDocument, null, singleDraft);
+        nextDocument = result.nextDocument;
+        if (entry.kind === "operation") {
+          normalizedOperations[entry.index] = result.draft.operations[0]!;
+          if (materializedProblemBody && followingEntry?.kind === "operation") {
+            normalizedOperations[followingEntry.index] = result.draft.operations[1]!;
+          }
+          operationResults.push(...result.operationResults);
+          if (operation?.operation === "insertAfter") collectPersistedIds(operation.insertedBlock, draftOwnedPlacementIds);
+          if (materializedProblemBody && followingOperation?.operation === "insertAfter") {
+            collectPersistedIds(followingOperation.insertedBlock, draftOwnedPlacementIds);
+          }
+        } else {
+          normalizedMutationOperations[entry.index] = result.draft.mutationOperations![0]!;
+          if (mutationOperation?.operation === "moveBlocks") {
+            mutationOperation.blockIds.forEach((id) => draftOwnedPlacementIds.add(id));
+          }
+        }
+        const consumedOrderLength = orderIndex + (materializedProblemBody ? 2 : 1);
+        const checkpoint = capturedCheckpoints.find((item) => item.operationOrderLength === consumedOrderLength);
+        if (checkpoint) {
+          const beforeIds = new Set(blockIdsInOrder(checkpointBase));
+          const explicitIds = insertedDraftIds(replayableDraft);
+          const generatedIds = blockIdsInOrder(nextDocument).filter((id) => !beforeIds.has(id) && !explicitIds.has(id));
+          if (generatedIds.length !== checkpoint.implicitBlockIds.length) {
+            throw formatStaleError(checkpoint.implicitBlockIds.length > 0 ? checkpoint.implicitBlockIds : ["document"]);
+          }
+          const replacements = new Map(generatedIds.map((id, index) => [id, checkpoint.implicitBlockIds[index]!]));
+          for (const stableId of replacements.values()) {
+            if (findBlock(currentDocument, stableId)) throw formatStaleError([stableId]);
+          }
+          nextDocument = replaceDocumentIds(nextDocument, replacements);
+          checkpoint.implicitBlockIds.forEach((id) => draftOwnedPlacementIds.add(id));
+          checkpointBase = nextDocument;
+        }
+        if (materializedProblemBody) orderIndex += 1;
+      }
+      return {
+        draft: { ...replayableDraft, operations: normalizedOperations, mutationOperations: normalizedMutationOperations },
+        nextDocument,
+        operationResults,
+      };
+    } catch (error) {
+      if (error instanceof WebMcpStaleDraftError) throw error;
+      const ids = replayFailureTargetIds(currentDocument, draft);
+      const stale = new WebMcpStaleDraftError(ids.length > 0 ? ids : ["document"]);
+      stale.message = `${stale.message} Replay failed: ${error instanceof Error ? error.message : String(error)}`;
+      throw stale;
+    }
+  };
+  const refreshSessionFromLive = (throwOnConflict: boolean): SigmaDocument => {
+    if (!session || baseRevision === null) return ports.getDocument();
+    const liveDocument = ports.getDocument();
+    const liveRevision = contentRevision();
+    if (liveRevision === baseLiveRevision && sameValue(baseLiveDocument, liveDocument)) {
+      replayConflict = null;
+      return session.draftDocument;
+    }
+    try {
+      const replay = replayDraft(
+        baseLiveDocument ?? session.baseDocument,
+        liveDocument,
+        sessionDraft(session),
+        insertionPlacements,
+        movePlacements,
+        replayCheckpoints,
+      );
+      session.baseDocument = structuredClone(liveDocument);
+      session.draftDocument = replay.nextDocument;
+      session.operations = replay.draft.operations;
+      session.mutationOperations = replay.draft.mutationOperations ?? [];
+      session.operationResults = replay.operationResults;
+      baseLiveDocument = structuredClone(liveDocument);
+      baseLiveRevision = liveRevision;
+      replayConflict = null;
+      return session.draftDocument;
+    } catch (error) {
+      const targetIds = error instanceof WebMcpStaleDraftError ? error.targetIds : ["document"];
+      replayConflict = { targetIds, liveRevision };
+      if (throwOnConflict) throw error;
+      return liveDocument;
+    }
+  };
+  const activeDocument = (): SigmaDocument => refreshSessionFromLive(false);
   const assertFresh = (revision: number): void => {
     const currentRevision = contentRevision();
     if (session) {
-      const conflicts = contentChangedTargets(baseLiveDocument ?? session.baseDocument, ports.getDocument());
-      if (baseRevision !== currentRevision || conflicts.length > 0) {
-        throw formatStaleError(conflicts.length > 0 ? conflicts : ["document"]);
-      }
       if (baseRevision !== revision) throw new Error(`REVISION_MISMATCH: expected ${baseRevision}, received ${revision}. Reuse the draft's base revision or withdraw it.`);
+      if (currentRevision !== baseLiveRevision || !sameValue(baseLiveDocument, ports.getDocument())) refreshSessionFromLive(true);
       return;
     }
     if (revision !== currentRevision) throw new Error(`REVISION_MISMATCH: expected ${revision}, current revision is ${currentRevision}. Read inspect_document again.`);
@@ -731,6 +1184,7 @@ export function createSigmaWebMcpTools(
       baseLiveDocument = structuredClone(liveDocument);
       session = createSigmaDocAgentSession({ document: liveDocument, selectedId: ports.getSelectedBlockId() });
       baseRevision = revision;
+      baseLiveRevision = revision;
     }
     return session;
   };
@@ -742,6 +1196,105 @@ export function createSigmaWebMcpTools(
   ): void => {
     for (let index = beforeOperations; index < current.operations.length; index += 1) targetOrder.push({ kind: "operation", index });
     for (let index = beforeMutations; index < current.mutationOperations.length; index += 1) targetOrder.push({ kind: "mutation", index });
+  };
+  const recordInsertionPlacements = (
+    current: SigmaDocAgentSession,
+    beforeOperations: number,
+    input: Record<string, unknown>,
+    placementBase: SigmaDocument,
+    targetPlacements = insertionPlacements,
+  ): void => {
+    for (let index = beforeOperations; index < current.operations.length; index += 1) {
+      const operation = current.operations[index];
+      if (operation?.operation !== "insertAfter") continue;
+      const isFirstNewOperation = index === beforeOperations;
+      const atDocumentEnd = isFirstNewOperation && input.targetId === END_OF_DOCUMENT_TARGET;
+      if (!atDocumentEnd && !findBlock(placementBase, operation.targetId)) continue;
+      const siblings = blockSiblingIds(placementBase, operation.targetId);
+      const anchorIndex = siblings?.indexOf(operation.targetId) ?? -1;
+      targetPlacements.push({
+        operationIndex: index,
+        anchorId: operation.targetId,
+        successorId: anchorIndex >= 0 ? siblings?.[anchorIndex + 1] ?? null : null,
+        atDocumentEnd,
+      });
+    }
+  };
+  const recordReplayCheckpoint = (
+    before: SigmaDocument,
+    after: SigmaDocument,
+    beforeOperations: number,
+    afterOperations: number,
+  ): void => {
+    const beforeIds = new Set(blockIdsInOrder(before));
+    const explicitIds = session
+      ? insertedDraftIds({ ...sessionDraft(session), operations: session.operations.slice(beforeOperations, afterOperations) })
+      : new Set<string>();
+    const implicitBlockIds = blockIdsInOrder(after).filter((id) => !beforeIds.has(id) && !explicitIds.has(id));
+    if (implicitBlockIds.length > 0) {
+      replayCheckpoints.push({ operationOrderLength: operationOrder.length, implicitBlockIds });
+    }
+  };
+  const materializeImplicitProblemBodyOperations = (
+    current: SigmaDocAgentSession,
+    beforeOperations: number,
+    operationBase: SigmaDocument,
+  ): void => {
+    const originalOperations = current.operations.slice(beforeOperations);
+    const baseIds = new Set(blockIdsInOrder(operationBase));
+    const explicitIds = insertedDraftIds({
+      summary: "Materialize generated problem body",
+      plan: ["Preserve generated IDs"],
+      operations: originalOperations,
+      warnings: [],
+    });
+    const bodyOperations: AiEditDraft[] = [];
+    for (const operation of originalOperations) {
+      if (operation.operation !== "insertAfter" || operation.insertedBlock.type !== "problem") continue;
+      const problemIndex = current.draftDocument.content.findIndex((block) => block.id === operation.insertedBlock.id);
+      const bodyBlock = current.draftDocument.content[problemIndex + 1];
+      if (!bodyBlock || baseIds.has(bodyBlock.id) || explicitIds.has(bodyBlock.id)) continue;
+      bodyOperations.push({
+        operation: "insertAfter",
+        summary: "Preserve the generated paragraph after the problem",
+        targetId: operation.insertedBlock.id,
+        insertedBlock: structuredClone(bodyBlock),
+      });
+    }
+    if (bodyOperations.length === 0) return;
+    const materialized = createAiEditSessionDocumentDraft(operationBase, null, {
+      summary: "Materialize generated problem body",
+      plan: ["Preserve generated IDs"],
+      operations: [...originalOperations, ...bodyOperations],
+      operationOrder: [...originalOperations, ...bodyOperations].map((_, index) => ({ kind: "operation" as const, index })),
+      warnings: [],
+    });
+    current.operations.splice(beforeOperations, current.operations.length - beforeOperations, ...materialized.draft.operations);
+    current.operationResults.splice(beforeOperations, current.operationResults.length - beforeOperations, ...materialized.operationResults);
+    current.draftDocument = materialized.nextDocument;
+    current.changedIds = [...new Set([...current.changedIds, ...bodyOperations.map((operation) => (
+      operation.operation === "insertAfter" ? operation.insertedBlock.id : operation.targetId
+    ))])];
+  };
+  const recordMovePlacement = (
+    current: SigmaDocAgentSession,
+    operation: Record<string, unknown>,
+    input: Record<string, unknown>,
+  ): void => {
+    if (operation.operation !== "moveBlocks" || !Array.isArray(operation.blockIds) || typeof operation.targetId !== "string") return;
+    const sourceIds = operation.blockIds.filter((id): id is string => typeof id === "string");
+    const sourcePlacements = Object.fromEntries(sourceIds.flatMap((id) => {
+      const placement = blockPlacement(current.draftDocument, id);
+      return placement ? [[id, placement]] : [];
+    }));
+    const atDocumentEnd = input.targetId === END_OF_DOCUMENT_TARGET;
+    movePlacements.push({
+      mutationIndex: current.mutationOperations.length,
+      sourcePlacements,
+      targetId: operation.targetId,
+      targetPlacement: atDocumentEnd ? null : blockPlacement(current.draftDocument, operation.targetId),
+      atDocumentEnd,
+    });
   };
   const orderedOperationSummaries = (generated: ReturnType<typeof getSigmaDocAgentSessionDraft>) => {
     const operations = summarizeSessionDraftForToolResult(generated).operationSummaries;
@@ -755,46 +1308,83 @@ export function createSigmaWebMcpTools(
       summary: "WebMCP pending draft",
       plan: ["Review every changed location, then apply or discard the single draft"],
     });
+    const canonicalDraft = sessionDraft(session);
     SigmaDocumentSchema.parse(generated.nextDocument);
     const operationSummaries = orderedOperationSummaries(generated);
-    const previewDraft = structuredClone({ ...generated.draft, operationOrder: [...operationOrder] });
+    const previewDraft = structuredClone({
+      ...generated.draft,
+      operationOrder: [...operationOrder],
+    });
     const targetIds = [...new Set(generated.changedIds)];
     const blockIds = targetIds.filter((id) => Boolean(findBlock(generated.nextDocument, id) || findBlock(session!.baseDocument, id)));
     const shapeIds = targetIds.filter((id) => shapes(generated.nextDocument).some((shape) => shape.id === id) || shapes(session!.baseDocument).some((shape) => shape.id === id));
     const capturedSession = session;
     const capturedBaseLiveDocument = structuredClone(baseLiveDocument ?? session.baseDocument);
     const capturedRevision = baseRevision;
+    const capturedDraft = structuredClone(canonicalDraft);
+    const capturedPlacements = structuredClone(insertionPlacements);
+    const capturedMovePlacements = structuredClone(movePlacements);
+    const capturedCheckpoints = structuredClone(replayCheckpoints);
     const reviewedDocument = SigmaDocumentSchema.parse(generated.nextDocument);
     const capturedOperationCount = capturedSession.operations.length + capturedSession.mutationOperations.length;
-    ports.proposeDocumentChange({
-      id: WEB_MCP_PROPOSAL_ID,
-      kind: "draft",
-      targetId: blockIds[0] ?? shapeIds[0] ?? generated.nextDocument.content[0]?.id ?? END_OF_DOCUMENT_TARGET,
-      targetIds,
-      blockIds,
-      shapeIds,
-      before: [],
-      after: operationSummaries.map((item) => item.summaryText),
-      operationCount: capturedOperationCount,
-      baseRevision: capturedRevision,
-      previewDraft,
-      apply: (current) => {
-        const liveRevision = contentRevision();
-        const conflicts = contentChangedTargets(capturedBaseLiveDocument, current);
-        if (liveRevision !== capturedRevision || conflicts.length > 0) {
-          throw formatStaleError(conflicts.length > 0 ? conflicts : ["document"]);
-        }
-        // ドラフトは開始時のスナップショットから育つので、そのあいだに付いたコメントを
-        // 持っていない。**いま画面にあるコメントをそのまま持ち越す** (承認でコメントが消えない)。
-        const nextDocument = SigmaDocumentSchema.parse({ ...reviewedDocument, comments: current.comments });
-        const selectedBlockId = blockIds.at(-1) ?? current.content[0]?.id ?? END_OF_DOCUMENT_TARGET;
-        if (session === capturedSession && baseRevision === capturedRevision) clearDraft();
-        return { document: nextDocument, selectedBlockId };
-      },
-      dismiss: () => {
-        if (session === capturedSession && baseRevision === capturedRevision) clearDraft();
-      },
-    });
+    const createProposal = (
+      previewBase: SigmaDocument,
+      previewedDocument: SigmaDocument,
+      currentPreviewDraft: AiEditSessionDraft,
+    ): SigmaWebMcpProposal => ({
+        id: WEB_MCP_PROPOSAL_ID,
+        kind: "draft",
+        targetId: blockIds[0] ?? shapeIds[0] ?? previewedDocument.content[0]?.id ?? END_OF_DOCUMENT_TARGET,
+        targetIds,
+        blockIds,
+        shapeIds,
+        before: [],
+        after: operationSummaries.map((item) => item.summaryText),
+        operationCount: capturedOperationCount,
+        baseRevision: capturedRevision,
+        previewDraft: structuredClone(currentPreviewDraft),
+        refresh: (current) => {
+          const replay = replayDraft(
+            previewBase,
+            current,
+            capturedDraft,
+            capturedPlacements,
+            capturedMovePlacements,
+            capturedCheckpoints,
+          );
+          return createProposal(structuredClone(current), SigmaDocumentSchema.parse(replay.nextDocument), replay.draft);
+        },
+        apply: (current) => {
+          const liveChanges = contentChangedTargets(previewBase, current);
+          if (liveChanges.length > 0) {
+            // Diagnose a real target conflict first, but never commit a placement the person has
+            // not yet seen in the preview. The Bridge refreshes and republishes on revision drift.
+            replayDraft(
+              previewBase,
+              current,
+              capturedDraft,
+              capturedPlacements,
+              capturedMovePlacements,
+              capturedCheckpoints,
+            );
+            throw new Error("PREVIEW_STALE: The document changed after this preview was rendered. Review the refreshed preview before applying it.");
+          }
+          const nextDocument = SigmaDocumentSchema.parse({
+            ...previewedDocument,
+            comments: current.comments,
+            updatedAt: current.updatedAt,
+          });
+          const selectedBlockId = blockIds.at(-1) ?? current.content[0]?.id ?? END_OF_DOCUMENT_TARGET;
+          return { document: nextDocument, selectedBlockId };
+        },
+        accept: () => {
+          if (session === capturedSession && baseRevision === capturedRevision) clearDraft();
+        },
+        dismiss: () => {
+          if (session === capturedSession && baseRevision === capturedRevision) clearDraft();
+        },
+      });
+    ports.proposeDocumentChange(createProposal(capturedBaseLiveDocument, reviewedDocument, previewDraft));
     return toolResult({
       ok: true,
       status: "pending_approval",
@@ -806,16 +1396,29 @@ export function createSigmaWebMcpTools(
   };
   const runDraft = (name: SigmaDocAgentDraftToolName, input: Record<string, unknown>, args: Record<string, unknown>): Record<string, unknown> => {
     const current = ensureSession(expectedRevision(input));
+    const placementBase = structuredClone(current.draftDocument);
     const beforeOperations = current.operations.length; const beforeMutations = current.mutationOperations.length;
     const result = executeSigmaDocAgentDraftTool(current, name, args);
-    if (result.ok) recordNewOperationOrder(current, beforeOperations, beforeMutations);
+    if (result.ok) {
+      materializeImplicitProblemBodyOperations(current, beforeOperations, placementBase);
+      recordNewOperationOrder(current, beforeOperations, beforeMutations);
+      recordInsertionPlacements(current, beforeOperations, input, placementBase);
+      recordReplayCheckpoint(placementBase, current.draftDocument, beforeOperations, current.operations.length);
+    }
     return publish(result);
   };
   const runMutation = (input: Record<string, unknown>, operation: Record<string, unknown>): Record<string, unknown> => {
     const current = ensureSession(expectedRevision(input));
+    const beforeDocument = structuredClone(current.draftDocument);
     const beforeOperations = current.operations.length; const beforeMutations = current.mutationOperations.length;
+    recordMovePlacement(current, operation, input);
     const result = commitSigmaDocMutation(current, operation);
-    if (result.ok) recordNewOperationOrder(current, beforeOperations, beforeMutations);
+    if (result.ok) {
+      recordNewOperationOrder(current, beforeOperations, beforeMutations);
+      recordReplayCheckpoint(beforeDocument, current.draftDocument, beforeOperations, current.operations.length);
+    } else if (operation.operation === "moveBlocks") {
+      movePlacements.pop();
+    }
     return publish(result);
   };
 
@@ -884,8 +1487,19 @@ export function createSigmaWebMcpTools(
     }),
     makeReadTool("get_pending_proposal", "Return the one accumulated draft, its ordered operation summaries, changed targets, and base revision.", EMPTY_OBJECT_SCHEMA, () => {
       if (!session) return toolResult({ ok: true, pending: false });
+      refreshSessionFromLive(false);
       const generated = getSigmaDocAgentSessionDraft(session, { summary: "WebMCP pending draft", plan: ["Review and apply or discard"] });
-      return toolResult({ ok: true, pending: true, proposalId: WEB_MCP_PROPOSAL_ID, baseRevision, operationCount: session.operations.length + session.mutationOperations.length, changedIds: generated.changedIds, operations: orderedOperationSummaries(generated) });
+      return toolResult({
+        ok: true,
+        pending: true,
+        proposalId: WEB_MCP_PROPOSAL_ID,
+        baseRevision,
+        currentRevision: contentRevision(),
+        conflictIds: replayConflict?.targetIds ?? [],
+        operationCount: session.operations.length + session.mutationOperations.length,
+        changedIds: generated.changedIds,
+        operations: orderedOperationSummaries(generated),
+      });
     }),
     makeWriteTool("withdraw_pending_proposal", "Withdraw the agent's one pending draft. This does not modify the document.", EMPTY_OBJECT_SCHEMA, () => {
       if (!session) return toolResult({ ok: true, withdrawn: false, message: "No pending draft." });

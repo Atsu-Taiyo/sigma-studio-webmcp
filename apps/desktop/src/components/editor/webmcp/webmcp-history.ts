@@ -7,6 +7,8 @@
  * `commitDocumentChange` が1 undo単位になっている。
  */
 export interface WebMcpHistoryEntry {
+  /** 同じ固定提案IDで複数回決着しても重複しない、表示行用の識別子。 */
+  entryId: string;
   id: string;
   status: "applied" | "rejected";
   operationCount: number;

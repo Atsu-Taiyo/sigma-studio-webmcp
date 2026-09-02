@@ -6,15 +6,13 @@ The canonical format is SigmaDoc JSON. TeX is used inside math nodes and can als
 
 ## WebMCP tools
 
-| Tool | Mode | Purpose |
-|---|---|---|
-| `inspect_document` | read-only | Read the title, current selection, outline, and block count |
-| `read_block` | read-only | Read one block by its stable SigmaDoc ID |
-| `validate_document` | read-only | Validate the current document with the canonical Zod schema |
-| `insert_content` | write | Insert paragraphs, headings, or math at a controlled position |
-| `replace_block_content` | write | Replace text only when the previously read content still matches |
+The browser registers 26 tools for:
 
-Writes pass through the same commit function as human edits, preserving edit guards and Undo history. `replace_block_content` requires `expected_content`, preventing an agent from overwriting a newer human edit with stale state.
+- inspecting, reading, searching, and validating the current SigmaDoc;
+- building one reviewable proposal for text, problems, layout, shapes, tables, and 2D or 3D graphs;
+- reading, adding, replying to, and resolving document comments.
+
+Structural writes require `expectedRevision` and accumulate in a single proposal. The user can preview, apply, or discard that proposal in the editor. Applying it passes through the same commit function as human edits and creates one Undo boundary. If the document changed after the proposal started, Sigma Studio replays the operations over unrelated human edits and reports conflicts only for the affected targets.
 
 See [docs/webmcp.md](docs/webmcp.md) for the architecture and tool contract.
 
@@ -50,4 +48,4 @@ docs/webmcp.md                              architecture and local test guide
 
 ## License
 
-No project-wide license has been specified yet. Public visibility does not grant permission to copy, modify, or redistribute the project. A challenge-compatible open-source license must be selected before the final submission.
+This repository is licensed under the [MIT License](LICENSE).
