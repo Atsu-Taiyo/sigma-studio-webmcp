@@ -16,6 +16,7 @@ export interface EditorChromeParts {
   settingsMenu: ReactNode;
   documentTabsRow: ReactNode;
   saveStateBadge: ReactNode;
+  versionHistoryButton: ReactNode;
   reportIssueButton: ReactNode;
   menubarRightActions: ReactNode;
   editingGroup: ReactNode;
@@ -39,4 +40,6 @@ export interface EditorChromeParts {
   ribbonTitlebarActions: ReactNode;
   /** Word風の画面下端のステータスバー（ページ数・ズーム）。docs では null。 */
   ribbonStatusBar: ReactNode;
+  appMenuInert: boolean;
+  editingSurfaceInert: boolean;
 }

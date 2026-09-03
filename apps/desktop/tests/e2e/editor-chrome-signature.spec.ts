@@ -92,6 +92,7 @@ const DOCS_MENUBAR_SIGNATURE: readonly string[] = [
   "brand>app-menu-list>app-menu-anchor|BUTTON|app-menu-button ||||false||設定|",
   "brand>document-tabs-row>document-tabs-scroll>document-tab active|BUTTON|document-tab-main|複素数平面の正方形と積の範囲|||false|||",
   "brand>document-tabs-row>document-tabs-scroll>document-tab active|BUTTON|document-tab-close|複素数平面の正方形と積の範囲 のタブを閉じる|||false|||",
+  "|BUTTON|version-history-button|バージョン履歴|false||false|||",
   "|BUTTON|report-issue-button|問題を報告|||false|||",
   "menubar-right-actions|BUTTON|workspace-open-button|ワークスペース|||false|||",
   "menubar-right-actions>document-tab-actions>document-tab-action-hover|BUTTON|document-tab-action|新規教材|||false|||",

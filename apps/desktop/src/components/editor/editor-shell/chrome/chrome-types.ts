@@ -89,6 +89,7 @@ export interface EditorChromeShared {
   insertInlineMath: (tex: string, target?: "document" | "overlay" | "comment", edit?: boolean) => void;
   isDesktopApp: boolean;
   isEmbedded: boolean;
+  versionHistoryPreviewActive: boolean;
   runEditCommand: (command: "bold" | "italic" | "underline" | "boxed" | "undo" | "redo") => void;
   runOverlayCommand: (command: OverlayCommand, graphPreset?: Graph2DPreset, options?: Pick<OverlayCommandRequest, "anchorRect">) => void;
   setStatusMessage: Dispatch<SetStateAction<string>>;
@@ -294,6 +295,8 @@ export interface EditorChromeAppMenu {
   openTextImportDialog: () => void;
   otherImportInputRef: RefObject<HTMLInputElement | null>;
   openWorkspaceScreen: () => Promise<void>;
+  openVersionHistory: () => void;
+  versionHistoryOpen: boolean;
   promoteAiToSidebar: () => void;
   reportIssue: () => void;
   requestOverlayImages: (files: ArrayLike<File> | Iterable<File>, point?: OverlayPoint) => void;

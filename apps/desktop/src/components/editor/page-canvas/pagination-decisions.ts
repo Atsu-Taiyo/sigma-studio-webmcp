@@ -10,11 +10,11 @@
  * 実測が要る部分は `onPlaced` フックで呼び出し側へ返し、カーソルの移動だけを受け取る。
  */
 
-export type PaginationItemKind = "atomicProblem" | "block" | "fragmentableBlock" | "area";
+export type PaginationItemKind = "atomicProblemArea" | "block" | "fragmentableBlock" | "area" | "reservedAreaEnd";
 
 export interface PaginationItem {
   kind: PaginationItemKind;
-  /** gap を積む先のキー。atomicProblem は問題 id、area はユニット id。 */
+  /** gap を積む先のキー。atomicProblemArea はエリアの DOM キャリア、area はユニット id。 */
   gapKey: string;
   /** gap を除いた位置 (コンテンツ領域上端からの px)。 */
   topNat: number;
@@ -26,14 +26,26 @@ export interface PaginationItem {
    * 次の行なのに逆の結果になる。含めないとページ末尾で余白が消える。
    */
   trailingSpacePx?: number;
+  /** 分割枠の各ページ片の下端に必要な、描画だけの chrome 予約高。 */
+  fragmentEndSpacePx?: number;
   /** 手動改ページ。 */
   forceBreakBefore?: boolean;
+  /** keepWithNext: current + next の gap-free 合算高。1ページ内に収まる組だけ有効。 */
+  keepWithNextHeightPx?: number;
+  /** fragmentableBlock: 1ページに収まる箱は分割せず次ページへ送る。 */
+  keepTogether?: boolean;
   /** fragmentableBlock: そのページで開始するのに要る最小の残り高さ。 */
   minStartHeightPx?: number;
   /** area: セクション頭からコンテンツ原点までのオフセット。 */
   contentOffset?: number;
   /** area: 先頭ブロックの高さ。 */
   firstBlockHeight?: number;
+  /** area: 先頭ブロックが現在ページから断片化できる。 */
+  firstBlockFragmentable?: boolean;
+  /** area: 断片化可能な先頭箱を開始するのに必要な残高。 */
+  firstBlockMinStartHeightPx?: number;
+  /** atomicProblemArea: 論理予約高のうちDOM外に残り、後続の前へ積む高さ。 */
+  reservedHeightDeficitPx?: number;
 }
 
 export interface PaginationEnv {
@@ -92,7 +104,8 @@ export function occupiedPageCount(height: number, pageStride: number): number {
 
 /** 収まり判定に使う高さ。末尾のブロック下余白は「そこで切ってよい」ので除く。 */
 function fitHeight(item: PaginationItem): number {
-  return Math.max(0, item.height - (item.trailingSpacePx ?? 0));
+  return Math.max(0, item.height - (item.trailingSpacePx ?? 0))
+    + Math.max(0, item.fragmentEndSpacePx ?? 0);
 }
 
 export function decidePagination(
@@ -108,6 +121,7 @@ export function decidePagination(
     : 0;
   let cumGapPrev = 0;
   let pendingGap = 0;
+  let trailingCursorNatural = items.length > 0 ? items[0].topNat : 0;
 
   const addGap = (gapKey: string, gap: number): number => {
     const rounded = roundPaginationGap(gap);
@@ -127,8 +141,15 @@ export function decidePagination(
   };
 
   for (const item of items) {
+    // atomic の height は論理予約高を含む一方、deficit は DOM にまだ無い部分。
+    // 末尾 pendingGap と合成するとき二重計上しないよう、ここでは実在カーソルだけを持つ。
+    const renderedHeight = item.kind === "atomicProblemArea"
+      ? Math.max(0, item.height - Math.max(0, item.reservedHeightDeficitPx ?? 0))
+      : item.height;
+    trailingCursorNatural = Math.max(trailingCursorNatural, item.topNat + renderedHeight);
     let gap = 0;
-    if (pendingGap > 0.5) {
+    // reservedAreaEnd はDOMキャリアを持たない。保留 gap は次の実在項目まで運ぶ。
+    if (pendingGap > 0.5 && item.kind !== "reservedAreaEnd") {
       gap += addGap(item.gapKey, pendingGap);
       pendingGap = 0;
     }
@@ -138,31 +159,64 @@ export function decidePagination(
     // すでにページ頭にいるなら手動改ページは満たされている (空ページを作らない)。
     const forceBreak = item.forceBreakBefore === true && !isFirstOnPage;
 
-    if (item.kind === "atomicProblem") {
-      // keep-together が唯一の規則。ページより高い問題も分割せず、次ページの頭から始める
-      // (枠を切らないための規則で、そこが「どのページにも収まらない問題」にできる最善)。
+    if (item.kind === "atomicProblemArea") {
+      // keep-together が唯一の規則。ページより高い枠付きエリアも分割せず、次ページの頭から
+      // 始める (枠を切らないための規則で、そこが「どのページにも収まらない枠」にできる最善)。
       if (!isFirstOnPage && relTop + item.height > env.contentHeightPx + 0.5) {
         gap += pushToNextPage(item.gapKey, item.topNat);
       }
       // 占有するページ数だけカーソルを進める。これが無いと、後続のブロックが
-      // 「まだ問題の始まったページにいる」前提で判定され、毎パス上下する。
+      // 「まだエリアの始まったページにいる」前提で判定され、毎パス上下する。
       const pages = occupiedPageCount(item.height, env.pageStride);
       if (pages > 1) {
         pageIndex += pages - 1;
         pageStartNatural += (pages - 1) * env.pageStride;
       }
+      const reservedHeightDeficit = Math.max(0, item.reservedHeightDeficitPx ?? 0);
+      if (reservedHeightDeficit > 0) {
+        pendingGap += reservedHeightDeficit;
+        // The synthetic height is absent from subsequent topNat values. Move the natural
+        // page origin back by the same amount so later fit checks see their actual position.
+        pageStartNatural -= reservedHeightDeficit;
+      }
+    } else if (item.kind === "reservedAreaEnd") {
+      // minHeight が作る連続DOM高はページ間 gap も高さとして消費する。自然座標の末尾が
+      // 通過した紙面ページ数をここで確定し、その gap 分を次の実在キャリアへ補う。
+      const pages = env.contentHeightPx > 0
+        ? Math.max(0, Math.floor((relTop - 0.5) / env.contentHeightPx))
+        : 0;
+      if (pages > 0) {
+        pageIndex += pages;
+        pageStartNatural += pages * env.contentHeightPx;
+        pendingGap += pages * Math.max(0, env.pageStride - env.contentHeightPx);
+      }
+      continue;
     } else if (item.kind === "fragmentableBlock") {
       // 箱や 1 ページより高いブロックは本文のように流れる: 残りを埋めて
       // 次ページへ続く。ここでは見た目の種類を知らず、分割可能というレイアウト契約だけを扱う。
       const available = env.contentHeightPx - relTop;
       const minStart = item.minStartHeightPx ?? 0;
+      const keepWithNextHeight = Math.max(0, item.keepWithNextHeightPx ?? 0);
+      const keepWithNextPush = !isFirstOnPage
+        && keepWithNextHeight > available + 0.5
+        && keepWithNextHeight <= env.contentHeightPx + 0.5;
+      const keepTogetherPush = item.keepTogether === true
+        && !isFirstOnPage
+        && fitHeight(item) > available + 0.5
+        && fitHeight(item) <= env.contentHeightPx + 0.5;
       const needsPush = forceBreak
+        || keepWithNextPush
+        || keepTogetherPush
         || (!isFirstOnPage && fitHeight(item) > available + 0.5 && available < minStart - 0.5);
       if (needsPush) {
         gap += pushToNextPage(item.gapKey, item.topNat);
       }
     } else if (item.kind === "block") {
-      if (forceBreak || (!isFirstOnPage && relTop + fitHeight(item) > env.contentHeightPx + 0.5)) {
+      const keepWithNextHeight = Math.max(0, item.keepWithNextHeightPx ?? 0);
+      const keepWithNextPush = !isFirstOnPage
+        && keepWithNextHeight > env.contentHeightPx - relTop + 0.5
+        && keepWithNextHeight <= env.contentHeightPx + 0.5;
+      if (forceBreak || keepWithNextPush || (!isFirstOnPage && relTop + fitHeight(item) > env.contentHeightPx + 0.5)) {
         gap += pushToNextPage(item.gapKey, item.topNat);
       }
     }
@@ -173,8 +227,14 @@ export function decidePagination(
       const contentOffset = item.contentOffset ?? 0;
       areaRelTop = Math.max(0, item.topNat + contentOffset - pageStartNatural);
       availableFirst = env.contentHeightPx - areaRelTop;
-      // 先頭ブロックすら置けないなら、エリアごと次ページの頭へ送る (その先で続きは流れる)。
-      if (areaRelTop > 0.5 && availableFirst < (item.firstBlockHeight ?? 0) - 0.5) {
+      const firstBlockHeight = Math.max(0, item.firstBlockHeight ?? 0);
+      const firstBlockCannotStart = item.firstBlockFragmentable === true
+        ? firstBlockHeight > availableFirst + 0.5
+          && availableFirst < Math.max(0, item.firstBlockMinStartHeightPx ?? 0) - 0.5
+        : availableFirst < firstBlockHeight - 0.5;
+      // 満ページに収まる先頭ブロックだけを次ページへ送る。1ページ超の
+      // 段落は現在ページから断片化し、箱は minStart を満たす残りから流す。
+      if (areaRelTop > 0.5 && firstBlockCannotStart) {
         gap += pushToNextPage(item.gapKey, item.topNat);
         areaRelTop = contentOffset;
         availableFirst = env.contentHeightPx - areaRelTop;
@@ -196,7 +256,19 @@ export function decidePagination(
     }
   }
 
-  return { gaps, pageCount: pageIndex + 1 };
+  let pageCount = pageIndex + 1;
+  if (pendingGap > 0.5 && items.length > 0 && env.pageStride > 0) {
+    // 次の実在キャリアが無くても、予約の論理末尾は紙面数に残す。pendingGap は DOM に
+    // 未実現なので gap map へは書かず、最終カーソルとの合成だけで占有ページを数える。
+    const documentStartNatural = items[0].topNat - (initialGaps[items[0].gapKey] ?? 0);
+    const trailingBottom = trailingCursorNatural + cumGapPrev + pendingGap;
+    pageCount = Math.max(
+      pageCount,
+      occupiedPageCount(Math.max(0, trailingBottom - documentStartNatural), env.pageStride),
+    );
+  }
+
+  return { gaps, pageCount };
 }
 
 /**

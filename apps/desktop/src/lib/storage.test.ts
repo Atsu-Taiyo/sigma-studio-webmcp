@@ -313,6 +313,9 @@ function createDesktopStorageMock() {
       recoveryIssues: [],
     }),
     saveDocument: vi.fn().mockResolvedValue({ ok: true }),
+    listDocumentVersions: vi.fn().mockResolvedValue([]),
+    getDocumentVersion: vi.fn().mockResolvedValue(null),
+    captureDocumentVersion: vi.fn().mockResolvedValue({ ok: true }),
     createDocument: vi.fn().mockResolvedValue({
       file: createMetadata("file_created", createdDocument),
       document: createdDocument,

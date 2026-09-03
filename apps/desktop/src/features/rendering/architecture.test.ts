@@ -188,14 +188,32 @@ describe("rendering feature dependency boundary", () => {
       fileURLToPath(new URL("./adapters/svg/react-static-renderers.tsx", import.meta.url)),
       "utf8",
     );
-    expect(importSpecifiers(reactBindings)).toContain("react-dom/server");
-    expect(importSpecifiers(reactBindings)).toContain("../react");
+    const reactBindingImports = importSpecifiers(reactBindings);
+    expect(reactBindingImports).toContain("react-dom/server");
+    expect(reactBindingImports).not.toContain("../react");
+    expect(reactBindingImports.filter((specifier) => specifier.startsWith("../react/"))).toEqual([
+      "../react/Graph2DPreview",
+      "../react/MathEnvironment",
+      "../react/OverlayChartStaticView",
+      "../react/OverlayTableStaticView",
+    ]);
+    expect(reactBindingImports).not.toContain("../react/Graph3DPreview");
+
+    const staticReactEntrypoint = readFileSync(
+      fileURLToPath(new URL("./adapters/react/static.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(importSpecifiers(staticReactEntrypoint)).toEqual(["./InlineContent"]);
+    expect(staticReactEntrypoint).not.toMatch(/Graph3DPreview|OrbitControls/);
   });
 
   it("keeps external consumers off rendering implementation files", () => {
     const publicEntrypoints = new Set([
       "@/features/rendering/adapters",
       "@/features/rendering/adapters/react",
+      // Electron main also renders text into AI preview SVGs. This narrow public entrypoint
+      // deliberately excludes browser-only Graph3DPreview/OrbitControls from that bundle.
+      "@/features/rendering/adapters/react/static",
       "@/features/rendering/adapters/svg",
       // three は react/svg と並ぶ描画アダプタ。3D教材の動画書き出しがここから入る。
       // 束ねる index を経由させるのは、three を引く経路をこの1つに保つため
@@ -1024,7 +1042,10 @@ describe("rendering feature dependency boundary", () => {
         "utf8",
       );
 
-      expect(importSpecifiers(sanitizer)).toEqual(["./rich-text-html"]);
+      expect(importSpecifiers(sanitizer)).toEqual([
+        "@/lib/math-macros",
+        "./rich-text-html",
+      ]);
       expect(sanitizer).not.toMatch(/\b(?:window|document|DOMParser|HTMLElement)\b/);
     });
   });
@@ -1088,8 +1109,9 @@ describe("math typeset style and render environment have a single source", () =>
       .map(desktopSourcePath)
       .sort();
 
+    // MathExpressionInput delegates its editing field to InlineMathField, so it no longer
+    // writes a MathLive mode independently.
     expect(fieldModeWriters).toEqual([
-      "components/math/MathExpressionInput.tsx",
       "components/tiptap/inline-math-extension.tsx",
       "lib/mathlive-config.ts",
     ]);

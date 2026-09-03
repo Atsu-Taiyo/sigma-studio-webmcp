@@ -3,9 +3,7 @@
  * WI-1 で空のまま先出ししてあるのは、後続の子 PR が `index.ts` を触らずに
  * 自分の namespace ファイルだけを埋められるようにするため (スタック PR の衝突ゼロ)。
  */
-export const error = {
-  download: { fileReadFailed: "ファイルを読み取れませんでした" },
-  schemaRecovery: {
+export const schemaRecovery = {
     whiteboardContent: "無限キャンバス(ホワイトボード)モードの教材には本文ブロックを追加できません",
     whiteboardAnchor: "ホワイトボードの図形は本文・ページに固定せず絶対座標で配置してください",
     boxBreakSchema: "boxBlock直下では改ページできません。箱内の複数段layoutSectionでは改段を使用できます。",
@@ -40,7 +38,11 @@ export const error = {
       unknownTexCommand: "数式 {{nodeId}} に未許可のTeXコマンド {{command}} があります。",
       texError: "数式 {{nodeId}} にTeXエラー {{code}} があります。",
     },
-  },
+};
+
+export const error = {
+  download: { fileReadFailed: "ファイルを読み取れませんでした" },
+  schemaRecovery,
   runtime: {
     qrTextRequired: "QRコードにする文字列を入力してください。",
     documentLoadFailed: "教材を読み込めませんでした。",

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   decideExternalDocumentChange,
@@ -144,6 +144,7 @@ describe("document replacement save gate", () => {
     let conflictRecoveryRequested = false;
     const canSwitch = await saveBeforeDocumentReplacement({
       save: async () => ({ ok: false, code: "revision-mismatch", error: "revision mismatch" }),
+      isDirtyAfterSave: () => true,
       onFailure: (result) => {
         conflictRecoveryRequested = result.code === "revision-mismatch";
       },
@@ -155,6 +156,38 @@ describe("document replacement save gate", () => {
     expect(canSwitch).toBe(false);
     expect(activeFileId).toBe("file_current");
     expect(conflictRecoveryRequested).toBe(true);
+  });
+
+  it.each([
+    "external-change-pending",
+    "ai-write-in-progress",
+    "revision-unknown",
+    "embedded",
+    "workspace-not-ready",
+    "document-open-failed",
+    undefined,
+  ])("blocks a dirty skipped boundary before replacement (%s)", async (skippedReason) => {
+    const onFailure = vi.fn();
+    const canSwitch = await saveBeforeDocumentReplacement({
+      save: async () => ({ ok: true, skipped: true, skippedReason }),
+      isDirtyAfterSave: () => true,
+      onFailure,
+    });
+
+    expect(canSwitch).toBe(false);
+    expect(onFailure).toHaveBeenCalledWith({ ok: true, skipped: true, skippedReason });
+  });
+
+  it("allows a clean skipped boundary before replacement", async () => {
+    const onFailure = vi.fn();
+    const canSwitch = await saveBeforeDocumentReplacement({
+      save: async () => ({ ok: true, skipped: true, skippedReason: "workspace-not-ready" }),
+      isDirtyAfterSave: () => false,
+      onFailure,
+    });
+
+    expect(canSwitch).toBe(true);
+    expect(onFailure).not.toHaveBeenCalled();
   });
 });
 

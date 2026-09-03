@@ -17,6 +17,7 @@ import {
   type WebMcpToolDefinition,
 } from "@/lib/webmcp-tools";
 import {
+  getDefaultPageLayout,
   hydrateGraphSpecWithOwnedLabelTexts,
   type OverlayShape,
   type SigmaDocument,
@@ -40,6 +41,14 @@ function baseDocument(shapes: OverlayShape[] = []): SigmaDocument {
       },
     },
     updatedAt: "2026-08-30T00:00:00.000Z",
+  };
+}
+
+function whiteboardDocument(): SigmaDocument {
+  return {
+    ...baseDocument(),
+    content: [],
+    pageLayout: getDefaultPageLayout("whiteboard"),
   };
 }
 
@@ -166,6 +175,82 @@ describe("Sigma WebMCP desktop-parity tools", () => {
     const insertedParagraph = harness.getDocument().content[2];
     if (insertedParagraph?.type !== "paragraph") return;
     expect(insertedParagraph.children.find((node) => node.type === "mathInline")).toMatchObject({ tex: "x^2=4" });
+  });
+
+  it("reports document mode and explains whiteboard canvas authoring", async () => {
+    const whiteboard = createHarness(whiteboardDocument(), "public");
+    expect(parseResult(await whiteboard.tool("inspect_document").execute({}))).toMatchObject({
+      documentMode: "whiteboard",
+      guidance: expect.stringContaining("WHITEBOARD_NO_BODY"),
+    });
+
+    const paged = createHarness(baseDocument(), "public");
+    expect(parseResult(await paged.tool("inspect_document").execute({}))).toMatchObject({
+      documentMode: "paged",
+    });
+  });
+
+  it("rejects whiteboard body edits without leaking a draft or stale revision", async () => {
+    const harness = createHarness(whiteboardDocument(), "public");
+
+    await expect(async () => harness.tool("insert_markdown").execute({
+      expectedRevision: 0,
+      targetId: END_OF_DOCUMENT_TARGET,
+      markdown: "本文",
+    })).rejects.toThrow("WHITEBOARD_NO_BODY");
+    expect(parseResult(await harness.tool("get_pending_proposal").execute({}))).toMatchObject({ pending: false });
+
+    harness.humanEdit({ ...harness.getDocument(), updatedAt: "2026-09-03T00:00:00.000Z" });
+    expect(parseResult(await harness.tool("create_overlay").execute({
+      expectedRevision: 1,
+      targetId: "CANVAS",
+      kind: "rectangle",
+      x: 100,
+      y: 80,
+    }))).toMatchObject({ ok: true, status: "pending_approval" });
+  });
+
+  it("creates multi-block Markdown text on a whiteboard and validates markdown exclusivity", async () => {
+    const harness = createHarness(whiteboardDocument(), "public");
+    expect(parseResult(await harness.tool("create_overlay").execute({
+      expectedRevision: 0,
+      targetId: "CANVAS",
+      kind: "text",
+      x: 100,
+      y: 80,
+      markdown: "## 見出し\n\n式 $x^2$ を考える。\n\n- 一つ\n- 二つ",
+    }))).toMatchObject({ ok: true, status: "pending_approval" });
+    const operation = harness.getProposal()?.previewDraft.operations.find((item) => item.operation === "insertOverlayShape");
+    expect(operation).toMatchObject({ operation: "insertOverlayShape", overlayShape: { type: "text" } });
+    const overlayShape = operation?.operation === "insertOverlayShape" ? operation.overlayShape : null;
+    expect(overlayShape?.type === "text" ? overlayShape.props.blocks.map((block) => block.type) : []).toEqual(["heading", "paragraph", "list"]);
+    const paragraph = overlayShape?.type === "text" ? overlayShape.props.blocks[1] : null;
+    expect(paragraph?.type === "paragraph" ? paragraph.children : []).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "mathInline", tex: "x^2" }),
+    ]));
+
+    const invalidKind = createHarness(whiteboardDocument(), "public");
+    await expect(async () => invalidKind.tool("create_overlay").execute({
+      expectedRevision: 0,
+      targetId: "CANVAS",
+      kind: "rectangle",
+      x: 0,
+      y: 0,
+      markdown: "x",
+    })).rejects.toThrow("kind:text");
+    expect(parseResult(await invalidKind.tool("get_pending_proposal").execute({}))).toMatchObject({ pending: false });
+
+    const conflictingContent = createHarness(whiteboardDocument(), "public");
+    await expect(async () => conflictingContent.tool("create_overlay").execute({
+      expectedRevision: 0,
+      targetId: "CANVAS",
+      kind: "text",
+      x: 0,
+      y: 0,
+      markdown: "x",
+      text: "y",
+    })).rejects.toThrow("text");
+    expect(parseResult(await conflictingContent.tool("get_pending_proposal").execute({}))).toMatchObject({ pending: false });
   });
 
   it("routes public overlay creation and updates by canonical object type", async () => {
@@ -580,6 +665,33 @@ describe("Sigma WebMCP desktop-parity tools", () => {
       }),
     ]);
     expect(updated.props).not.toHaveProperty("richText");
+  });
+
+  it("replaces a text shape with multi-block Markdown", async () => {
+    const shape: OverlayShape = {
+      id: "text_markdown_update",
+      type: "text",
+      x: 20,
+      y: 30,
+      props: {
+        w: 180,
+        h: 24,
+        blocks: [{ type: "paragraph", id: "text_markdown_before", children: [{ type: "text", text: "Before" }] }],
+        color: "#111827",
+        size: "m",
+      },
+    };
+    const harness = createHarness(baseDocument([shape]), "public");
+    await harness.tool("update_overlay").execute({
+      expectedRevision: 0,
+      shapeId: shape.id,
+      expectedShape: shape,
+      markdown: "## After\n\n値は $x^2$。\n\n- 一つ",
+    });
+    harness.apply();
+
+    const updated = currentShape(harness.getDocument(), shape.id);
+    expect(updated.type === "text" ? updated.props.blocks.map((block) => block.type) : []).toEqual(["heading", "paragraph", "list"]);
   });
 
   it("formats canonical overlay blocks without restoring the retired richText document", async () => {

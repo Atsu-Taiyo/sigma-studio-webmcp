@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   blockHitProbeColumnLeftPx,
+  isContainerTopBand,
   resolveBlockAffordanceHover,
+  resolveBlockAffordancePointerOwner,
+  resolveStationaryBlockAffordanceRefresh,
   resolveBlockInsertButtonLane,
   resolveBlockSelectionRange,
   resolveInnerBlockAt,
+  resolveInnerLaneProbe,
   sameBlockAffordanceHover,
   type BlockSpaceAfterTarget,
   type HoveredTopLevelBlock,
@@ -37,6 +41,46 @@ const middleParagraph: HoveredTopLevelBlock = {
 };
 
 describe("resolveBlockAffordanceHover", () => {
+  it("keeps an existing gutter affordance when it overlaps a column divider", () => {
+    expect(resolveBlockAffordancePointerOwner({
+      dragging: false,
+      targetIsAffordance: true,
+      hitsColumnDivider: true,
+    })).toBe("frozen");
+  });
+
+  it("suppresses both gutter controls while a column divider owns the pointer", () => {
+    expect(resolveBlockAffordanceHover(
+      {
+        ...middleParagraph,
+        spaceAfterTarget: {
+          blockId: "middle",
+          bottom: 340,
+          left: 100,
+          insideProblemArea: false,
+          spaceAfterPx: 0,
+        },
+      },
+      { x: 92, y: 320 },
+      { suppressGutterControls: true },
+    )).toEqual({
+      handle: null,
+      insertPoint: null,
+      spaceAfter: null,
+    });
+  });
+
+  it("keeps a container grip in its top band even when a child unit is measurable there", () => {
+    expect(resolveBlockAffordanceHover(
+      {
+        ...problem,
+        unit: { id: "inner", top: 48, bottom: 80, left: 112, insideProblemArea: false },
+        useOwnerAffordance: true,
+      },
+      { x: 104, y: 50 },
+    ).handle?.blockId).toBe("problem");
+  });
+
   it("reports the hovered block without an insertion line in the middle of a block", () => {
     expect(resolveBlockAffordanceHover(problem, { x: 300, y: 120 })).toEqual({
       handle: { blockId: "problem", top: 48, bottom: 200, left: 100 },
@@ -118,6 +162,31 @@ describe("resolveBlockAffordanceHover", () => {
       insertPoint: null,
       spaceAfter: null,
     });
+  });
+});
+
+describe("resolveStationaryBlockAffordanceRefresh", () => {
+  it("adopts changed geometry at the last pointer point when layout revision advances", () => {
+    const current = resolveBlockAffordanceHover(middleParagraph, { x: 300, y: 320 });
+    const next = resolveBlockAffordanceHover({
+      ...middleParagraph,
+      unit: { id: "middle", top: 300, bottom: 364, left: 100, insideProblemArea: false },
+      spaceAfterTarget: {
+        blockId: "middle",
+        bottom: 364,
+        left: 100,
+        insideProblemArea: false,
+        spaceAfterPx: 0,
+      },
+    }, { x: 300, y: 320 });
+
+    expect(resolveStationaryBlockAffordanceRefresh({
+      previousRevision: 4,
+      revision: 5,
+      point: { x: 300, y: 320 },
+      current,
+      next,
+    })).toEqual({ revision: 5, hover: next, changed: true });
   });
 });
 
@@ -327,5 +396,33 @@ describe("resolveInnerBlockAt", () => {
 
   it("returns null with no candidates", () => {
     expect(resolveInnerBlockAt([], 100, 100)).toBeNull();
+  });
+});
+
+describe("resolveInnerLaneProbe", () => {
+  it("keeps the outer problem-area lane ownership in a nested first column", () => {
+    const outer = resolveInnerLaneProbe([
+      { left: 100, right: 400 },
+      { left: 430, right: 730 },
+    ], 450);
+    expect(outer?.firstColumn).toBe(false);
+
+    const inner = resolveInnerLaneProbe([
+      { left: 430, right: 560 },
+      { left: 570, right: 700 },
+    ], 450, outer?.firstColumn);
+    expect(inner).toMatchObject({ laneLeft: 430, firstColumn: false });
+  });
+});
+
+describe("isContainerTopBand", () => {
+  it("keeps real container padding above the first child", () => {
+    expect(isContainerTopBand(100, 118, 124)).toBe(true);
+    expect(isContainerTopBand(100, 124, 124)).toBe(false);
+  });
+
+  it("reserves six pixels when the first child starts at the container top", () => {
+    expect(isContainerTopBand(100, 102, 100)).toBe(true);
+    expect(isContainerTopBand(100, 106, 100)).toBe(false);
   });
 });

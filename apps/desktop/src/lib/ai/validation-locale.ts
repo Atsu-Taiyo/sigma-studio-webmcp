@@ -37,7 +37,10 @@ export function resolveValidationLocale(): AppLocale {
     return getAppLocale();
   }
   // MCP サーバーはここを通る (env は launch 時に main が渡す)。
-  return normalizeLocale(process.env[VALIDATION_LOCALE_ENV] ?? null) ?? DEFAULT_LOCALE;
+  const runtimeProcess = (globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process;
+  return normalizeLocale(runtimeProcess?.env?.[VALIDATION_LOCALE_ENV] ?? null) ?? DEFAULT_LOCALE;
 }
 
 /**

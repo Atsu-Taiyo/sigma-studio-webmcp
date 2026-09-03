@@ -149,6 +149,7 @@ function getListItemSyncKey(item: ListItemNode): string {
     item.id,
     inlineNodesSyncKey(item.children),
     item.align ?? "",
+    item.spaceAfterPx ?? "",
     (item.continuations ?? []).map(getTextFlowBlockSyncKey).join("\u0002"),
     (item.nested ?? []).map(getTextFlowBlockSyncKey).join("\u0002"),
   ].join(":");
@@ -344,8 +345,7 @@ export function hasTextFlowBlockKindChange(
  *
  * 載せてよいのは **PM のノード属性としてそのまま往復する値** だけ。往復で同じ値に戻らない
  * ものを載せると毎回「変わった」と判定され、焦点面への `setContent` が止まらなくなる。
- * 突き合わせるのは双方に載っている id だけなので、片側にしか無いブロック (リスト項目など) は
- * 自然に外れる。
+ * リスト項目は PM 側の先頭段落が専用の非描画属性を運び、同じ id で突き合わせる。
  */
 export function getTextFlowBlockAttributes(blocks: TextFlowBlock[]): Map<string, string> {
   const attributes = new Map<string, string>();
@@ -435,7 +435,7 @@ function collectTextFlowBlockAttributes(
     }
     if (block.type === "list") {
       for (const item of block.items) {
-        // 項目そのものは SigmaDoc では listItem で、下余白を持たない。中に入った本文だけ載せる。
+        attributes.set(item.id, textFlowBlockAttributeSignature(item));
         collectTextFlowBlockAttributes(item.continuations ?? [], attributes);
         collectTextFlowBlockAttributes(item.nested ?? [], attributes);
       }

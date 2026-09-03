@@ -13,6 +13,13 @@ export const MAX_BLOCK_SPACE_AFTER_PX = 400;
 export const BLOCK_SPACE_AFTER_CSS_VARIABLE = "--sigma-doc-space-after";
 
 /**
+ * A list item's edge is inside its `li`: after its owned continuations and before nested lists.
+ * Keep that layout variable separate from the ordinary block variable so inheritance cannot
+ * draw the same persisted value on the leading paragraph as well.
+ */
+export const LIST_ITEM_SPACE_AFTER_CSS_VARIABLE = "--sigma-doc-list-item-space-after";
+
+/**
  * ドラッグ中のプレビューが運ぶ **平行移動量** (px)。紙面の親 (`.page-canvas`) に 1 本だけ
  * 書き、追従するブロックとつまみが `transform: translateY()` でそれを読む。
  *
@@ -39,7 +46,7 @@ export const BLOCK_SPACE_AFTER_FOLLOWER_CLASS = "sigma-space-after-follower";
  * (枠の外へ出すには計測可能な外箱を用意する設計変更が要る)。
  * データとしては全ブロック型が持てる ＝ 後から描画対象を増やしても移行は要らない。
  */
-const SPACE_AFTER_RENDERED_TYPES = new Set(["divider", "heading", "list", "paragraph", "section"]);
+const SPACE_AFTER_RENDERED_TYPES = new Set(["divider", "heading", "list", "listItem", "paragraph", "section"]);
 
 /**
  * 保存・描画に使える値へ正規化する。0 は `undefined` に落とす — 「0 を保存しない」ことで、
@@ -67,6 +74,20 @@ export function blockSpaceAfterStyleVars(
 ): Record<`--${string}`, string> | undefined {
   const px = blockSpaceAfterPx(block);
   return px > 0 ? { [BLOCK_SPACE_AFTER_CSS_VARIABLE]: `${px}px` } : undefined;
+}
+
+/** Draw a list item's persisted space at its internal owned-content edge. */
+export function listItemSpaceAfterStyleVars(
+  item: { spaceAfterPx?: number },
+): Record<`--${string}`, string> | undefined {
+  const px = normalizeBlockSpaceAfterPx(item.spaceAfterPx);
+  return px ? { [LIST_ITEM_SPACE_AFTER_CSS_VARIABLE]: `${px}px` } : undefined;
+}
+
+/** Tiptap `renderHTML` counterpart of {@link listItemSpaceAfterStyleVars}. */
+export function listItemSpaceAfterStyleAttr(value: unknown): Record<string, string> {
+  const px = normalizeBlockSpaceAfterPx(value);
+  return px ? { style: `${LIST_ITEM_SPACE_AFTER_CSS_VARIABLE}: ${px}px` } : {};
 }
 
 /**

@@ -141,6 +141,7 @@ import { formatValidationError } from "@/lib/validation-text";
 import { isSigmaValidationError } from "@/features/document";
 import { ptToPx } from "@/lib/font-size-units";
 import { createId } from "@/lib/id";
+import { parseMarkdownToTextFlowBlocks } from "@/lib/markdown-to-text-flow";
 
 import { getBoxStyleDefinition, BUILTIN_BOX_STYLES, inlineTitleFromText } from "@/lib/box-blocks";
 import {
@@ -637,6 +638,7 @@ export const DraftInsertShapeArgsSchema = z.object({
   label: z.string().optional(),
   text: z.string().optional(),
   tex: z.string().optional(),
+  markdown: z.string().optional(),
   points: z.array(AiOverlayPointSchema).min(2).max(24).optional(),
   start: AiOverlayPointSchema.optional(),
   end: AiOverlayPointSchema.optional(),
@@ -699,6 +701,12 @@ export const DraftInsertShapeArgsSchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: tv("tools.insertShape5"),
+    });
+  }
+  for (const message of getShapeToolMarkdownIssues(value, value.kind)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message,
     });
   }
 });
@@ -4952,8 +4960,9 @@ function createOverlayShapeFromShapeToolArgs(
   }
 
   if (args.kind === "text") {
-    const children = createShapeToolInlineContent(args);
-    const blocks = inlineNodesToOverlayTextBlocks(children);
+    const blocks = args.markdown !== undefined
+      ? createShapeToolMarkdownBlocks(args.markdown)
+      : inlineNodesToOverlayTextBlocks(createShapeToolInlineContent(args));
     // `h` is never taken from the caller: it is a cache of the measured DOM, and a number invented
     // here would be overwritten the first time the editor draws the shape.
     const defaultBox = getShapeToolTextBox(blocks, size, args.fontSize, args.w);
@@ -5081,6 +5090,55 @@ export function createShapeToolInlineContent(args: { text?: string; tex?: string
     throw new Error(tv("tools.createShapeToolInlineContent1", { p0: texIssues.slice(0, 10).join(" / ") }));
   }
   return children;
+}
+
+function getShapeToolMarkdownIssues(
+  args: { markdown?: unknown; text?: unknown; tex?: unknown; label?: unknown },
+  kind: string,
+): string[] {
+  if (args.markdown === undefined) return [];
+  return [
+    ...(kind === "text" ? [] : [tv("tools.insertShapeMarkdownTextOnly")]),
+    ...(args.text === undefined && args.tex === undefined && args.label === undefined
+      ? []
+      : [tv("tools.insertShapeMarkdownExclusive")]),
+  ];
+}
+
+export function assertShapeToolMarkdownArgs(
+  args: { markdown?: unknown; text?: unknown; tex?: unknown; label?: unknown },
+  kind: string,
+): void {
+  const issues = getShapeToolMarkdownIssues(args, kind);
+  if (issues.length > 0) throw new Error(issues.join(" "));
+}
+
+type ParsedMarkdownBlock = NonNullable<ReturnType<typeof parseMarkdownToTextFlowBlocks>>[number];
+
+function isOverlayTextBlock(block: ParsedMarkdownBlock): block is OverlayTextBlock {
+  return block.type === "heading" ||
+    block.type === "paragraph" ||
+    block.type === "list" ||
+    block.type === "quote" ||
+    block.type === "codeBlock" ||
+    block.type === "divider";
+}
+
+export function createShapeToolMarkdownBlocks(markdown: string): OverlayTextBlock[] {
+  const parsed = parseMarkdownToTextFlowBlocks(markdown, { requireMarkdownSyntax: false });
+  if (!parsed || parsed.length === 0) {
+    throw new Error(tv("tools.createShapeToolMarkdownEmpty"));
+  }
+  const unsupported = parsed.find((block) => !isOverlayTextBlock(block));
+  if (unsupported) {
+    throw new Error(tv("tools.createShapeToolMarkdownUnsupported", { p0: unsupported.type }));
+  }
+  const blocks = parsed.filter(isOverlayTextBlock);
+  const texIssues = blocks.flatMap(getRichBlockTexIssues);
+  if (texIssues.length > 0) {
+    throw new Error(tv("tools.createShapeToolInlineContent1", { p0: texIssues.slice(0, 10).join(" / ") }));
+  }
+  return blocks;
 }
 
 /**

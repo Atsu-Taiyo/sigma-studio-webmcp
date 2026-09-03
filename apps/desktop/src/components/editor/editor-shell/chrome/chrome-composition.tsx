@@ -18,7 +18,11 @@ export function renderDocsComposition(parts: EditorChromeParts, t: Translate<"ch
         <div className="brand">
           {parts.documentIcon}
           {parts.documentTitleRow}
-          <nav className="app-menu-list" aria-label={t("appMenu.aria")}>
+          <nav
+            className="app-menu-list"
+            aria-label={t("appMenu.aria")}
+            inert={parts.appMenuInert || undefined}
+          >
             {parts.fileMenu}
             {parts.insertMenu}
             {parts.aiMenu}
@@ -30,12 +34,14 @@ export function renderDocsComposition(parts: EditorChromeParts, t: Translate<"ch
 
         {parts.saveStateBadge}
 
+        {parts.versionHistoryButton}
+
         {parts.reportIssueButton}
 
         {parts.menubarRightActions}
       </div>
 
-      <EditorToolbar ariaLabel={t("toolbar.aria")}>
+      <EditorToolbar ariaLabel={t("toolbar.aria")} inert={parts.editingSurfaceInert || undefined}>
         {parts.editingGroup}
         {parts.formatGroup}
 
@@ -94,8 +100,10 @@ export function renderRibbonComposition(parts: EditorChromeParts) {
           {parts.ribbonTitlebarActions}
         </div>
 
-        {parts.ribbonTabBar}
-        {parts.ribbonBody}
+        <div className="ribbon-editing-surface" inert={parts.editingSurfaceInert || undefined}>
+          {parts.ribbonTabBar}
+          {parts.ribbonBody}
+        </div>
 
         {parts.importInput}
         {parts.otherImportInput}

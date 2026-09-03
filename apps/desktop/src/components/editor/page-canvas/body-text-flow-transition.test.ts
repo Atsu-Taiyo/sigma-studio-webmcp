@@ -10,6 +10,115 @@ import type { TextFlowBlock } from "../text-flow/types";
 import { resolveBodyTextFlowTransition } from "./body-text-flow-transition";
 
 describe("body TextFlow transition", () => {
+  it("keeps an edit in its independent layout column", () => {
+    const left = paragraph("left", "left");
+    const right = paragraph("right", "right");
+    const section: LayoutSectionNode = {
+      id: "columns",
+      type: "layoutSection",
+      layout: { columnCount: 2, columnStartIds: ["left", "right"], columnWidths: [6000, 4000] },
+      children: [left, right],
+    };
+    const transition = resolveBodyTextFlowTransition([section], {
+      scope: "layoutSection",
+      targetId: section.id,
+      previousIds: [left.id],
+      nextBlocks: [paragraph("left", "changed"), paragraph("left-new", "new line")],
+    });
+
+    const result = transition.reduce(section);
+    expect(result.type).toBe("layoutSection");
+    if (result.type !== "layoutSection") return;
+    expect(result.layout.columnStartIds).toEqual(["left", "right"]);
+    expect(result.layout.columnWidths).toEqual([6000, 4000]);
+    expect(result.children.map((block) => block.id)).toEqual(["left", "left-new", "right"]);
+  });
+
+  it("replaces only the edited span and preserves every other block in the column", () => {
+    const leftHead = paragraph("left-head", "head");
+    const edited = paragraph("edited", "old");
+    const leftTail = paragraph("left-tail", "tail");
+    const rightHead = paragraph("right-head", "right");
+    const section: LayoutSectionNode = {
+      id: "columns",
+      type: "layoutSection",
+      layout: { columnCount: 2, columnStartIds: ["left-head", "right-head"], columnWidths: [6000, 4000] },
+      children: [leftHead, edited, leftTail, rightHead],
+    };
+    const transition = resolveBodyTextFlowTransition([section], {
+      scope: "layoutSection",
+      targetId: section.id,
+      previousIds: [edited.id],
+      nextBlocks: [paragraph("edited", "changed"), paragraph("inserted", "new")],
+    });
+
+    const result = transition.reduce(section);
+    expect(result.type).toBe("layoutSection");
+    if (result.type !== "layoutSection") return;
+    expect(result.layout.columnCount).toBe(2);
+    expect(result.layout.columnStartIds).toEqual(["left-head", "right-head"]);
+    expect(result.children.map((block) => block.id)).toEqual([
+      "left-head",
+      "edited",
+      "inserted",
+      "left-tail",
+      "right-head",
+    ]);
+  });
+
+  it("keeps one non-empty child in every column when its last edited block is removed", () => {
+    const left = paragraph("left", "left");
+    const right = paragraph("right", "right");
+    const section: LayoutSectionNode = {
+      id: "columns",
+      type: "layoutSection",
+      layout: { columnCount: 2, columnStartIds: ["left", "right"], columnWidths: [5000, 5000] },
+      children: [left, right],
+    };
+    const transition = resolveBodyTextFlowTransition([section], {
+      scope: "layoutSection",
+      targetId: section.id,
+      previousIds: [left.id],
+      nextBlocks: [],
+    });
+
+    const result = transition.reduce(section);
+    expect(result.type).toBe("layoutSection");
+    if (result.type !== "layoutSection") return;
+    expect(result.layout.columnCount).toBe(2);
+    expect(result.layout.columnStartIds).toHaveLength(2);
+    expect(result.children.at(-1)).toBe(right);
+  });
+
+  it("does not move a surviving left-column tail when the right-column start is deleted", () => {
+    const leftHead = paragraph("left-head", "head");
+    const leftTail = paragraph("left-tail", "tail");
+    const rightHead = paragraph("right-head", "right head");
+    const rightTail = paragraph("right-tail", "right tail");
+    const section: LayoutSectionNode = {
+      id: "columns",
+      type: "layoutSection",
+      layout: { columnCount: 2, columnStartIds: ["left-head", "right-head"], columnWidths: [6000, 4000] },
+      children: [leftHead, leftTail, rightHead, rightTail],
+    };
+    const transition = resolveBodyTextFlowTransition([section], {
+      scope: "layoutSection",
+      targetId: section.id,
+      previousIds: [rightHead.id, rightTail.id],
+      nextBlocks: [rightTail],
+    });
+
+    const result = transition.reduce(section);
+    expect(result.type).toBe("layoutSection");
+    if (result.type !== "layoutSection") return;
+    expect(result.layout.columnStartIds).toEqual(["left-head", "right-tail"]);
+    expect(result.children.map((block) => block.id)).toEqual([
+      "left-head",
+      "left-tail",
+      "right-tail",
+    ]);
+  });
+
   it("keeps document reconciliation pure and reuses unchanged problem-area children", () => {
     const target = paragraph("target", "same");
     const problem = problemNode("problem", {

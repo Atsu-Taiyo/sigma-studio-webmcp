@@ -32,6 +32,7 @@ import {
 } from "./text-run-chunking";
 import {
   cloneTextFlowBlock,
+  emptyProblemAreaEditorBlockId,
   hasBreakBefore,
   isProblemFrameArea,
   PROBLEM_AREA_ORDER,
@@ -40,6 +41,27 @@ import {
   shouldShowProblemArea,
 } from "./block-ops";
 import type { FlowUnitLayout, RenderUnit } from "./types";
+
+export function buildProblemAreaOwnerByBlockId(
+  units: readonly RenderUnit[],
+): Map<string, Extract<RenderUnit, { type: "problemArea" | "problemLayoutSection" }>> {
+  const owners = new Map<string, Extract<RenderUnit, { type: "problemArea" | "problemLayoutSection" }>>();
+  for (const unit of units) {
+    if (unit.type !== "problemArea" && unit.type !== "problemLayoutSection") {
+      continue;
+    }
+    if (unit.type === "problemLayoutSection") {
+      owners.set(unit.section.id, unit);
+    }
+    if (unit.type === "problemArea" && unit.blocks.length === 0) {
+      owners.set(emptyProblemAreaEditorBlockId(unit.problem.id, unit.area), unit);
+    }
+    for (const block of unit.blocks) {
+      owners.set(block.id, unit);
+    }
+  }
+  return owners;
+}
 
 /**
  * 本文を描画単位に切り分ける。
@@ -134,6 +156,7 @@ export function problemToAreaUnits(problem: ProblemNode, index?: number, problem
 
   const units: RenderUnit[] = [];
   areas.forEach((area, areaUnitIndex) => {
+    const areaUnitsStart = units.length;
     const blocks = problemAreaBlocksForEditor(problem, area);
     const base = {
       problem,
@@ -156,6 +179,8 @@ export function problemToAreaUnits(problem: ProblemNode, index?: number, problem
         type: "problemArea",
         id: renderUnitId(problemAreaDraftKey(problem.id, area), (index ?? areaIndex(area)) * 100 + subIndex),
         ...base,
+        isFirstProblemAreaUnit: subIndex === 0,
+        problemAreaUnitCount: 0,
         blocks: textRun,
       });
       textRun = [];
@@ -173,6 +198,8 @@ export function problemToAreaUnits(problem: ProblemNode, index?: number, problem
         type: "problemLayoutSection",
         id: block.id,
         ...base,
+        isFirstProblemAreaUnit: subIndex === 0,
+        problemAreaUnitCount: 0,
         section: block,
         blocks: block.children.map(cloneTextFlowBlock),
         headingNumbers: {},
@@ -183,6 +210,13 @@ export function problemToAreaUnits(problem: ProblemNode, index?: number, problem
     }
 
     flushTextRun();
+    const problemAreaUnitCount = units.length - areaUnitsStart;
+    for (let unitIndex = areaUnitsStart; unitIndex < units.length; unitIndex += 1) {
+      const unit = units[unitIndex];
+      if (unit.type === "problemArea" || unit.type === "problemLayoutSection") {
+        unit.problemAreaUnitCount = problemAreaUnitCount;
+      }
+    }
   });
 
   return units;
@@ -194,6 +228,25 @@ function areaIndex(area: ProblemAreaKind): number {
 
 export function renderUnitId(blockId: string, index: number): string {
   return `${blockId}:${index}`;
+}
+
+/** 1段組で problem-level margin を消費できるのは、文書上の先頭エリアの先頭unitだけ。 */
+export function getProblemAreaUnitGapKey(
+  unit: Extract<RenderUnit, { type: "problemArea" | "problemLayoutSection" }>,
+): string {
+  return unit.type === "problemArea" && unit.isFirstProblemArea && unit.isFirstProblemAreaUnit
+    ? unit.problem.id
+    : unit.id;
+}
+
+/** 共有wrapperの無いlayout-section単体エリアだけ、1段組DOM自身が予約高を担う。 */
+export function getSingleColumnProblemLayoutSectionMinHeightMm(
+  unit: Extract<RenderUnit, { type: "layoutSection" | "problemLayoutSection" }>,
+  isColumnFlow: boolean,
+): number {
+  return !isColumnFlow && unit.type === "problemLayoutSection" && unit.problemAreaUnitCount === 1
+    ? unit.problem.areaLayout?.[unit.area]?.minHeightMm ?? 0
+    : 0;
 }
 
 export function getFlowUnitStyle(
@@ -338,11 +391,15 @@ export function isFullSpanUnit(unit: RenderUnit): boolean {
 
 export function isProblemAreaColumnBlockFlowEligible(
   unit: Extract<RenderUnit, { type: "problemArea" }>,
+  gapFreeHeightPx: number,
+  segmentHeightPx: number,
 ): boolean {
   return isProblemAreaFlowEligible({
     isFullSpan: isFullSpanUnit(unit),
     isFramedArea: unit.problem.frame?.enabled === true && isProblemFrameArea(unit.area),
     blocks: unit.blocks,
+    gapFreeHeightPx,
+    segmentHeightPx,
   });
 }
 
@@ -429,6 +486,8 @@ function isSameRenderUnit(previous: RenderUnit, next: RenderUnit): boolean {
       && previous.problemNumber === next.problemNumber
       && previous.isFirstProblemArea === next.isFirstProblemArea
       && previous.isLastProblemArea === next.isLastProblemArea
+      && previous.isFirstProblemAreaUnit === next.isFirstProblemAreaUnit
+      && previous.problemAreaUnitCount === next.problemAreaUnitCount
       && previous.isFirstProblemFrameArea === next.isFirstProblemFrameArea
       && previous.isLastProblemFrameArea === next.isLastProblemFrameArea;
   }
@@ -443,6 +502,8 @@ function isSameRenderUnit(previous: RenderUnit, next: RenderUnit): boolean {
       && previous.problemNumber === next.problemNumber
       && previous.isFirstProblemArea === next.isFirstProblemArea
       && previous.isLastProblemArea === next.isLastProblemArea
+      && previous.isFirstProblemAreaUnit === next.isFirstProblemAreaUnit
+      && previous.problemAreaUnitCount === next.problemAreaUnitCount
       && previous.isFirstProblemFrameArea === next.isFirstProblemFrameArea
       && previous.isLastProblemFrameArea === next.isLastProblemFrameArea
       && previous.showAreaSideNote === next.showAreaSideNote

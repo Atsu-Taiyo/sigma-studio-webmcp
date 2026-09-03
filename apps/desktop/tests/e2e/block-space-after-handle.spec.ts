@@ -458,7 +458,7 @@ test("the handle survives the pointer's approach in every column and zoom", asyn
   }, picks.second)).toBeGreaterThanOrEqual(DRAG_PX - 2);
 });
 
-test("partial columns offer the handle for each block inside, per column", async ({ page }) => {
+test("partial columns show only the hovered row handle and switch across rows and columns", async ({ page }) => {
   test.setTimeout(60_000);
 
   await installDesktopRuntimeMock(page, createPartialColumnsDocument());
@@ -466,12 +466,13 @@ test("partial columns offer the handle for each block inside, per column", async
   await page.waitForTimeout(1500);
   await expect(page.locator('.page-flow [data-sigma-doc-id="p_in_1"]')).toBeVisible();
 
-  // 局所段組の中の各ブロックに、そのブロックを対象にしたつまみが出る (入れ物の
-  // layoutSection で止まらない)。グリップ (ブロック選択) はセクション単位のまま出続ける。
-  for (const id of ["p_in_1", "p_in_3"]) {
-    const handle = await hoverBlock(page, id);
-    await expect(handle).toBeVisible();
-    await expect(page.locator(".page-block-handle")).toBeVisible();
+  // 常に現在のレーン・高さの 1 単位だけ。各行へ動かすたびに対象が切り替わる。
+  for (const id of ["p_in_1", "p_in_2", "p_in_3", "p_in_4"]) {
+    await hoverBlock(page, id);
+    await expect(page.locator(".page-block-handle")).toHaveCount(1);
+    await expect(page.locator(".page-block-space-handle")).toHaveCount(1);
+    await expect(page.locator(`.page-block-handle[data-block-id="${id}"]`)).toBeVisible();
+    await expect(page.locator(`.page-block-space-handle[data-block-id="${id}"]`)).toBeVisible();
   }
 
   // 2 段目のブロックを掴んで引くと、そのブロックの下余白として文書に保存される。
@@ -496,6 +497,166 @@ test("partial columns offer the handle for each block inside, per column", async
     () => window.localStorage.getItem("sigma-studio:e2e-document") ?? "",
   )).toContain("spaceAfterPx");
 });
+
+test("a sibling lane's nested grid cannot steal the singleton handle", async ({ page }) => {
+  await installDesktopRuntimeMock(page, createSiblingNestedColumnsDocument());
+  await page.goto("/");
+  const target = page.locator('.page-flow [data-sigma-doc-id="right_inner_1"]');
+  await expect(target).toBeVisible();
+
+  // Probe from the right outer lane's local gutter while the left sibling's narrower nested
+  // grid overlaps the same y range. Width-only selection used to jump across to left_inner_1.
+  const grip = page.locator('.page-block-handle[data-block-id="right_inner_1"]');
+  const spaceHandle = page.locator('.page-block-space-handle[data-block-id="right_inner_1"]');
+  let wiggle = 0;
+  await expect.poll(async () => {
+    const box = await target.boundingBox();
+    if (!box) return false;
+    await page.mouse.move(box.x - 10 + (wiggle % 3), box.y + box.height / 2 + (wiggle % 2));
+    wiggle += 1;
+    return (await grip.isVisible()) && (await spaceHandle.isVisible());
+  }, { timeout: 10_000, intervals: [100, 200, 300] }).toBe(true);
+  await expect(page.locator('.page-block-handle[data-block-id="right_inner_1"]')).toBeVisible();
+  await expect(page.locator('.page-block-space-handle[data-block-id="right_inner_1"]')).toBeVisible();
+  await expect(page.locator(".page-block-handle")).toHaveCount(1);
+});
+
+test("a partial-column divider appears only near its hit band and follows a cancellable drag", async ({ page }) => {
+  await installDesktopRuntimeMock(page, createPartialColumnsDocument());
+  await page.goto("/");
+  const divider = page.locator(".layout-section-column-resize-handle").first();
+  const grid = page.locator(".layout-section-independent-columns").first();
+  await expect(divider).toBeAttached();
+
+  await page.mouse.move(5, 5);
+  expect(await divider.evaluate((element) => getComputedStyle(element, "::after").opacity)).toBe("0");
+  let wiggle = 0;
+  await expect.poll(async () => {
+    const box = await divider.boundingBox();
+    if (!box) return "0";
+    await page.mouse.move(5, 5);
+    await page.mouse.move(
+      box.x + box.width / 2 + (wiggle % 3),
+      box.y + 20 + (wiggle % 2),
+      { steps: 3 },
+    );
+    wiggle += 1;
+    return divider.evaluate((element) => getComputedStyle(element, "::after").opacity);
+  }, { timeout: 10_000, intervals: [100, 200, 300] }).toBe("1");
+  const before = (await divider.boundingBox())!;
+
+  const styleBefore = await grid.getAttribute("style");
+  await page.mouse.down();
+  await page.mouse.move(before.x + 70, before.y + 20, { steps: 8 });
+  const during = await divider.boundingBox();
+  expect(during!.x).toBeGreaterThan(before.x + 45);
+  await page.keyboard.press("Escape");
+  const after = await divider.boundingBox();
+  expect(Math.abs(after!.x - before.x)).toBeLessThan(2);
+  expect(await grid.getAttribute("style")).toBe(styleBefore);
+  await page.mouse.up();
+});
+
+test("Enter at the bottom of the left partial column extends only that column", async ({ page }) => {
+  await installDesktopRuntimeMock(page, createPartialColumnsDocument());
+  await page.goto("/");
+  await expect(page.locator('.page-flow [data-sigma-doc-id="p_in_2"]')).toBeVisible();
+
+  const sectionBefore = (await page.locator('.page-flow [data-sigma-doc-id="section_1"]').boundingBox())!;
+  const rightBefore = (await page.locator('.page-flow [data-sigma-doc-id="p_in_3"]').boundingBox())!;
+  const left = page.locator('.page-flow [data-sigma-doc-id="p_in_2"]');
+  await left.click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("左列で追加");
+
+  const inserted = page.getByText("左列で追加", { exact: true });
+  await expect(inserted).toBeVisible();
+  const insertedBox = (await inserted.boundingBox())!;
+  const sectionAfter = (await page.locator('.page-flow [data-sigma-doc-id="section_1"]').boundingBox())!;
+  const rightAfter = (await page.locator('.page-flow [data-sigma-doc-id="p_in_3"]').boundingBox())!;
+  expect(insertedBox.x).toBeLessThan(rightAfter.x);
+  expect(Math.abs((rightAfter.y - sectionAfter.y) - (rightBefore.y - sectionBefore.y))).toBeLessThan(2);
+
+  await expect.poll(async () => page.evaluate(() => {
+    const raw = window.localStorage.getItem("sigma-studio:e2e-document");
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as SigmaDocument;
+    const section = saved.content.find((block) => block.type === "layoutSection");
+    if (!section || section.type !== "layoutSection") return null;
+    return {
+      columnCount: section.layout.columnCount,
+      starts: section.layout.columnStartIds,
+      rightIndex: section.children.findIndex((block) => block.id === "p_in_3"),
+      insertedIndex: section.children.findIndex((block) => (
+        block.type === "paragraph" && block.children.some((child) => child.type === "text" && child.text === "左列で追加")
+      )),
+    };
+  })).toEqual({ columnCount: 2, starts: ["p_in_1", "p_in_3"], rightIndex: 3, insertedIndex: 2 });
+});
+
+// Enter 後のスクロールは main でも起きるブラウザ既存の reveal なので、
+// 各編集後に対象ブロックを再ホバーしてつまみの位置を確かめる。
+test("Enter, Backspace and multiline paste keep partial-column starts stable", async ({ page }) => {
+  await installDesktopRuntimeMock(page, createPartialColumnsDocument());
+  await page.goto("/");
+  const left = page.locator('.page-flow [data-sigma-doc-id="p_in_1"]');
+  await left.click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await expectAffordanceOnRenderedEdge(page, "p_in_1");
+  await page.keyboard.type("一時行");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Backspace");
+  await expectAffordanceOnRenderedEdge(page, "p_in_1");
+
+  await page.evaluate(() => {
+    const target = document.activeElement;
+    if (!(target instanceof HTMLElement)) return;
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/plain", "貼り付け一行目\n貼り付け二行目\n貼り付け三行目");
+    target.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+  });
+  await expectAffordanceOnRenderedEdge(page, "p_in_1");
+
+  await expect.poll(async () => page.evaluate(() => {
+    const raw = window.localStorage.getItem("sigma-studio:e2e-document");
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as SigmaDocument;
+    const section = saved.content.find((block) => block.id === "section_1");
+    if (section?.type !== "layoutSection") return null;
+    const starts = section.layout.columnStartIds ?? [];
+    return {
+      columnCount: section.layout.columnCount,
+      startCount: starts.length,
+      startsAreChildren: starts.every((id) => section.children.some((child) => child.id === id)),
+      rightStart: starts[1],
+      hasRightTail: section.children.some((child) => child.id === "p_in_4"),
+    };
+  })).toEqual({
+    columnCount: 2,
+    startCount: 2,
+    startsAreChildren: true,
+    rightStart: "p_in_3",
+    hasRightTail: true,
+  });
+});
+
+async function expectAffordanceOnRenderedEdge(page: Page, blockId: string) {
+  const block = page.locator(`.page-flow [data-sigma-doc-id="${blockId}"]`).first();
+  await block.scrollIntoViewIfNeeded();
+  const handle = await hoverBlock(page, blockId);
+  await expect(handle).toBeVisible();
+
+  await expect.poll(async () => page.evaluate((id) => {
+    const block = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${id}"]`);
+    const handle = document.querySelector<HTMLElement>(`.page-block-space-handle[data-block-id="${id}"]`);
+    if (!block || !handle) return null;
+    const blockRect = block.getBoundingClientRect();
+    const handleRect = handle.getBoundingClientRect();
+    return Math.abs(handleRect.top + handleRect.height / 2 - blockRect.bottom);
+  }, blockId)).toBeLessThan(2);
+}
 
 test("partial columns inside a problem reach both columns, on the right gutter lanes", async ({ page }) => {
   test.setTimeout(60_000);
@@ -598,55 +759,64 @@ test("the handle reaches blocks inside a problem area without covering its own g
   expect(overlap!.hitsSideNote).toBe(false);
 });
 
-test("a list's live preview moves what is below it, never its own items", async ({ page }) => {
+test("plain, continued and nested list items draw one saved space at their owned edge", async ({ page }) => {
   test.setTimeout(60_000);
 
   await openDocument(page, createListDocument());
 
-  const scale = await readScale(page, "list_spaced");
-  const handle = await hoverBlock(page, "list_spaced");
-  await expect(handle).toBeVisible();
+  const parent = page.locator('.page-flow [data-sigma-doc-id="li_nested"]');
+  const nested = page.locator('.page-flow [data-sigma-doc-id="nested_item"]');
+  const parentBox = (await parent.boundingBox())!;
+  const nestedBox = (await nested.boundingBox())!;
+  for (const x of [nestedBox.x - 2, nestedBox.x - 10, parentBox.x + 2, parentBox.x - 10]) {
+    await page.mouse.move(x, nestedBox.y + nestedBox.height / 2);
+    await expect(page.locator('.page-block-handle[data-block-id="nested_item"]')).toBeVisible();
+    await expect(page.locator('.page-block-space-handle[data-block-id="nested_item"]')).toBeVisible();
+    await expect(page.locator(".page-block-handle")).toHaveCount(1);
+  }
 
-  // ドラッグの途中で測る (プレビューが乗っている状態)。
-  await grabAndDrag(page, handle, 60 * scale, 8);
+  for (const id of ["li_plain", "li_continued", "li_nested"]) {
+    await expect(await hoverBlock(page, id)).toBeVisible();
+    await expect(page.locator(".page-block-space-handle")).toHaveCount(1);
+    const scale = await readScale(page, id);
+    await dragHandle(page, await hoverBlock(page, id), DRAG_PX * scale);
+    await expect.poll(async () => page.evaluate((itemId) => {
+      const leading = document.querySelector<HTMLElement>(`.page-flow [data-sigma-doc-id="${itemId}"]`);
+      const item = leading?.closest("li");
+      const owned = item
+        ? Array.from(item.children).filter((child) => child.tagName !== "UL" && child.tagName !== "OL")
+        : [];
+      const edge = owned.at(-1);
+      return item && leading && edge
+        ? {
+            itemPadding: Number.parseFloat(getComputedStyle(item).paddingBottom || "0"),
+            leadingPadding: Number.parseFloat(getComputedStyle(leading).paddingBottom || "0"),
+            edgePadding: Number.parseFloat(getComputedStyle(edge).paddingBottom || "0"),
+          }
+        : null;
+    }, id)).toEqual({
+      itemPadding: 0,
+      leadingPadding: id === "li_plain" || id === "li_nested" ? DRAG_PX : 0,
+      edgePadding: DRAG_PX,
+    });
+  }
 
-  const midDrag = await page.evaluate(() => {
-    /**
-     * いま効いている縦の平行移動 (px)。`transform` 文字列を「"none" かどうか」で見ると
-     * `translateY(0)` の `matrix(1, 0, 0, 1, 0, 0)` でも通ってしまい、何も証明できない。
-     */
-    const translateY = (element: HTMLElement | null): number => {
-      if (!element) {
-        return Number.NaN;
-      }
-      const transform = window.getComputedStyle(element).transform;
-      return !transform || transform === "none" ? 0 : new DOMMatrixReadOnly(transform).f;
-    };
-    const list = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="list_spaced"]');
-    const items = Array.from(list?.querySelectorAll<HTMLElement>("li") ?? []);
-    const after = document.querySelector<HTMLElement>('.page-flow [data-sigma-doc-id="p_list_after"]');
-    return {
-      // 掴んだブロック自身の寸法は 1px も変わらない (padding を伸ばすと再ページ割りが走る)。
-      listPaddingBottom: list ? Number.parseFloat(getComputedStyle(list).paddingBottom || "0") : -1,
-      listTranslateY: translateY(list),
-      itemCount: items.length,
-      // 印は class なので相続しない — 項目まで降りる経路が構造的に無い。
-      itemsMarked: items.filter((item) => item.classList.contains("sigma-space-after-follower")).length,
-      itemTranslateYs: items.map((item) => translateY(item)),
-      afterTranslateY: translateY(after),
-    };
+  await expect.poll(async () => page.evaluate(() => {
+    const raw = window.localStorage.getItem("sigma-studio:e2e-document");
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as SigmaDocument;
+    const list = saved.content.find((block) => block.id === "list_spaced");
+    return list?.type === "list"
+      ? { list: list.spaceAfterPx, items: list.items.map((item) => [item.id, item.spaceAfterPx]) }
+      : null;
+  })).toEqual({
+    list: undefined,
+    items: [
+      ["li_plain", DRAG_PX],
+      ["li_continued", DRAG_PX],
+      ["li_nested", DRAG_PX],
+    ],
   });
-
-  await page.mouse.up();
-
-  expect(midDrag.listPaddingBottom).toBeLessThan(0.5);
-  expect(midDrag.listTranslateY).toBe(0);
-  expect(midDrag.itemCount).toBeGreaterThan(1);
-  expect(midDrag.itemsMarked).toBe(0);
-  expect(midDrag.itemTranslateYs.every((offset) => offset === 0)).toBe(true);
-  // 動くのは下のブロックだけ。しかも「引いた向きに、引いた分だけ」動く
-  // (transform 文字列の有無で見ると translateY(0) でも通ってしまい何も証明できない)。
-  expect(midDrag.afterTranslateY).toBeGreaterThan(50 * scale);
 });
 
 test("a page-crossing block below the drag keeps its continuation still", async ({ page }) => {
@@ -1252,7 +1422,11 @@ function createPartialColumnsDocument(): SigmaDocument {
     {
       type: "layoutSection",
       id: "section_1",
-      layout: { columnCount: 2 },
+      layout: {
+        columnCount: 2,
+        columnStartIds: ["p_in_1", "p_in_3"],
+        columnWidths: [5000, 5000],
+      },
       children: [
         { type: "paragraph", id: "p_in_1", children: [{ type: "text", text: "局所段組の段落 1" }] },
         { type: "paragraph", id: "p_in_2", children: [{ type: "text", text: "局所段組の段落 2" }] },
@@ -1277,7 +1451,11 @@ function createProblemPartialColumnsDocument(): SigmaDocument {
       {
         type: "layoutSection",
         id: "section_p",
-        layout: { columnCount: 2 },
+        layout: {
+          columnCount: 2,
+          columnStartIds: ["q_1", "q_3"],
+          columnWidths: [5000, 5000],
+        },
         children: [
           { type: "paragraph", id: "q_1", children: [{ type: "text", text: "(1) 左の設問" }] },
           { type: "paragraph", id: "q_2", children: [{ type: "text", text: "(2) 左の設問の続き" }] },
@@ -1289,6 +1467,39 @@ function createProblemPartialColumnsDocument(): SigmaDocument {
     solution: [],
     hints: [],
     numbering: { enabled: true, value: 1 },
+  }];
+  return document;
+}
+
+function createSiblingNestedColumnsDocument(): SigmaDocument {
+  const document = baseDocument("doc_e2e_space_after_sibling_nested_columns");
+  const nestedBox = (side: "left" | "right") => ({
+    type: "boxBlock" as const,
+    id: `${side}_box`,
+    styleId: "fancybox",
+    blocks: [{
+      type: "layoutSection" as const,
+      id: `${side}_inner_section`,
+      layout: {
+        columnCount: 2,
+        columnStartIds: [`${side}_inner_1`, `${side}_inner_2`],
+        columnWidths: side === "left" ? [3500, 6500] : [5000, 5000],
+      },
+      children: [
+        { type: "paragraph" as const, id: `${side}_inner_1`, children: [{ type: "text" as const, text: `${side} 1` }] },
+        { type: "paragraph" as const, id: `${side}_inner_2`, children: [{ type: "text" as const, text: `${side} 2` }] },
+      ],
+    }],
+  });
+  document.content = [{
+    type: "layoutSection",
+    id: "outer_section",
+    layout: {
+      columnCount: 2,
+      columnStartIds: ["left_box", "right_box"],
+      columnWidths: [5000, 5000],
+    },
+    children: [nestedBox("left"), nestedBox("right")],
   }];
   return document;
 }
@@ -1368,8 +1579,24 @@ function createListDocument(): SigmaDocument {
       id: "list_spaced",
       listType: "bullet",
       items: [
-        { type: "listItem", id: "li_one", children: [{ type: "text", text: "ひとつ" }] },
-        { type: "listItem", id: "li_two", children: [{ type: "text", text: "ふたつ" }] },
+        { type: "listItem", id: "li_plain", children: [{ type: "text", text: "通常項目" }] },
+        {
+          type: "listItem",
+          id: "li_continued",
+          children: [{ type: "text", text: "継続項目" }],
+          continuations: [{ type: "paragraph", id: "li_continuation", children: [{ type: "text", text: "継続行" }] }],
+        },
+        {
+          type: "listItem",
+          id: "li_nested",
+          children: [{ type: "text", text: "入れ子の親" }],
+          nested: [{
+            type: "list",
+            id: "nested_list",
+            listType: "bullet",
+            items: [{ type: "listItem", id: "nested_item", children: [{ type: "text", text: "入れ子" }] }],
+          }],
+        },
       ],
     },
     { type: "paragraph", id: "p_list_after", children: [{ type: "text", text: "リストの後" }] },

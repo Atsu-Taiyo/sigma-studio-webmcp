@@ -870,6 +870,7 @@ function buildReplacementSegments(
     return [{
       unitId: handle.unitId,
       previousIds: getTextFlowBlockIds(previousBlocks),
+      previousBlocks,
       before: sliceToTextFlowBlocks(doc.slice(0, range.from), previousBlocks),
       after: sliceToTextFlowBlocks(doc.slice(range.to, doc.content.size), previousBlocks),
       startsInsideTextBlock: isInsideTextBlock(from),
@@ -1222,10 +1223,19 @@ function selectedBlocksForSpan(span: TextRunSpan): SigmaBlock[] {
     }
     // `previousBlocks` を渡すのは pagination (改ページ / 改段 / keep 系) のため。PM の
     // スキーマはそれを持たないので、渡さないと選択範囲のブロックから改ページが落ちる。
-    const selected = sliceToTextFlowBlocks(
+    let selected = sliceToTextFlowBlocks(
       handle.editor.state.doc.slice(range.from, range.to),
       handle.getBlocks(),
     );
+    if (entries.length === 0 && selected[0]?.pagination?.break === true) {
+      const first = selected[0];
+      const pagination = { ...(first.pagination ?? {}) };
+      delete pagination.break;
+      selected = [{
+        ...first,
+        pagination: Object.keys(pagination).length > 0 ? pagination : undefined,
+      }, ...selected.slice(1)];
+    }
     if (selected.length === 0) {
       continue;
     }

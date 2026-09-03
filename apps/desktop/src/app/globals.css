@@ -368,7 +368,7 @@ button:disabled {
 
 .menubar-row {
   display: grid;
-  grid-template-columns: 42px auto minmax(180px, 1fr) minmax(120px, 220px) auto max-content;
+  grid-template-columns: 42px auto minmax(180px, 1fr) minmax(120px, 220px) auto auto max-content;
   grid-template-rows: 32px 32px;
   align-items: center;
   align-content: end;
@@ -566,7 +566,7 @@ button:disabled {
 }
 
 .menubar-right-actions .workspace-open-button {
-  grid-column: 6;
+  grid-column: 7;
   grid-row: 1;
   align-self: center;
   justify-self: end;
@@ -574,7 +574,7 @@ button:disabled {
 }
 
 .menubar-right-actions .document-tab-actions {
-  grid-column: 6;
+  grid-column: 7;
   grid-row: 2;
   align-self: end;
   justify-self: end;
@@ -6320,6 +6320,10 @@ button.workspace-breadcrumb-item:focus-visible {
   background: rgba(17, 17, 17, 0.26);
 }
 
+.window-close-save-backdrop {
+  z-index: calc(var(--z-modal-nested) + 1);
+}
+
 .workspace-create-dialog {
   display: grid;
   gap: 14px;
@@ -6329,6 +6333,10 @@ button.workspace-breadcrumb-item:focus-visible {
   border-radius: 16px;
   background: var(--background);
   box-shadow: 0 24px 64px rgba(17, 17, 17, 0.24);
+}
+
+.window-close-save-dialog {
+  overscroll-behavior: contain;
 }
 
 .workspace-create-header {
@@ -6758,9 +6766,9 @@ button.workspace-breadcrumb-item:focus-visible {
   outline: none;
 }
 
-.report-issue-button {
+.report-issue-button,
+.version-history-button {
   display: inline-flex;
-  grid-column: 5;
   grid-row: 1;
   align-self: center;
   flex: 0 0 auto;
@@ -6779,12 +6787,51 @@ button.workspace-breadcrumb-item:focus-visible {
   cursor: pointer;
 }
 
+.version-history-button {
+  grid-column: 5;
+}
+
+.report-issue-button {
+  grid-column: 6;
+}
+
 .report-issue-button:hover,
-.report-issue-button:focus-visible {
+.report-issue-button:focus-visible,
+.version-history-button:hover,
+.version-history-button:focus-visible,
+.version-history-button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 32%, var(--border-subtle));
   background: var(--surface-muted);
   color: var(--text-primary);
   outline: none;
+}
+
+.quick-toolbar-row[inert],
+nav.app-menu-list[inert],
+.document-title-row[inert],
+.ribbon-qat[inert],
+.ribbon-editing-surface[inert] > *,
+.ribbon-statusbar[inert] {
+  opacity: 0.48;
+}
+
+.quick-toolbar-row[inert],
+.quick-toolbar-row[inert] *,
+nav.app-menu-list[inert],
+nav.app-menu-list[inert] *,
+.document-title-row[inert],
+.document-title-row[inert] *,
+.ribbon-qat[inert],
+.ribbon-qat[inert] *,
+.ribbon-editing-surface[inert],
+.ribbon-editing-surface[inert] *,
+.ribbon-statusbar[inert],
+.ribbon-statusbar[inert] * {
+  cursor: default;
+}
+
+.ribbon-editing-surface {
+  display: contents;
 }
 
 .workspace {
@@ -6842,6 +6889,143 @@ button.workspace-breadcrumb-item:focus-visible {
 
 .ai-sidebar-panel {
   border-left: 1px solid var(--border);
+}
+
+.version-history-body {
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-md);
+  overscroll-behavior: contain;
+}
+
+.version-history-state {
+  display: grid;
+  gap: var(--space-xs);
+  justify-items: start;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.version-history-warning {
+  margin: 0 0 var(--space-md);
+  padding: var(--space-sm);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border-subtle));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--warning) 8%, var(--background));
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.version-history-list {
+  display: grid;
+  gap: var(--space-lg);
+}
+
+.version-history-list section,
+.version-history-diff {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.version-history-list h3,
+.version-history-diff h3 {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.version-history-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: var(--space-sm);
+  align-items: center;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: start;
+}
+
+.version-history-current-row {
+  grid-template-columns: 1fr;
+}
+
+.version-history-row:hover {
+  background: var(--surface-muted);
+}
+
+.version-history-row:focus-visible {
+  outline: 2px solid var(--focus-ring-color, #2563eb);
+  outline-offset: 2px;
+}
+
+.version-history-row[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.version-history-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.version-history-diff {
+  margin-top: var(--space-lg);
+}
+
+.version-history-diff-header {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.version-history-preview {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface-muted);
+}
+
+.version-history-preview-banner {
+  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.version-history-preview-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.version-history-preview-error {
+  margin: 0;
+  padding: 8px 16px;
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  color: var(--danger);
+}
+
+.version-history-preview-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .ai-sidebar-panel {
@@ -8513,7 +8697,7 @@ code {
 
 .page-break-marker {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: 1fr auto 1fr auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -8522,6 +8706,7 @@ code {
   font-size: 12px;
   line-height: 1.2;
   user-select: none;
+  pointer-events: auto;
 }
 
 .page-break-marker span {
@@ -8538,7 +8723,38 @@ code {
   z-index: 1;
   height: 18px;
   margin: 0;
-  pointer-events: none;
+  pointer-events: auto;
+}
+
+.page-break-marker-remove {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--background) 92%, transparent);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transition-property: opacity, background-color;
+  transition-duration: 120ms;
+}
+
+.page-break-marker:hover .page-break-marker-remove,
+.page-break-marker:focus-within .page-break-marker-remove {
+  opacity: 1;
+}
+
+.page-break-marker-remove:hover {
+  background: color-mix(in srgb, currentColor 12%, var(--background));
+}
+
+.page-break-marker-remove:focus-visible {
+  opacity: 1;
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 .page-break-spacer {
@@ -8976,7 +9192,7 @@ code {
 .page-block-affordance-layer {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 25;
   pointer-events: none;
 }
 
@@ -9005,6 +9221,100 @@ code {
   background: var(--muted, #f1f5f9);
   color: var(--foreground, #0f172a);
   opacity: 1;
+}
+
+/* グリップは「掴んで動かす」もの。押して数 px 動いたらドラッグ、動かさなければクリック。 */
+.page-block-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+/* ---- ブロックのドラッグ (Notion 風) ----
+   ゴーストは React が触らない専用の層に置き、transform だけで追従する。紙面は 1px も動かない。 */
+.page-block-drag-ghost-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.page-block-drag-ghost {
+  position: absolute;
+  max-height: 260px;
+  overflow: hidden;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--background, #ffffff) 92%, transparent);
+  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.18), 0 0 0 1px color-mix(in srgb, var(--accent, #2563eb) 30%, transparent);
+  opacity: 0.85;
+  pointer-events: none;
+  will-change: transform;
+  /* 本文の余白規約に乗らない: 写しなので上下のマージンは持たない。 */
+  margin: 0;
+}
+
+.page-block-drag-ghost > * {
+  margin-top: 0 !important;
+}
+
+/* 掴んだ元のブロックは薄く残す (どこから持ち上げたかが見える)。本文の上に紙色のベールを
+   敷く — 本文側の要素に class を付けると ProseMirror の属性書き戻しで消える。 */
+.page-block-drag-source-veil {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--background, #ffffff) 65%, transparent);
+  pointer-events: none;
+}
+
+/* ドラッグ中は落とし先の線だけを出す。グリップ・つまみ・＋ は次のホバーまで消えてよい。 */
+.page-canvas[data-block-dragging="true"] .page-block-handle,
+.page-canvas[data-block-dragging="true"] .page-block-space-handle,
+.page-canvas[data-block-dragging="true"] .page-block-insert-line {
+  display: none;
+}
+
+body.page-block-dragging,
+body.page-block-dragging * {
+  cursor: grabbing !important;
+}
+
+/* 落とし先の線。前後は横線、段組化は縦線。挿入線 (.page-block-insert-line) と同じ青。 */
+.page-block-drop-line {
+  position: absolute;
+  pointer-events: none;
+  background: var(--accent, #2563eb);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--background, #ffffff) 60%, transparent);
+}
+
+.page-block-drop-line[data-orientation="horizontal"] {
+  height: 3px;
+  transform: translateY(-50%);
+}
+
+.page-block-drop-line[data-orientation="vertical"] {
+  width: 3px;
+  transform: translateX(-50%);
+}
+
+.page-block-drop-line::before {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: inherit;
+}
+
+.page-block-drop-line[data-orientation="horizontal"]::before {
+  left: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.page-block-drop-line[data-orientation="vertical"]::before {
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 /* ブロックの下端を掴んで下余白を伸ばすつまみ。左ガターの 3 つは役割で棲み分ける:
@@ -11948,8 +12258,7 @@ code {
   margin: 2px 0;
 }
 
-.sigma-doc-layout-section-body,
-.layout-section-paper-body.with-layout-columns .text-flow-shell {
+.sigma-doc-layout-section-body {
   min-width: 0;
   column-count: var(--sigma-doc-local-column-count, 2);
   column-gap: var(--sigma-doc-local-column-gap, 8mm);
@@ -11957,8 +12266,7 @@ code {
   column-fill: balance;
 }
 
-.sigma-doc-layout-section-body > *,
-.layout-section-paper-body.with-layout-columns .text-flow-shell .tiptap > * {
+.sigma-doc-layout-section-body > * {
   break-inside: avoid;
 }
 
@@ -12573,6 +12881,17 @@ code {
   padding-top: 0;
 }
 
+/* Split frames keep the original box model so toggling atomic/flow cannot change
+ * measured text geometry. Only the outer decoration is hidden; overlay pieces draw it. */
+.problem-area-flow-unit.with-frame.frame-split {
+  border-color: transparent;
+}
+
+.problem-area-flow-unit.with-frame.frame-split::before,
+.problem-area-flow-unit.with-frame.frame-split::after {
+  opacity: 0;
+}
+
 .problem-area-flow-unit.with-frame.box-frame--double-rule {
   padding: 10px 12px;
   border-right-width: 3px;
@@ -12615,6 +12934,10 @@ code {
   padding-top: 24px;
 }
 
+.problem-area-flow-unit.with-frame.box-frame--corner.frame-split {
+  background: transparent;
+}
+
 .problem-area-paper-content {
   position: relative;
   z-index: 1;
@@ -12653,6 +12976,59 @@ code {
 
 .layout-section-paper-body {
   min-width: 0;
+}
+
+.layout-section-independent-columns {
+  position: relative;
+  display: grid;
+  align-items: start;
+  gap: var(--layout-section-column-gap, 8mm);
+  min-width: 0;
+}
+
+.layout-section-independent-column {
+  min-width: 0;
+  align-self: stretch;
+}
+
+.layout-section-paper-body.with-independent-layout-columns .text-flow-shell.column-flow-positioned .text-flow-editor {
+  position: relative;
+  height: var(--layout-section-column-flow-height, auto);
+  min-height: 0;
+}
+
+.layout-section-column-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 24;
+  width: 12px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  transform: translateX(calc(-50% + var(--layout-column-resize-preview-x, 0px)));
+  touch-action: none;
+}
+
+.layout-section-column-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  opacity: 0;
+  transform: translateX(-50%);
+}
+
+.layout-section-column-resize-handle:hover::after,
+.layout-section-column-resize-handle:focus-visible::after,
+.layout-section-column-resize-handle[data-dragging="true"]::after {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 78%, transparent);
 }
 
 .layout-section-paper-body.with-layout-column-flow .text-flow-shell.column-flow-positioned .text-flow-editor {
@@ -17550,7 +17926,8 @@ button.ai-source-ref-chip--document:focus-visible {
 
   .menubar-right-actions,
   .workspace-open-button,
-  .report-issue-button {
+  .report-issue-button,
+  .version-history-button {
     margin-top: 0;
     margin-left: 0;
   }

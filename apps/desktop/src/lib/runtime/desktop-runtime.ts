@@ -95,7 +95,7 @@ function createDesktopLibraryRepository(storage: DesktopStorageAPI): LocalLibrar
     async saveDocument(
       fileId: string,
       document: SigmaDocument,
-      options: { expectedRevision: number },
+      options: Parameters<LocalLibraryRepository["saveDocument"]>[2],
     ) {
       // renderer では zod 検証をしない。main が保存の直前に必ず
       // `ensurePageLayout(parseSigmaDocument(...))` を通す (`LocalSigmaDocStore#saveDocument`) ので
@@ -103,6 +103,15 @@ function createDesktopLibraryRepository(storage: DesktopStorageAPI): LocalLibrar
       // 残すのは `ensurePageLayout` だけ (zod ではない・0.7ms 未満)。
       const payload = measurePerformance("DesktopRuntime.saveDocument", () => ensurePageLayout(document));
       return storage.saveDocument(fileId, payload, options);
+    },
+    listDocumentVersions(fileId) {
+      return storage.listDocumentVersions(fileId);
+    },
+    getDocumentVersion(fileId, versionId) {
+      return storage.getDocumentVersion(fileId, versionId);
+    },
+    captureDocumentVersion(fileId, document, options) {
+      return storage.captureDocumentVersion(fileId, ensurePageLayout(document), options);
     },
     async createDocument(input?: CreateDocumentInput): Promise<DocumentFileRecord> {
       return normalizeFileRecord(await storage.createDocument(input));

@@ -9,6 +9,11 @@ import type { MaterialContent, MaterialItem } from "@/types/material";
 import type { TemplateItem } from "@/types/template";
 import type { LedgerSchemaFailure } from "@/lib/library-schema";
 import type { SigmaDocumentRecoveryIssue, SigmaDocumentSchemaFailure } from "@/lib/sigma-doc-schema";
+import type {
+  DocumentVersion,
+  DocumentVersionMetadata,
+  DocumentVersionOrigin,
+} from "@/lib/document-version-history";
 
 /**
  * どの土台で動いているか。
@@ -37,6 +42,9 @@ export interface StorageResult {
   code?: "revision-mismatch";
   currentRevision?: number;
   revision?: number;
+  versionCaptured?: boolean;
+  versionCaptureError?: string;
+  versionCleanupError?: string;
 }
 
 export interface DocumentMetadata {
@@ -162,8 +170,15 @@ export interface DocumentLibraryRepository {
   saveDocument(
     fileId: string,
     document: SigmaDocument,
-    options: { expectedRevision: number },
+    options: { expectedRevision: number; origin?: DocumentVersionOrigin },
   ): Promise<StorageResult>;
+  listDocumentVersions(fileId: string): Promise<DocumentVersionMetadata[]>;
+  getDocumentVersion(fileId: string, versionId: string): Promise<DocumentVersion | null>;
+  captureDocumentVersion(
+    fileId: string,
+    document: SigmaDocument,
+    options: { expectedRevision: number; origin: DocumentVersionOrigin },
+  ): Promise<{ ok: boolean; version?: DocumentVersionMetadata; error?: string }>;
   createDocument(input?: CreateDocumentInput): Promise<DocumentFileRecord>;
   createFileFromDocument(input: CreateFileFromDocumentInput): Promise<DocumentFileRecord>;
   duplicateFile(fileId: string): Promise<DocumentFileRecord>;

@@ -13,6 +13,7 @@ import {
 } from "@/components/editor/TextFlowEditor";
 import { createRichTextEngineExtensions } from "@/components/tiptap/rich-text-engine";
 import {
+  getLayoutSectionColumns,
   getTextFlowBlockAttributes,
   hasTextFlowBlockAttributeChange,
   type TextFlowBlock,
@@ -93,6 +94,40 @@ describe("pagination round trip", () => {
     ]);
   });
 
+  it("treats a fresh leading break as a transfer from the surviving owner", () => {
+    const previous: TextFlowBlock[] = [
+      { type: "paragraph", id: "before", children: [{ type: "text", text: "前" }] },
+      PARAGRAPH_WITH_BREAK,
+      { type: "paragraph", id: "after", children: [{ type: "text", text: "後" }] },
+    ];
+    const pasted: TextFlowBlock = {
+      type: "paragraph",
+      id: "pasted",
+      children: [{ type: "text", text: "貼付" }],
+      pagination: { break: true },
+    };
+    const pastedSecond: TextFlowBlock = {
+      type: "paragraph",
+      id: "pasted_second",
+      children: [{ type: "text", text: "貼付2" }],
+    };
+    const converted = tiptapToTextFlow(textFlowToTiptap([
+      previous[0],
+      pasted,
+      pastedSecond,
+      previous[1],
+      previous[2],
+    ]), previous);
+
+    expect(converted.map((block) => [block.id, block.pagination?.break])).toEqual([
+      ["before", undefined],
+      ["pasted", true],
+      ["pasted_second", undefined],
+      ["p_break", undefined],
+      ["after", undefined],
+    ]);
+  });
+
   it("keeps a manual page break inside a slice copied out of a real editor", () => {
     // PM のスキーマが pagination を宣言していないと attrs はここで落ちる。
     const editor = createEditor([
@@ -114,6 +149,17 @@ describe("pagination round trip", () => {
     ]);
 
     expect(restored[0]?.pagination).toBeUndefined();
+  });
+
+  it("transfers a deleted block's manual break to the next surviving block", () => {
+    const previous = [
+      { type: "paragraph" as const, id: "before", children: [] },
+      { type: "paragraph" as const, id: "deleted", children: [], pagination: { break: true as const } },
+      { type: "paragraph" as const, id: "after", children: [] },
+    ];
+    const restored = tiptapToTextFlow(textFlowToTiptap([previous[0], previous[2]]), previous);
+
+    expect(restored[1]?.pagination?.break).toBe(true);
   });
 
   it("does not duplicate a break when the block is split in two", () => {
@@ -159,7 +205,7 @@ describe("block space after round trip", () => {
         type: "list",
         id: "list_space",
         listType: "bullet",
-        items: [{ type: "listItem", id: "li_space", children: [{ type: "text", text: "項目" }] }],
+        items: [{ type: "listItem", id: "li_space", children: [{ type: "text", text: "項目" }], spaceAfterPx: 7 }],
         spaceAfterPx: 10,
       },
       { type: "divider", id: "divider_space", spaceAfterPx: 11 },
@@ -271,6 +317,38 @@ describe("block space after round trip", () => {
     editor.destroy();
   });
 
+  it("renders list-item spacing only on its dedicated internal-edge variable", () => {
+    const editor = createEditor([{
+      type: "list",
+      id: "list",
+      listType: "bullet",
+      items: [{
+        type: "listItem",
+        id: "item",
+        children: [{ type: "text", text: "item" }],
+        spaceAfterPx: 18,
+        continuations: [{ type: "paragraph", id: "continuation", children: [] }],
+        nested: [{
+          type: "list",
+          id: "nested",
+          listType: "bullet",
+          items: [{ type: "listItem", id: "nested-item", children: [] }],
+        }],
+      }],
+    }]);
+    const item = editor.view.dom.querySelector<HTMLElement>("li");
+    const leading = editor.view.dom.querySelector<HTMLElement>('[data-sigma-doc-id="item"]');
+
+    expect(item?.style.getPropertyValue("--sigma-doc-list-item-space-after")).toBe("18px");
+    expect(item?.style.getPropertyValue("--sigma-doc-space-after")).toBe("");
+    expect(leading?.style.getPropertyValue("--sigma-doc-space-after")).toBe("");
+    expect(tiptapToTextFlow(editor.getJSON())[0]).toMatchObject({
+      type: "list",
+      items: [{ id: "item", spaceAfterPx: 18 }],
+    });
+    editor.destroy();
+  });
+
   /**
    * フォーカス中の面への同期は「PM のノード属性から作った署名」と「SigmaDoc から作った署名」の
    * 食い違いで起こす。**どれか 1 種別でも往復で食い違うと、その面への `setContent` が毎レンダー
@@ -289,6 +367,7 @@ describe("block space after round trip", () => {
           type: "listItem",
           id: "li_space",
           children: [{ type: "text", text: "項目" }],
+          spaceAfterPx: 7,
           continuations: [{ type: "paragraph", id: "li_cont", children: [], spaceAfterPx: 16 }],
         }],
         spaceAfterPx: 10,
@@ -345,10 +424,16 @@ describe("layoutSection round trip", () => {
     const section: TextFlowBlock = {
       type: "layoutSection",
       id: "layout_1",
-      layout: { columnCount: 3, columnGapMm: 12 },
+      layout: {
+        columnCount: 3,
+        columnGapMm: 12,
+        columnStartIds: ["layout_p1", "layout_p2", "layout_p3"],
+        columnWidths: [3000, 3000, 4000],
+      },
       children: [
-        { type: "paragraph", id: "layout_p1", children: [{ type: "text", text: "左" }] },
-        { type: "paragraph", id: "layout_p2", children: [{ type: "text", text: "右" }] },
+        { type: "paragraph", id: "layout_p1", children: [{ type: "text", text: "左" }], align: undefined, lineHeight: undefined },
+        { type: "paragraph", id: "layout_p2", children: [{ type: "text", text: "中" }], align: undefined, lineHeight: undefined },
+        { type: "paragraph", id: "layout_p3", children: [{ type: "text", text: "右" }], align: undefined, lineHeight: undefined },
       ],
     };
     const editor = createEditor([section]);
@@ -392,7 +477,7 @@ describe("入れ物の中の本文ブロック", () => {
     const section: TextFlowBlock = {
       type: "layoutSection",
       id: "layout_1",
-      layout: { columnCount: 2, columnGapMm: 8 },
+      layout: { columnCount: 2, columnGapMm: 8, columnStartIds: ["layout_p1", "layout_divider"], columnWidths: [6500, 3500] },
       children: [
         { type: "paragraph", id: "layout_p1", children: [{ type: "text", text: "左" }] },
         { type: "divider", id: "layout_divider" },
@@ -404,28 +489,114 @@ describe("入れ物の中の本文ブロック", () => {
     editor.destroy();
   });
 
-  it("keeps the text when a child has to degrade to a paragraph", () => {
+  it("repairs stale column starts after an Enter split instead of increasing the column count", () => {
     const section: TextFlowBlock = {
       type: "layoutSection",
-      id: "layout_2",
-      layout: { columnCount: 2, columnGapMm: 8 },
-      // 引用は段組の content 式に無いので段落へ落ちる。落ちても中の文章は残る。
-      children: [{
-        type: "quote",
-        id: "layout_quote",
-        blocks: [{ type: "paragraph", id: "layout_quote_p", children: [{ type: "text", text: "消えてはいけない" }] }],
-      } as never],
+      id: "layout_split",
+      layout: {
+        columnCount: 2,
+        columnGapMm: 8,
+        columnStartIds: ["left", "right"],
+        columnWidths: [6000, 4000],
+      },
+      children: [
+        { type: "paragraph", id: "split-head", children: [] },
+        { type: "paragraph", id: "left", children: [{ type: "text", text: "left" }] },
+        { type: "paragraph", id: "right", children: [{ type: "text", text: "right" }] },
+      ],
+    };
+    const doc = textFlowToTiptap([section]);
+    const restored = tiptapToTextFlow(doc);
+
+    expect(restored[0]?.type).toBe("layoutSection");
+    if (restored[0]?.type !== "layoutSection") return;
+    expect(restored[0].layout.columnCount).toBe(2);
+    expect(restored[0].layout.columnStartIds).toEqual(["split-head", "right"]);
+    expect(restored[0].layout.columnWidths).toEqual([6000, 4000]);
+  });
+
+  it("retains pre-edit column ownership when a column-start block is deleted", () => {
+    const section: TextFlowBlock = {
+      type: "layoutSection",
+      id: "layout_delete_start",
+      layout: {
+        columnCount: 2,
+        columnGapMm: 8,
+        columnStartIds: ["a", "c"],
+        columnWidths: [6000, 4000],
+      },
+      children: [
+        { type: "paragraph", id: "a", children: [] },
+        { type: "paragraph", id: "b", children: [] },
+        { type: "paragraph", id: "c", children: [] },
+        { type: "paragraph", id: "d", children: [] },
+      ],
+    };
+    const doc = textFlowToTiptap([section]);
+    const layoutNode = doc.content?.[0];
+    if (layoutNode) {
+      layoutNode.content = layoutNode.content?.filter((child) => child.attrs?.sigmaDocId !== "c");
+    }
+    const [restored] = tiptapToTextFlow(doc, [section]);
+
+    expect(restored?.type).toBe("layoutSection");
+    if (restored?.type !== "layoutSection") return;
+    expect(restored.layout.columnStartIds).toEqual(["a", "d"]);
+    expect(getLayoutSectionColumns(restored).map((column) => column.map((block) => block.id)))
+      .toEqual([["a", "b"], ["d"]]);
+  });
+
+  it("creates an empty owner when an edited column temporarily loses its last child", () => {
+    const section: TextFlowBlock = {
+      type: "layoutSection",
+      id: "layout_missing_column",
+      layout: { columnCount: 3, columnGapMm: 8, columnStartIds: ["left", "right", "gone"] },
+      children: [
+        { type: "paragraph", id: "left", children: [] },
+        { type: "paragraph", id: "right", children: [] },
+      ],
+    };
+    const restored = tiptapToTextFlow(textFlowToTiptap([section]));
+
+    expect(restored[0]?.type).toBe("layoutSection");
+    if (restored[0]?.type !== "layoutSection") return;
+    expect(restored[0].layout.columnCount).toBe(3);
+    expect(restored[0].layout.columnStartIds).toHaveLength(3);
+    expect(restored[0].children).toHaveLength(3);
+    expect(restored[0].layout.columnStartIds)
+      .toEqual(restored[0].children.map((child) => child.id));
+  });
+
+  it("keeps quote and code blocks at mixed-type column boundaries", () => {
+    const section: TextFlowBlock = {
+      type: "layoutSection",
+      id: "layout_mixed",
+      layout: {
+        columnCount: 2,
+        columnGapMm: 8,
+        columnStartIds: ["left", "layout_code"],
+        columnWidths: [6000, 4000],
+      },
+      children: [
+        { type: "paragraph", id: "left", children: [{ type: "text", text: "左" }] },
+        {
+          type: "quote",
+          id: "layout_quote",
+          blocks: [{ type: "paragraph", id: "layout_quote_p", children: [{ type: "text", text: "引用" }] }],
+        },
+        {
+          type: "codeBlock",
+          id: "layout_code",
+          children: [{ type: "text", text: "const right = true;" }],
+          language: "typescript",
+        },
+        { type: "paragraph", id: "right_tail", children: [{ type: "text", text: "右末尾" }] },
+      ],
     };
     const editor = createEditor([section]);
     const [restored] = tiptapToTextFlow(editor.getJSON());
 
-    expect(restored?.type).toBe("layoutSection");
-    expect(restored?.type === "layoutSection" && restored.children).toEqual([{
-      type: "paragraph",
-      // id は落ちたブロックのもの (引用の子ではない) — 引用の子を落とすときと同じ規約。
-      id: "layout_quote",
-      children: [{ type: "text", text: "消えてはいけない" }],
-    }]);
+    expect(restored).toEqual(section);
     editor.destroy();
   });
 });

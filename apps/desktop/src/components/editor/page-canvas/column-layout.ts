@@ -9,15 +9,17 @@ import type {
   TextFlowBoxFragmentSourceLayout,
 } from "@/components/editor/TextFlowEditor";
 import {
+  computeProblemAreaColumnFlow,
+  getSafeProblemAreaMinHeightPx,
   resolveFlowFragmentStep,
   roundTextFlowColumnBlockLayout,
   type TextFlowColumnBlockLayout,
 } from "@/features/rendering/core";
 import { boxBlockTitleText, boxFragmentMinStartHeightPx, findBoxDecoration, resolveBoxFrame } from "@/lib/box-blocks";
 import { collectBlocksById } from "@/lib/document-tree";
+import { getProblemFrameChromePaddingPx } from "@/lib/problem-frame";
 import {
   blockSpaceAfterPx,
-  mmToPx,
   type PageMetrics,
   type BoxBlockChildBlock,
   type BoxBlockNode,
@@ -36,6 +38,7 @@ import {
 import {
   getFirstUnitBlock,
   getLayoutSectionColumnCount,
+  getLayoutSectionColumnGapPx,
   isFullSpanUnit,
   isProblemAreaColumnBlockFlowEligible,
 } from "./render-units";
@@ -55,6 +58,8 @@ interface FlowColumnGeometry {
   columnWidthPx: number;
   columnGapPx: number;
 }
+
+const MAX_EDITOR_FRAGMENTS_PER_BLOCK = 1_000;
 
 /** Visual style is deliberately irrelevant: every SigmaDoc box participates in
  * the same line-safe page/column fragmentation contract. */
@@ -139,10 +144,7 @@ export function getColumnBreakBeforeBlockIdForContextMenu({
   }
 
   const unit = units.find((candidate) => {
-    if (
-      candidate.type === "textFlow" ||
-      (candidate.type === "problemArea" && isProblemAreaColumnBlockFlowEligible(candidate))
-    ) {
+    if (candidate.type === "textFlow" || candidate.type === "problemArea") {
       return candidate.blocks.some((block) => block.id === blockId);
     }
     return getFirstUnitBlock(candidate).id === blockId;
@@ -360,10 +362,7 @@ function getAbsoluteBlockColumnLayout(
   if (!unitLayout) {
     return null;
   }
-  if (
-    unit.type === "textFlow" ||
-    (unit.type === "problemArea" && isProblemAreaColumnBlockFlowEligible(unit))
-  ) {
+  if (unit.type === "textFlow" || unit.type === "problemArea") {
     const blockLayout = textFlowBlockLayouts[blockId];
     return blockLayout
       ? {
@@ -473,6 +472,7 @@ export function computeColumnUnitLayouts(
   boxBlockFragmentLayouts: Record<string, EditorBoxBlockFragmentLayout[]>;
   boxFragmentSourceLayouts: Record<string, TextFlowBoxFragmentSourceLayout>;
   frameFragmentLayouts: Record<string, ProblemAreaFrameFragmentLayout[]>;
+  nestedColumnLayouts: Record<string, ProblemAreaColumnLayout>;
   markerLayouts: Record<string, FlowUnitLayout>;
   pageCount: number;
 } {
@@ -487,6 +487,41 @@ export function computeColumnUnitLayouts(
   for (const [unitId, element] of elements) {
     textBlockElementsByUnit.set(unitId, collectTextFlowBlockElements(element));
   }
+  const problemAreaOccupiedHeightByKey = new Map<string, number>();
+  const problemAreaLastUnitIdByKey = new Map<string, string>();
+  for (const unit of units) {
+    if (unit.type !== "problemArea" && unit.type !== "problemLayoutSection") {
+      continue;
+    }
+    const key = `${unit.problem.id}:${unit.area}`;
+    problemAreaLastUnitIdByKey.set(key, unit.id);
+  }
+  const recordProblemAreaOccupiedHeight = (unit: RenderUnit, occupiedHeightPx: number) => {
+    if (unit.type !== "problemArea" && unit.type !== "problemLayoutSection") {
+      return;
+    }
+    const key = `${unit.problem.id}:${unit.area}`;
+    problemAreaOccupiedHeightByKey.set(
+      key,
+      (problemAreaOccupiedHeightByKey.get(key) ?? 0) + Math.max(0, occupiedHeightPx),
+    );
+  };
+  const trailingReservationForUnit = (unit: RenderUnit): number => {
+    if (unit.type !== "problemArea" && unit.type !== "problemLayoutSection") {
+      return 0;
+    }
+    const key = `${unit.problem.id}:${unit.area}`;
+    if (problemAreaLastUnitIdByKey.get(key) !== unit.id) {
+      return 0;
+    }
+    return Math.max(
+      0,
+      getSafeProblemAreaMinHeightPx(
+        unit.problem.areaLayout?.[unit.area]?.minHeightMm ?? 0,
+        metrics.content.heightPx,
+      ) - (problemAreaOccupiedHeightByKey.get(key) ?? 0),
+    );
+  };
 
   const layouts: Record<string, FlowUnitLayout> = {};
   const blockLayouts: Record<string, TextFlowColumnBlockLayout> = {};
@@ -494,6 +529,7 @@ export function computeColumnUnitLayouts(
   const boxFragmentSourceLayouts: Record<string, TextFlowBoxFragmentSourceLayout> = {};
   const markerLayouts: Record<string, FlowUnitLayout> = {};
   const frameFragmentLayouts: Record<string, ProblemAreaFrameFragmentLayout[]> = {};
+  const nestedColumnLayouts: Record<string, ProblemAreaColumnLayout> = {};
   const columnGeometry: FlowColumnGeometry = {
     columnCount: metrics.flow.columnCount,
     columnWidthPx: metrics.flow.columnWidthPx,
@@ -585,11 +621,37 @@ export function computeColumnUnitLayouts(
   const recordPlacedUnitBottom = (layout: FlowUnitLayout, height: number) => {
     maxPlacedUnitBottom = Math.max(maxPlacedUnitBottom, layout.y + Math.max(0, height));
   };
+  const consumeTrailingReservation = (
+    reservationPx: number,
+    geometry: FlowColumnGeometry,
+  ): number => {
+    let remaining = Math.max(0, reservationPx);
+    let bottom = pageIndex * pageStride + metrics.margins.topPx + cursorY;
+    const maxSteps = 1_002;
+    for (let guard = 0; remaining > 0.5 && guard < maxSteps; guard += 1) {
+      const available = Math.max(0, metrics.content.heightPx - cursorY);
+      if (available <= 0.5) {
+        advanceColumn(geometry);
+        continue;
+      }
+      const consumed = Math.min(remaining, available);
+      cursorY += consumed;
+      remaining -= consumed;
+      bottom = pageIndex * pageStride + metrics.margins.topPx + cursorY;
+      maxPlacedUnitBottom = Math.max(maxPlacedUnitBottom, bottom);
+      maxPageIndex = Math.max(maxPageIndex, pageIndex);
+      if (remaining > 0.5) {
+        advanceColumn(geometry);
+      }
+    }
+    return bottom;
+  };
   const createColumnBoxFragments = (
     blockId: string,
     height: number,
     breakOffsets?: number[],
     geometry: FlowColumnGeometry = columnGeometry,
+    fragmentEndSpacePx = 0,
   ): {
     fragments: EditorBoxBlockFragmentLayout[];
     nextPageIndex: number;
@@ -608,12 +670,13 @@ export function computeColumnUnitLayouts(
     let fragmentPageColumnStartY = pageColumnStartY;
     let bottom = pageIndex * pageStride + metrics.margins.topPx + cursorY;
 
-    for (let guard = 0; remaining > 0.5 && guard < Math.ceil(height) + 2; guard += 1) {
-      const available = Math.max(1, metrics.content.heightPx - fragmentCursorY);
+    for (let guard = 0; remaining > 0.5 && guard < MAX_EDITOR_FRAGMENTS_PER_BLOCK - 1; guard += 1) {
+      const segmentContentHeightPx = Math.max(1, metrics.content.heightPx - fragmentEndSpacePx);
+      const available = Math.max(1, segmentContentHeightPx - fragmentCursorY);
       const fragmentStepResult = resolveFlowFragmentStep({
         available,
         breakOffsets,
-        fullSegmentHeight: metrics.content.heightPx,
+        fullSegmentHeight: segmentContentHeightPx,
         remaining,
         sourceOffsetY,
       });
@@ -663,6 +726,25 @@ export function computeColumnUnitLayouts(
       }
     }
 
+    if (remaining > 0.5) {
+      const fragmentX = metrics.margins.leftPx + fragmentColumnIndex * fragmentStep;
+      const fragmentY = fragmentPageIndex * pageStride + metrics.margins.topPx + fragmentCursorY;
+      fragments.push({
+        blockId,
+        fragmentIndex: fragments.length,
+        x: fragmentX,
+        y: fragmentY,
+        width: geometry.columnWidthPx,
+        height: remaining,
+        sourceOffsetY,
+        totalHeight: height,
+      });
+      fragmentCursorY += remaining;
+      bottom = Math.max(bottom, fragmentY + remaining);
+      maxPageIndex = Math.max(maxPageIndex, fragmentPageIndex);
+      remaining = 0;
+    }
+
     return {
       fragments,
       nextPageIndex: fragmentPageIndex,
@@ -673,17 +755,89 @@ export function computeColumnUnitLayouts(
     };
   };
 
+  const implicitLeadKeepWithNextHeight = (
+    unit: RenderUnit,
+    unitIndex: number,
+    currentHeight: number,
+  ): number => {
+    if (
+      (unit.type !== "problemArea" && unit.type !== "problemLayoutSection")
+      || unit.area !== "lead"
+    ) {
+      return 0;
+    }
+    const nextUnit = units[unitIndex + 1];
+    if (
+      !nextUnit
+      || (nextUnit.type !== "problemArea" && nextUnit.type !== "problemLayoutSection")
+      || nextUnit.problem.id !== unit.problem.id
+      || nextUnit.area === "lead"
+      || getFirstUnitBlock(nextUnit).pagination?.break === true
+    ) {
+      return 0;
+    }
+
+    const nextFramePadding = nextUnit.problem.frame?.enabled === true
+      && isProblemFrameArea(nextUnit.area)
+      ? getProblemFrameChromePaddingPx(nextUnit.problem.frame?.styleId)
+      : undefined;
+    const nextBlockElements = textBlockElementsByUnit.get(nextUnit.id);
+    const nextMeasuredBlocks = nextUnit.blocks.map((block) => ({
+      block,
+      height: getMeasuredColumnItemHeight(
+        nextBlockElements?.get(block.id) ?? (nextUnit.blocks.length === 1 ? elements.get(nextUnit.id) : undefined),
+        zoomFactor,
+      ),
+    }));
+    const nextContentHeight = nextMeasuredBlocks.reduce((sum, measured) => sum + measured.height, 0);
+    const nextFrameChromeHeight = (nextFramePadding?.y ?? 0) * 2;
+    const nextGapFreeHeight = Math.max(
+      nextContentHeight + nextFrameChromeHeight,
+      getSafeProblemAreaMinHeightPx(
+        nextUnit.problem.areaLayout?.[nextUnit.area]?.minHeightMm ?? 0,
+        metrics.content.heightPx,
+      ),
+    );
+    const nextFlowsByBlock = nextUnit.type === "problemLayoutSection"
+      || isProblemAreaColumnBlockFlowEligible(nextUnit, nextGapFreeHeight, metrics.content.heightPx);
+    const firstMeasured = nextMeasuredBlocks[0];
+    const nextRequiredHeight = nextFlowsByBlock
+      ? Math.max(0, (firstMeasured?.height ?? 0) - (firstMeasured ? blockSpaceAfterPx(firstMeasured.block) : 0))
+        + nextFrameChromeHeight
+      : nextGapFreeHeight;
+    return currentHeight + nextRequiredHeight;
+  };
+  const isFullSpanFollowerOfLead = (unit: RenderUnit, unitIndex: number): boolean => {
+    const previousUnit = units[unitIndex - 1];
+    return (unit.type === "problemArea" || unit.type === "problemLayoutSection")
+      && isFullSpanUnit(unit)
+      && (previousUnit?.type === "problemArea" || previousUnit?.type === "problemLayoutSection")
+      && previousUnit.area === "lead"
+      && previousUnit.problem.id === unit.problem.id;
+  };
+  const leadNextIsFullSpan = (unit: RenderUnit, unitIndex: number): boolean => {
+    const nextUnit = units[unitIndex + 1];
+    return (unit.type === "problemArea" || unit.type === "problemLayoutSection")
+      && unit.area === "lead"
+      && (nextUnit?.type === "problemArea" || nextUnit?.type === "problemLayoutSection")
+      && nextUnit.problem.id === unit.problem.id
+      && isFullSpanUnit(nextUnit);
+  };
+
   const placeColumnBlock = (
     block: TextFlowBlock,
     height: number,
     breakOffsets?: number[],
     geometry: FlowColumnGeometry = columnGeometry,
-    nextBlock?: { height: number; hasExplicitBreak: boolean },
+    nextBlock?: { fitHeight: number; hasExplicitBreak: boolean },
+    fragmentEndSpacePx = 0,
   ): FlowUnitLayout => {
     // 実測 height にはブロック下余白 (padding) が入っている。段に「収まるか」は本文だけで
     // 決め (余白で溢れたら送るのは次のブロック)、カーソルの前進には余白ごと含める。
     const trailingSpacePx = blockSpaceAfterPx(block);
     const fitHeight = Math.max(0, height - trailingSpacePx);
+    const segmentContentHeightPx = Math.max(1, metrics.content.heightPx - fragmentEndSpacePx);
+    const framedFitHeight = fragmentEndSpacePx > 0 ? height : fitHeight;
     if (block.pagination?.break === true && (cursorY > 0 || columnIndex > 0)) {
       markerLayouts[block.id] = roundFlowUnitLayout({
         x: currentColumnX(geometry),
@@ -693,16 +847,16 @@ export function computeColumnUnitLayouts(
       advanceColumn(geometry);
     }
 
-    // keepWithNext は「2 つが同じ段に載るか」なので、間に挟まる余白は数える。
+    // current の末尾余白は段内の間隔として数え、next の末尾余白は収まり判定から除く。
     const keepWithNextHeight = block.pagination?.keepWithNext === true
       && nextBlock
       && !nextBlock.hasExplicitBreak
-      ? height + nextBlock.height
+      ? height + nextBlock.fitHeight
       : 0;
     if (
       cursorY > pageColumnStartY + 0.5
-      && keepWithNextHeight > metrics.content.heightPx - cursorY + 0.5
-      && keepWithNextHeight <= metrics.content.heightPx + 0.5
+      && keepWithNextHeight + fragmentEndSpacePx > metrics.content.heightPx - cursorY + 0.5
+      && keepWithNextHeight + fragmentEndSpacePx <= metrics.content.heightPx + 0.5
     ) {
       advanceColumn(geometry);
     }
@@ -723,16 +877,16 @@ export function computeColumnUnitLayouts(
       // current column and continues (open-edged) into the next. So we don't push
       // the whole box to the next column when it overflows — only when too little
       // room remains in the current column to start it cleanly.
-      const available = metrics.content.heightPx - cursorY;
+      const available = segmentContentHeightPx - cursorY;
       if (
         block.pagination?.keepTogether === true
         && cursorY > pageColumnStartY + 0.5
         && fitHeight > available + 0.5
-        && fitHeight <= metrics.content.heightPx + 0.5
+        && fitHeight <= segmentContentHeightPx + 0.5
       ) {
         advanceColumn(geometry);
       }
-      const nextAvailable = metrics.content.heightPx - cursorY;
+      const nextAvailable = segmentContentHeightPx - cursorY;
       const minStart = boxFragmentMinStartHeightPx(resolveBoxFrame(block), boxBlockTitleText(block).length > 0);
       if (cursorY > pageColumnStartY + 0.5 && fitHeight > nextAvailable + 0.5 && nextAvailable < minStart - 0.5) {
         advanceColumn(geometry);
@@ -741,19 +895,20 @@ export function computeColumnUnitLayouts(
       cursorY <= pageColumnStartY + 0.5 &&
       pageColumnStartY > 0.5 &&
       height > 0 &&
-      cursorY + fitHeight > metrics.content.heightPx + 0.5
+      cursorY + framedFitHeight > segmentContentHeightPx + 0.5
     ) {
       placeOnNextPage();
-    } else if (cursorY > pageColumnStartY + 0.5 && height > 0 && cursorY + fitHeight > metrics.content.heightPx + 0.5) {
+    } else if (cursorY > pageColumnStartY + 0.5 && height > 0 && cursorY + framedFitHeight > segmentContentHeightPx + 0.5) {
       advanceColumn(geometry);
     }
 
     const layout = placeLayout(blockLayouts as Record<string, FlowUnitLayout>, block.id, currentColumnX(geometry), geometry.columnWidthPx, height, true);
     // A box always flows across columns; a non-box block is only split when it is
     // taller than a full column (otherwise it is kept whole and moved as needed).
-    const shouldFragment = isFlowBlockFragmentable(block, fitHeight, metrics.content.heightPx);
+    const shouldFragment = isFlowBlockFragmentable(block, fitHeight, metrics.content.heightPx)
+      || (fragmentEndSpacePx > 0 && height > segmentContentHeightPx + 0.5);
     const fragmentResult = shouldFragment
-      ? createColumnBoxFragments(block.id, height, breakOffsets, geometry)
+      ? createColumnBoxFragments(block.id, height, breakOffsets, geometry, fragmentEndSpacePx)
       : null;
     if (fragmentResult && fragmentResult.fragments.length > 1) {
       const firstFragment = fragmentResult.fragments[0];
@@ -779,9 +934,50 @@ export function computeColumnUnitLayouts(
   const placeBlockFlowUnit = (
     unit: Extract<RenderUnit, { type: "textFlow" | "problemArea" }>,
     element: HTMLElement | undefined,
+    unitIndex: number,
   ): boolean => {
     if (unit.blocks.length === 0) {
       return false;
+    }
+
+    const blockElements = textBlockElementsByUnit.get(unit.id);
+    const measuredBlocks = unit.blocks.map((block) => {
+      const blockElement = blockElements?.get(block.id);
+      return {
+        block,
+        blockElement,
+        height: getMeasuredColumnItemHeight(blockElement ?? (unit.blocks.length === 1 ? element : undefined), zoomFactor),
+      };
+    });
+    const isFrameArea = unit.type === "problemArea"
+      && unit.problem.frame?.enabled === true
+      && isProblemFrameArea(unit.area);
+    const flowedFramePadding = isFrameArea
+      ? getProblemFrameChromePaddingPx(unit.problem.frame?.styleId)
+      : undefined;
+    if (unit.type === "problemArea") {
+      const gapFreeHeightPx = measuredBlocks.reduce((sum, measured) => sum + measured.height, 0)
+        + (flowedFramePadding ? flowedFramePadding.y * 2 : 0);
+      if (!isProblemAreaColumnBlockFlowEligible(unit, gapFreeHeightPx, metrics.content.heightPx)) {
+        return false;
+      }
+    }
+
+    const leadKeepHeight = implicitLeadKeepWithNextHeight(
+      unit,
+      unitIndex,
+      measuredBlocks.reduce((sum, measured) => sum + measured.height, 0),
+    );
+    if (
+      cursorY > pageColumnStartY + 0.5
+      && leadKeepHeight > metrics.content.heightPx - cursorY + 0.5
+      && leadKeepHeight <= metrics.content.heightPx + 0.5
+    ) {
+      if (leadNextIsFullSpan(unit, unitIndex)) {
+        placeOnNextPage();
+      } else {
+        advanceColumn();
+      }
     }
 
     // A full-span problem area's flow places blocks against a single "column"
@@ -793,7 +989,11 @@ export function computeColumnUnitLayouts(
     // Mirrors the atomic full-span placement below: full-span content can't share
     // a horizontal band with page-column content, so it always starts a fresh page
     // when there is already column content on the current one.
-    if (isFullSpanFlow && pageHasColumnContent()) {
+    if (
+      isFullSpanFlow
+      && pageHasColumnContent()
+      && !(columnIndex === 0 && isFullSpanFollowerOfLead(unit, unitIndex))
+    ) {
       placeOnNextPage();
     }
 
@@ -809,16 +1009,10 @@ export function computeColumnUnitLayouts(
       });
       advanceColumn(geometry);
     }
+    if (flowedFramePadding) {
+      cursorY += flowedFramePadding.y;
+    }
 
-    const blockElements = textBlockElementsByUnit.get(unit.id);
-    const measuredBlocks = unit.blocks.map((block) => {
-      const blockElement = blockElements?.get(block.id);
-      return {
-        block,
-        blockElement,
-        height: getMeasuredColumnItemHeight(blockElement ?? (unit.blocks.length === 1 ? element : undefined), zoomFactor),
-      };
-    });
     const placedBlocks: Array<{ blockId: string; layout: FlowUnitLayout }> = [];
     for (const [index, { block, blockElement, height }] of measuredBlocks.entries()) {
       const next = measuredBlocks[index + 1];
@@ -834,11 +1028,18 @@ export function computeColumnUnitLayouts(
               : undefined,
           geometry,
           next ? {
-            height: next.height,
+            fitHeight: Math.max(0, next.height - blockSpaceAfterPx(next.block)),
             hasExplicitBreak: next.block.pagination?.break === true,
           } : undefined,
+          flowedFramePadding?.y ?? 0,
         ),
       });
+    }
+    if (flowedFramePadding) {
+      // Each piece owns a bottom outset. Earlier pieces reserve it by reducing
+      // fragment capacity; consume the final outset and round upward so the next
+      // unit can never land one pixel inside the painted frame.
+      cursorY = Math.ceil(cursorY + flowedFramePadding.y - 0.001);
     }
 
     const x = Math.min(...placedBlocks.map((entry) => entry.layout.x));
@@ -852,57 +1053,39 @@ export function computeColumnUnitLayouts(
       height: Math.max(1, bottom - y),
     });
 
-    if (unit.type === "problemArea") {
-      const minHeightPx = mmToPx(unit.problem.areaLayout?.[unit.area]?.minHeightMm ?? 0);
-      const firstColumn = getPageColumnKey(placedBlocks[0].layout, metrics, pageStride);
-      const stayedInOneColumn = placedBlocks.every((entry) =>
-        samePageColumn(firstColumn, getPageColumnKey(entry.layout, metrics, pageStride)),
-      );
-      const cursorColumn = getPageColumnKey({
-        x: currentColumnX(geometry),
-        y: pageIndex * pageStride + metrics.margins.topPx + cursorY,
-      }, metrics, pageStride);
-      if (minHeightPx > 0 && stayedInOneColumn && samePageColumn(firstColumn, cursorColumn)) {
-        const unitPageIndex = firstColumn.pageIndex;
-        const unitTopInPage = unitLayout.y - unitPageIndex * pageStride - metrics.margins.topPx;
-        const reservedHeight = Math.max(unitLayout.height ?? 0, minHeightPx);
-        cursorY = Math.max(cursorY, unitTopInPage + minHeightPx);
-        unitLayout.height = Math.round(reservedHeight);
-        recordPlacedUnitBottom(unitLayout, reservedHeight);
-        movePastOverflowingUnit(unitLayout.y, reservedHeight);
-      }
-    }
-
-    if (isFullSpanFlow) {
-      // Mirrors the atomic full-span placement below: subsequent page-column
-      // content must start below the full-span band on every column, not beside it.
-      pageColumnStartY = cursorY;
-      columnIndex = 0;
-    }
-
-    const isFrameArea = unit.type === "problemArea" &&
-      unit.problem.frame?.enabled === true && isProblemFrameArea(unit.area);
+    let frameFragmentCount = 0;
     if (isFrameArea) {
       // The frame can no longer be a single CSS box around the whole unit once its
       // blocks are split across a page/column break — group the placed blocks back
       // into the page/column segments they actually landed in, so the caller can
       // render one border "piece" per segment (open at the break, see
       // ProblemAreaFrameFragmentLayout).
+      const frameVisuals = placedBlocks.flatMap((entry) => {
+        const source = boxFragmentSourceLayouts[entry.blockId];
+        const continuations = boxBlockFragmentLayouts[entry.blockId] ?? [];
+        if (!source || continuations.length === 0) {
+          return [{ layout: entry.layout, height: entry.layout.height ?? 0 }];
+        }
+        return [
+          { layout: entry.layout, height: source.visibleHeight },
+          ...continuations.map((fragment) => ({ layout: fragment, height: fragment.height })),
+        ];
+      });
       const segments: ProblemAreaFrameFragmentLayout[] = [];
       let segmentStart = 0;
-      for (let i = 1; i <= placedBlocks.length; i += 1) {
-        const atSegmentBoundary = i === placedBlocks.length || !samePageColumn(
-          getPageColumnKey(placedBlocks[segmentStart].layout, metrics, pageStride),
-          getPageColumnKey(placedBlocks[i].layout, metrics, pageStride),
+      for (let i = 1; i <= frameVisuals.length; i += 1) {
+        const atSegmentBoundary = i === frameVisuals.length || !samePageColumn(
+          getPageColumnKey(frameVisuals[segmentStart].layout, metrics, pageStride),
+          getPageColumnKey(frameVisuals[i].layout, metrics, pageStride),
         );
         if (!atSegmentBoundary) {
           continue;
         }
-        const segmentBlocks = placedBlocks.slice(segmentStart, i);
+        const segmentBlocks = frameVisuals.slice(segmentStart, i);
         const segmentX = Math.min(...segmentBlocks.map((entry) => entry.layout.x));
         const segmentY = Math.min(...segmentBlocks.map((entry) => entry.layout.y));
         const segmentRight = Math.max(...segmentBlocks.map((entry) => entry.layout.x + entry.layout.width));
-        const segmentBottom = Math.max(...segmentBlocks.map((entry) => entry.layout.y + (entry.layout.height ?? 0)));
+        const segmentBottom = Math.max(...segmentBlocks.map((entry) => entry.layout.y + entry.height));
         segments.push({
           x: segmentX - unitLayout.x,
           y: segmentY - unitLayout.y,
@@ -913,7 +1096,32 @@ export function computeColumnUnitLayouts(
       }
       if (segments.length > 1) {
         frameFragmentLayouts[unit.id] = segments;
+        frameFragmentCount = segments.length;
       }
+    }
+
+    const frameChromePadding = isFrameArea && frameFragmentCount > 1
+      ? getProblemFrameChromePaddingPx(unit.problem.frame?.styleId)
+      : undefined;
+    const frameChromeHeightPx = frameChromePadding
+      ? frameChromePadding.y * 2 * frameFragmentCount
+      : 0;
+    recordProblemAreaOccupiedHeight(
+      unit,
+      measuredBlocks.reduce((height, measured) => height + measured.height, 0) + frameChromeHeightPx,
+    );
+    const trailingReservationPx = trailingReservationForUnit(unit);
+    if (trailingReservationPx > 0.5) {
+      const reservedBottom = consumeTrailingReservation(trailingReservationPx, geometry);
+      unitLayout.height = Math.round(Math.max(unitLayout.height ?? 0, reservedBottom - unitLayout.y));
+      recordPlacedUnitBottom(unitLayout, unitLayout.height);
+    }
+
+    if (isFullSpanFlow) {
+      // Mirrors the atomic full-span placement below: subsequent page-column
+      // content must start below the full-span band on every column, not beside it.
+      pageColumnStartY = cursorY;
+      columnIndex = 0;
     }
 
     layouts[unit.id] = unitLayout;
@@ -927,13 +1135,306 @@ export function computeColumnUnitLayouts(
     return true;
   };
 
+  const placeNestedColumnSection = (
+    unit: Extract<RenderUnit, { type: "layoutSection" | "problemLayoutSection" }>,
+    element: HTMLElement | undefined,
+    unitIndex: number,
+  ): boolean => {
+    if (unit.blocks.length === 0) {
+      return false;
+    }
+
+    const isFullSpanFlow = isFullSpanUnit(unit);
+    const outerGeometry = isFullSpanFlow ? fullSpanGeometry : columnGeometry;
+    if (isFullSpanFlow && pageHasColumnContent()) {
+      placeOnNextPage();
+    }
+
+    const sectionHeight = getMeasuredColumnItemHeight(element, zoomFactor);
+    const nextUnit = units[unitIndex + 1];
+    const nextBlock = nextUnit ? getFirstUnitBlock(nextUnit) : undefined;
+    const nextHeight = nextUnit ? getMeasuredColumnItemHeight(elements.get(nextUnit.id), zoomFactor) : 0;
+    const remainingHeight = metrics.content.heightPx - cursorY;
+    const keepWithNextHeight = unit.section.pagination?.keepWithNext === true
+      && nextBlock?.pagination?.break !== true
+      && nextUnit
+      && !isFullSpanFlow
+      && !isFullSpanUnit(nextUnit)
+      ? sectionHeight + Math.max(0, nextHeight - (nextBlock ? blockSpaceAfterPx(nextBlock) : 0))
+      : 0;
+    if (
+      cursorY > pageColumnStartY + 0.5
+      && (
+        (unit.section.pagination?.keepTogether === true
+          && sectionHeight > remainingHeight + 0.5
+          && sectionHeight <= metrics.content.heightPx + 0.5)
+        || (keepWithNextHeight > remainingHeight + 0.5
+          && keepWithNextHeight <= metrics.content.heightPx + 0.5)
+      )
+    ) {
+      advanceColumn(outerGeometry);
+    }
+
+    const blockElements = textBlockElementsByUnit.get(unit.id);
+    const blocks = unit.blocks.map((block) => {
+      const blockElement = blockElements?.get(block.id);
+      return {
+        id: block.id,
+        height: getMeasuredColumnItemHeight(
+          blockElement ?? (unit.blocks.length === 1 ? element : undefined),
+          zoomFactor,
+        ),
+        type: block.type,
+        break: block.pagination?.break === true,
+        trailingSpacePx: blockSpaceAfterPx(block),
+        keepWithNext: block.pagination?.keepWithNext === true,
+        keepTogether: block.type === "boxBlock" && block.pagination?.keepTogether === true,
+        minStartHeightPx: block.type === "boxBlock"
+          ? boxFragmentMinStartHeightPx(
+            resolveBoxFrame(block),
+            boxBlockTitleText(block).length > 0,
+          )
+          : undefined,
+        breakOffsets: block.type === "boxBlock"
+          ? getBoxFragmentBreakOffsetsFromElement(block, blockElement, zoomFactor)
+          : getBlockFragmentBreakOffsetsFromElement(blockElement, zoomFactor),
+      };
+    });
+    const innerColumnCount = getLayoutSectionColumnCount(unit.section);
+    const innerColumnGapPx = getLayoutSectionColumnGapPx(
+      unit.section,
+      metrics.flow.columnGapMm,
+      metrics.flow.columnGapPx,
+    );
+    const innerColumnWidthPx = Math.max(
+      1,
+      (outerGeometry.columnWidthPx - (innerColumnCount - 1) * innerColumnGapPx) / innerColumnCount,
+    );
+    let availableFirstHeightPx = Math.max(0, metrics.content.heightPx - cursorY);
+    const firstFitHeightPx = Math.max(0, blocks[0].height - (blocks[0].trailingSpacePx ?? 0));
+    if (
+      firstFitHeightPx > availableFirstHeightPx + 0.5
+      && firstFitHeightPx <= metrics.content.heightPx + 0.5
+    ) {
+      advanceColumn(outerGeometry);
+      availableFirstHeightPx = Math.max(0, metrics.content.heightPx - cursorY);
+    }
+    // The shared inner-column flow treats each outer page-column as one segment.
+    // Its synthetic stride intentionally excludes the physical page gap; mapping
+    // below restores the real outer page/column coordinates exactly once.
+    const remainingPageSegmentCount = outerGeometry.columnCount - columnIndex;
+    const initialSegmentHeightsPx = Array.from(
+      { length: remainingPageSegmentCount },
+      (_, segmentIndex) => segmentIndex === 0
+        ? availableFirstHeightPx
+        : Math.max(0, metrics.content.heightPx - pageColumnStartY),
+    );
+    const flowResult = computeProblemAreaColumnFlow(
+      blocks,
+      innerColumnCount,
+      innerColumnWidthPx,
+      innerColumnGapPx,
+      availableFirstHeightPx,
+      metrics.content.heightPx,
+      metrics.content.heightPx,
+      initialSegmentHeightsPx,
+    );
+    if (flowResult.mode !== "flow") {
+      return false;
+    }
+
+    const startPageIndex = pageIndex;
+    const startColumnIndex = columnIndex;
+    const startCursorY = cursorY;
+    const startPageColumnStartY = pageColumnStartY;
+    const segmentHeight = (segmentIndex: number) => (
+      initialSegmentHeightsPx[segmentIndex] ?? metrics.content.heightPx
+    );
+    const segmentTop = (segmentIndex: number) => {
+      let top = 0;
+      for (let index = 0; index < segmentIndex; index += 1) {
+        top += segmentHeight(index);
+      }
+      return top;
+    };
+    const segmentIndexForY = (y: number) => {
+      let segmentIndex = 0;
+      while (y >= segmentTop(segmentIndex) + segmentHeight(segmentIndex) - 0.5) {
+        segmentIndex += 1;
+      }
+      return segmentIndex;
+    };
+    const outerSegmentState = (segmentIndex: number) => {
+      const absoluteColumnIndex = startColumnIndex + segmentIndex;
+      const pageOffset = Math.floor(absoluteColumnIndex / outerGeometry.columnCount);
+      return {
+        pageIndex: startPageIndex + pageOffset,
+        columnIndex: absoluteColumnIndex % outerGeometry.columnCount,
+        baseCursorY: segmentIndex === 0
+          ? startCursorY
+          : pageOffset === 0 ? startPageColumnStartY : 0,
+      };
+    };
+    const mapInnerLayout = (inner: TextFlowColumnBlockLayout): FlowUnitLayout => {
+      const segmentIndex = segmentIndexForY(inner.y);
+      const outer = outerSegmentState(segmentIndex);
+      return {
+        x: metrics.margins.leftPx
+          + outer.columnIndex * (outerGeometry.columnWidthPx + outerGeometry.columnGapPx)
+          + inner.x,
+        y: outer.pageIndex * pageStride
+          + metrics.margins.topPx
+          + outer.baseCursorY
+          + inner.y
+          - segmentTop(segmentIndex),
+        width: inner.width,
+      };
+    };
+
+    const absoluteBlockLayouts = blocks.map((block) => ({
+      block,
+      layout: mapInnerLayout(flowResult.blockLayouts[block.id]),
+    }));
+    const absoluteFragmentLayouts = blocks.flatMap((block) => {
+      const fragments = flowResult.fragmentLayouts[block.id];
+      if (!fragments) {
+        return [{ block, layout: mapInnerLayout(flowResult.blockLayouts[block.id]), height: block.height }];
+      }
+      return fragments.map((fragment) => ({
+        block,
+        fragment,
+        layout: mapInnerLayout(fragment),
+        height: fragment.height,
+      }));
+    });
+    const fragmentBounds = absoluteFragmentLayouts.reduce((bounds, { layout, height }) => ({
+      left: Math.min(bounds.left, layout.x),
+      top: Math.min(bounds.top, layout.y),
+      right: Math.max(bounds.right, layout.x + layout.width),
+      bottom: Math.max(bounds.bottom, layout.y + height),
+    }), {
+      left: Number.POSITIVE_INFINITY,
+      top: Number.POSITIVE_INFINITY,
+      right: Number.NEGATIVE_INFINITY,
+      bottom: Number.NEGATIVE_INFINITY,
+    });
+    const unitX = fragmentBounds.left;
+    const unitY = fragmentBounds.top;
+    const unitRight = fragmentBounds.right;
+    const unitBottom = fragmentBounds.bottom;
+    const unitLayout = roundFlowUnitLayout({
+      x: unitX,
+      y: unitY,
+      width: unitRight - unitX,
+      height: Math.max(1, unitBottom - unitY),
+    });
+    layouts[unit.id] = unitLayout;
+    recordPlacedUnitBottom(unitLayout, unitBottom - unitY);
+
+    const relativeBlockLayouts = Object.fromEntries(absoluteBlockLayouts.map(({ block, layout }) => [
+      block.id,
+      roundTextFlowColumnBlockLayout({
+        x: layout.x - unitX,
+        y: layout.y - unitY,
+        width: layout.width,
+      }),
+    ]));
+    const relativeMarkerLayouts = Object.fromEntries(Object.entries(flowResult.markerLayouts).map(([blockId, marker]) => {
+      const absolute = mapInnerLayout(marker);
+      return [blockId, roundTextFlowColumnBlockLayout({
+        x: absolute.x - unitX,
+        y: absolute.y - unitY,
+        width: absolute.width,
+      })];
+    }));
+    nestedColumnLayouts[unit.id] = {
+      blockLayouts: relativeBlockLayouts,
+      markerLayouts: relativeMarkerLayouts,
+      totalHeightPx: unitBottom - unitY,
+      columnWidthPx: innerColumnWidthPx,
+      columnGapPx: innerColumnGapPx,
+    };
+
+    for (const block of blocks) {
+      const fragments = flowResult.fragmentLayouts[block.id];
+      if (!fragments || fragments.length <= 1) {
+        continue;
+      }
+      const absoluteFragments = fragments.map((fragment) => {
+        const absolute = mapInnerLayout(fragment);
+        return roundEditorBoxBlockFragmentLayout({
+          blockId: block.id,
+          fragmentIndex: fragment.fragmentIndex,
+          sourceOffsetY: fragment.sourceOffsetY,
+          height: fragment.height,
+          x: absolute.x,
+          y: absolute.y,
+          width: absolute.width,
+          totalHeight: block.height,
+        });
+      });
+      boxFragmentSourceLayouts[block.id] = {
+        visibleHeight: absoluteFragments[0].height,
+        totalHeight: block.height,
+      };
+      boxBlockFragmentLayouts[block.id] = absoluteFragments.slice(1);
+    }
+
+    recordProblemAreaOccupiedHeight(unit, flowResult.totalHeightPx);
+
+    const lastSegmentIndex = Math.max(0, flowResult.segments - 1);
+    const lastOuter = outerSegmentState(lastSegmentIndex);
+    const lastSegmentTop = segmentTop(lastSegmentIndex);
+    const lastSegmentBottom = blocks.reduce((bottom, block) => {
+      const fragments = flowResult.fragmentLayouts[block.id];
+      if (fragments) {
+        return fragments.reduce((fragmentBottom, fragment) => (
+          segmentIndexForY(fragment.y) === lastSegmentIndex
+            ? Math.max(fragmentBottom, fragment.y - lastSegmentTop + fragment.height)
+            : fragmentBottom
+        ), bottom);
+      }
+      const inner = flowResult.blockLayouts[block.id];
+      return segmentIndexForY(inner.y) === lastSegmentIndex
+        ? Math.max(bottom, inner.y - lastSegmentTop + block.height)
+        : bottom;
+    }, 0);
+    pageIndex = lastOuter.pageIndex;
+    columnIndex = lastOuter.columnIndex;
+    pageColumnStartY = lastOuter.pageIndex === startPageIndex ? startPageColumnStartY : 0;
+    cursorY = lastOuter.baseCursorY + lastSegmentBottom;
+    maxPageIndex = Math.max(maxPageIndex, pageIndex);
+    if (isFullSpanFlow) {
+      pageColumnStartY = cursorY;
+      columnIndex = 0;
+    }
+    const trailingReservationPx = trailingReservationForUnit(unit);
+    if (trailingReservationPx > 0.5) {
+      const reservedBottom = consumeTrailingReservation(trailingReservationPx, outerGeometry);
+      unitLayout.height = Math.round(Math.max(unitLayout.height ?? 0, reservedBottom - unitLayout.y));
+      nestedColumnLayouts[unit.id].totalHeightPx = Math.max(
+        nestedColumnLayouts[unit.id].totalHeightPx,
+        reservedBottom - unitLayout.y,
+      );
+      recordPlacedUnitBottom(unitLayout, unitLayout.height);
+      if (isFullSpanFlow) {
+        pageColumnStartY = cursorY;
+        columnIndex = 0;
+      }
+    }
+    return true;
+  };
+
   for (const [unitIndex, unit] of units.entries()) {
     const element = elements.get(unit.id);
     if (
-      unit.type === "textFlow" ||
-      (unit.type === "problemArea" && isProblemAreaColumnBlockFlowEligible(unit))
+      (unit.type === "layoutSection" || unit.type === "problemLayoutSection")
+      && placeNestedColumnSection(unit, element, unitIndex)
     ) {
-      if (placeBlockFlowUnit(unit, element)) {
+      continue;
+    }
+    if (unit.type === "textFlow" || unit.type === "problemArea") {
+      if (placeBlockFlowUnit(unit, element, unitIndex)) {
         continue;
       }
     }
@@ -959,24 +1460,35 @@ export function computeColumnUnitLayouts(
     const nextUnit = units[unitIndex + 1];
     const nextBlock = nextUnit ? getFirstUnitBlock(nextUnit) : undefined;
     const nextHeight = nextUnit ? getMeasuredColumnItemHeight(elements.get(nextUnit.id), zoomFactor) : 0;
-    const keepWithNextHeight = block.pagination?.keepWithNext === true
+    const explicitKeepWithNextHeight = block.pagination?.keepWithNext === true
       && nextBlock
       && nextBlock.pagination?.break !== true
       && nextUnit
       && !isFullSpan
       && !isFullSpanUnit(nextUnit)
-      ? reserveGap + height + nextHeight
+      ? reserveGap + height + Math.max(0, nextHeight - blockSpaceAfterPx(nextBlock))
       : 0;
+    const keepWithNextHeight = Math.max(
+      explicitKeepWithNextHeight,
+      reserveGap + implicitLeadKeepWithNextHeight(unit, unitIndex, height),
+    );
     if (
       cursorY > pageColumnStartY + 0.5
       && keepWithNextHeight > metrics.content.heightPx - cursorY + 0.5
       && keepWithNextHeight <= metrics.content.heightPx + 0.5
     ) {
-      advanceColumn();
+      if (leadNextIsFullSpan(unit, unitIndex)) {
+        placeOnNextPage();
+      } else {
+        advanceColumn();
+      }
     }
 
     if (isFullSpan) {
-      if (pageHasColumnContent()) {
+      if (
+        pageHasColumnContent()
+        && !(columnIndex === 0 && isFullSpanFollowerOfLead(unit, unitIndex))
+      ) {
         placeOnNextPage();
       }
 
@@ -990,6 +1502,16 @@ export function computeColumnUnitLayouts(
 
       cursorY += Math.max(0, height);
       if (!movePastOverflowingUnit(layout.y, height)) {
+        pageColumnStartY = cursorY;
+        columnIndex = 0;
+      }
+
+      recordProblemAreaOccupiedHeight(unit, height);
+      const trailingReservationPx = trailingReservationForUnit(unit);
+      if (trailingReservationPx > 0.5) {
+        const reservedBottom = consumeTrailingReservation(trailingReservationPx, fullSpanGeometry);
+        layout.height = Math.round(Math.max(height, reservedBottom - layout.y));
+        recordPlacedUnitBottom(layout, layout.height);
         pageColumnStartY = cursorY;
         columnIndex = 0;
       }
@@ -1026,6 +1548,14 @@ export function computeColumnUnitLayouts(
     cursorY += Math.max(0, height);
     movePastOverflowingUnit(layout.y, height);
 
+    recordProblemAreaOccupiedHeight(unit, height);
+    const trailingReservationPx = trailingReservationForUnit(unit);
+    if (trailingReservationPx > 0.5) {
+      const reservedBottom = consumeTrailingReservation(trailingReservationPx, columnGeometry);
+      layout.height = Math.round(Math.max(height, reservedBottom - layout.y));
+      recordPlacedUnitBottom(layout, layout.height);
+    }
+
   }
 
   return {
@@ -1034,6 +1564,7 @@ export function computeColumnUnitLayouts(
     boxBlockFragmentLayouts,
     boxFragmentSourceLayouts,
     frameFragmentLayouts,
+    nestedColumnLayouts,
     markerLayouts,
     pageCount: Math.max(1, maxPageIndex + 1, getPageCountForBottom(maxPlacedUnitBottom, pageHeightPx, pageStride)),
   };
@@ -1059,6 +1590,7 @@ export function createSingleColumnBoxFragments({
   width,
   x,
   breakOffsets,
+  fragmentEndSpacePx = 0,
 }: {
   blockId: string;
   height: number;
@@ -1069,6 +1601,8 @@ export function createSingleColumnBoxFragments({
   width: number;
   x: number;
   breakOffsets?: number[];
+  /** 各ページ片の下端に残す、枠などの非コンテンツ chrome。 */
+  fragmentEndSpacePx?: number;
 }): EditorBoxBlockFragmentLayout[] {
   const fragments: EditorBoxBlockFragmentLayout[] = [];
   let remaining = Math.max(0, height);
@@ -1076,9 +1610,9 @@ export function createSingleColumnBoxFragments({
   let fragmentPageIndex = getPageIndexForY(sourceTop, pageStride);
   let fragmentY = sourceTop;
 
-  for (let guard = 0; remaining > 0.5 && guard < Math.ceil(height) + 2; guard += 1) {
+  for (let guard = 0; remaining > 0.5 && guard < MAX_EDITOR_FRAGMENTS_PER_BLOCK - 1; guard += 1) {
     const contentTop = fragmentPageIndex * pageStride + metrics.margins.topPx;
-    const contentBottom = contentTop + metrics.content.heightPx;
+    const contentBottom = contentTop + metrics.content.heightPx - Math.max(0, fragmentEndSpacePx);
     if (fragmentY >= contentBottom - 0.5) {
       fragmentPageIndex += 1;
       fragmentY = fragmentPageIndex * pageStride + metrics.margins.topPx;
@@ -1119,6 +1653,19 @@ export function createSingleColumnBoxFragments({
     fragmentY = fragmentPageIndex * pageStride + metrics.margins.topPx;
   }
 
+  if (remaining > 0.5) {
+    fragments.push({
+      blockId,
+      fragmentIndex: fragments.length,
+      x,
+      y: fragmentY,
+      width,
+      height: remaining,
+      sourceOffsetY,
+      totalHeight: height,
+    });
+  }
+
   return fragments.length > 0
     ? fragments
     : [{
@@ -1131,117 +1678,6 @@ export function createSingleColumnBoxFragments({
       sourceOffsetY: 0,
       totalHeight: height,
     }];
-}
-
-export function createNestedColumnBoxFragments({
-  blockId,
-  breakOffsets,
-  columnCount,
-  columnGapPx,
-  columnWidthPx,
-  contentHeightPx,
-  height,
-  metrics,
-  pageStride,
-  sourceLeft,
-  sourceTop,
-  startSegmentTop,
-}: {
-  blockId: string;
-  breakOffsets?: number[];
-  columnCount: number;
-  columnGapPx: number;
-  columnWidthPx: number;
-  contentHeightPx: number;
-  height: number;
-  metrics: PageMetrics;
-  pageStride: number;
-  sourceLeft: number;
-  sourceTop: number;
-  startSegmentTop: number;
-}): EditorBoxBlockFragmentLayout[] {
-  const fragments: EditorBoxBlockFragmentLayout[] = [];
-  const columnStep = columnWidthPx + columnGapPx;
-  let remaining = Math.max(0, height);
-  let sourceOffsetY = 0;
-  let fragmentPageIndex = getPageIndexForY(sourceTop, pageStride);
-  let fragmentColumnIndex = Math.max(0, Math.min(columnCount - 1, Math.round((sourceLeft - metrics.margins.leftPx) / columnStep)));
-  const baseLeft = sourceLeft - fragmentColumnIndex * columnStep;
-  let fragmentSegmentTop = startSegmentTop;
-  let fragmentY = sourceTop;
-
-  for (let guard = 0; remaining > 0.5 && guard < Math.ceil(height) + 2; guard += 1) {
-    const contentBottom = fragmentPageIndex * pageStride + metrics.margins.topPx + contentHeightPx;
-    if (fragmentY >= contentBottom - 0.5) {
-      fragmentPageIndex += 1;
-      fragmentColumnIndex = 0;
-      fragmentSegmentTop = fragmentPageIndex * pageStride + metrics.margins.topPx;
-      fragmentY = fragmentSegmentTop;
-      continue;
-    }
-
-    const fragmentStep = resolveFlowFragmentStep({
-      available: Math.max(1, contentBottom - fragmentY),
-      breakOffsets,
-      fullSegmentHeight: contentHeightPx,
-      remaining,
-      sourceOffsetY,
-    });
-    if (fragmentStep.advanceToNextSegment) {
-      if (fragmentColumnIndex < columnCount - 1) {
-        fragmentColumnIndex += 1;
-        fragmentY = fragmentSegmentTop;
-      } else {
-        fragmentPageIndex += 1;
-        fragmentColumnIndex = 0;
-        fragmentSegmentTop = fragmentPageIndex * pageStride + metrics.margins.topPx;
-        fragmentY = fragmentSegmentTop;
-      }
-      continue;
-    }
-    const fragmentHeight = fragmentStep.height;
-    fragments.push({
-      blockId,
-      fragmentIndex: fragments.length,
-      x: baseLeft + fragmentColumnIndex * columnStep,
-      y: fragmentY,
-      width: columnWidthPx,
-      height: fragmentHeight,
-      sourceOffsetY,
-      totalHeight: height,
-    });
-    remaining -= fragmentHeight;
-    sourceOffsetY += fragmentHeight;
-
-    if (remaining <= 0.5) {
-      break;
-    }
-
-    if (fragmentColumnIndex < columnCount - 1) {
-      fragmentColumnIndex += 1;
-      fragmentY = fragmentSegmentTop;
-    } else {
-      fragmentPageIndex += 1;
-      fragmentColumnIndex = 0;
-      fragmentSegmentTop = fragmentPageIndex * pageStride + metrics.margins.topPx;
-      fragmentY = fragmentSegmentTop;
-    }
-  }
-
-  return fragments;
-}
-
-export function getNestedColumnSegmentTop(
-  shellTop: number,
-  sourceTop: number,
-  metrics: PageMetrics,
-  pageStride: number,
-): number {
-  const shellPageIndex = getPageIndexForY(shellTop, pageStride);
-  const sourcePageIndex = getPageIndexForY(sourceTop, pageStride);
-  return sourcePageIndex === shellPageIndex
-    ? shellTop
-    : sourcePageIndex * pageStride + metrics.margins.topPx;
 }
 
 export function getBoxFragmentBreakOffsetsFromMeasuredBox(
@@ -1309,7 +1745,7 @@ export function getBlockFragmentBreakOffsetsFromMeasured(measured: MeasuredBlock
   return mergeBoxFragmentBreakOffsets(lineOffsets, undefined, measuredHeight);
 }
 
-function getBlockFragmentBreakOffsetsFromElement(
+export function getBlockFragmentBreakOffsetsFromElement(
   element: HTMLElement | undefined,
   zoomFactor: number,
 ): number[] | undefined {

@@ -429,6 +429,7 @@ import {
 } from "./overlay-canvas/reanchor-model";
 import type { Translate } from "@/lib/i18n";
 import { useT } from "@/lib/i18n/react";
+import { areStructurallyEqual } from "@/lib/structural-equality";
 import { calculateReserveSpaceGaps } from "./page-canvas/layout-measure";
 import type {
   OverlayAsset,
@@ -802,6 +803,15 @@ export default function OverlayCanvasEditorClient({
   const suppressNextSaveRef = useRef(false);
   const explicitlySavedShapeStatesRef = useRef(new WeakSet<OverlayShape[]>());
   const externalRevisionRef = useRef(externalRevision);
+  // 直近に自分が文書へ書いたスナップショットと、文書側で最後に見たスナップショット。
+  // 文書の overlay が「自分の書き込みの反響」でも「同じ内容」でもなく変わったら、それは
+  // 外から来た変更 (AI提案の適用など) なので、自分の状態を捨てて文書に合わせる。
+  // ホワイトボードではこの編集面が常設なので、これが無いと外部適用が画面に出ない。
+  const lastEmittedSnapshotRef = useRef<OverlaySnapshot | null>(null);
+  const seenDocumentSnapshotRef = useRef(overlay.overlaySnapshot);
+  // 反響・同内容・採用のいずれかで「見終えた」文書スナップショット。作業中で見送ったものは
+  // ここに入らないので、select に戻ったときにそれだけをもう一度見る。
+  const reconciledDocumentSnapshotRef = useRef(overlay.overlaySnapshot);
   const onChangeRef = useRef(onChange);
   const handledCommandRequestIdRef = useRef<number | null>(null);
   const handledImageRequestIdRef = useRef<number | null>(null);
@@ -1096,6 +1106,7 @@ export default function OverlayCanvasEditorClient({
       assets: assetsRef.current,
       ...(extensionsRef.current ? { extensions: extensionsRef.current } : {}),
     };
+    lastEmittedSnapshotRef.current = snapshot;
     onChangeRef.current(
       {
         overlaySnapshot: snapshot,
@@ -1248,7 +1259,11 @@ export default function OverlayCanvasEditorClient({
     if (nextTextEditingShape) {
       transitionMode({ type: "editText", shapeId: nextTextEditingShape.id });
     } else {
-      activeTextEditorRef.current?.commands.blur();
+      // 破棄済みの tiptap editor が残っていることがある (`commands` getter が view 無しで throw する)。
+      const activeTextEditor = activeTextEditorRef.current;
+      if (activeTextEditor && !activeTextEditor.isDestroyed) {
+        activeTextEditor.commands.blur();
+      }
       activeTextEditorRef.current = null;
       transitionMode({ type: "select" });
       if (graph3DEditingShape) {
@@ -1257,14 +1272,62 @@ export default function OverlayCanvasEditorClient({
     }
   }, [clearQueuedOverlaySave, transitionMode]);
 
-  useEffect(() => {
-    if (externalRevisionRef.current === externalRevision) {
+  /**
+   * 文書側の overlay が外から書き換えられていたら (AI提案の適用など)、自分の状態を捨てて採用する。
+   *
+   * 見送る条件が 3 つ。(1) 自分の書き込みの反響 — `writeOverlay` は overlay をそのまま文書へ置く
+   * ので配列の同一性で分かる。(2) 中身が同じ — 再アンカー等の派生書き戻しで編集状態を壊さない。
+   * (3) 自分が作業中 — ドラッグ中や保存待ちの 250ms に外部スナップショットを被せると、
+   * その操作が途中で巻き戻る (グラフの移動直後にシェルがラベル位置を書き戻す、など)。
+   * その場合は操作が終わって select に戻ったときに `mode` の effect からもう一度ここへ来る。
+   */
+  const reconcileWithDocument = useCallback(() => {
+    const documentSnapshot = overlay.overlaySnapshot;
+    if (reconciledDocumentSnapshotRef.current === documentSnapshot || !documentSnapshot) {
+      reconciledDocumentSnapshotRef.current = documentSnapshot;
       return;
     }
+    const emitted = lastEmittedSnapshotRef.current;
+    if (emitted && documentSnapshot.shapes === emitted.shapes && documentSnapshot.assets === emitted.assets) {
+      reconciledDocumentSnapshotRef.current = documentSnapshot;
+      return;
+    }
+    if (modeRef.current.id !== "overlay.select" || saveTimeoutRef.current !== undefined || pendingOverlayHistoryRef.current) {
+      return;
+    }
+    reconciledDocumentSnapshotRef.current = documentSnapshot;
+    const normalized = normalizeOverlaySnapshot(documentSnapshot);
+    if (
+      areStructurallyEqual(normalizeOverlayGroups(normalized.shapes), shapesRef.current)
+      && areStructurallyEqual(normalized.assets, assetsRef.current)
+    ) {
+      return;
+    }
+    applyExternalSnapshot(normalized);
+  }, [applyExternalSnapshot, overlay.overlaySnapshot]);
 
+  useEffect(() => {
+    const documentSnapshot = overlay.overlaySnapshot;
+    const revisionChanged = externalRevisionRef.current !== externalRevision;
+    const snapshotChanged = seenDocumentSnapshotRef.current !== documentSnapshot;
     externalRevisionRef.current = externalRevision;
-    applyExternalSnapshot(normalizeOverlaySnapshot(overlay.overlaySnapshot));
-  }, [applyExternalSnapshot, externalRevision, overlay.overlaySnapshot]);
+    seenDocumentSnapshotRef.current = documentSnapshot;
+
+    if (revisionChanged) {
+      reconciledDocumentSnapshotRef.current = documentSnapshot;
+      applyExternalSnapshot(normalizeOverlaySnapshot(documentSnapshot));
+      return;
+    }
+    if (snapshotChanged) {
+      reconcileWithDocument();
+    }
+  }, [applyExternalSnapshot, externalRevision, overlay.overlaySnapshot, reconcileWithDocument]);
+
+  useEffect(() => {
+    if (mode.id === "overlay.select") {
+      reconcileWithDocument();
+    }
+  }, [mode.id, reconcileWithDocument]);
 
   useEffect(() => {
     if (!mountedRef.current) {

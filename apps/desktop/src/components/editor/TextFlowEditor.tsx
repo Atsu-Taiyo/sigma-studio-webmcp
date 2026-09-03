@@ -1,7 +1,7 @@
 "use client";
 
 import { Extension, Node as TiptapNodeExtension, type Editor as TiptapEditor } from "@tiptap/core";
-import { Fragment, Slice, type Mark as ProseMirrorMark, type Node as ProseMirrorModelNode } from "@tiptap/pm/model";
+import { DOMSerializer, Fragment, Slice, type Mark as ProseMirrorMark, type Node as ProseMirrorModelNode } from "@tiptap/pm/model";
 import { NodeSelection, Plugin, PluginKey, Selection, TextSelection, type EditorState, type Selection as ProseMirrorSelection, type Transaction } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -101,6 +101,7 @@ import {
   BLOCK_SPACE_AFTER_CSS_VARIABLE,
   blockSpaceAfterFromStyleValue,
   blockSpaceAfterStyleAttr,
+  listItemSpaceAfterStyleAttr,
   MAX_LINE_HEIGHT,
   MIN_LINE_HEIGHT,
   normalizeCodeBlockTheme,
@@ -127,12 +128,14 @@ import {
 import {
   cloneTextFlowBlocksForPaste,
   createTextFlowClipboardPayload,
+  EDITOR_CLIPBOARD_MIME,
   getLocalEditorClipboardPayload,
   markBodyTextCut,
   readEditorClipboardPayload,
   readTextSliceClipboardData,
   toOverlayShapesClipboardPayload,
   writeEditorPayloadToSystemClipboard,
+  writeEditorClipboardData,
   writeTextSliceClipboardData,
   type EditorClipboardPayload,
 } from "@/lib/editor-clipboard";
@@ -246,6 +249,7 @@ import {
   subscribeTextRunSpan,
 } from "./text-flow/text-run-span";
 import { plainTextToTextFlowParagraphs, sliceToTextFlowBlocks } from "./text-flow/text-run-slice";
+import { buildTextRunReplacementMutations } from "./text-flow/text-run-replacement";
 import {
   clearBoxFragmentSelection,
   clearBoxFragmentSelectionOnOutsideFocus,
@@ -303,6 +307,14 @@ const SLASH_COMMAND_PREVIEW_HEIGHT = 224;
 const SLASH_COMMAND_GAP = 10;
 const SLASH_COMMAND_MARGIN = 12;
 const LITERAL_PASTE_SHORTCUT_WINDOW_MS = 1500;
+
+/** Only the canonical surface may claim a document-level break command. */
+export function shouldHandleTextPageBreakRequest(
+  detail: Pick<TextPageBreakRequestDetail, "handled">,
+  isReplicaSurface: boolean,
+): boolean {
+  return detail.handled !== true && !isReplicaSurface;
+}
 /**
  * Tiptap の `renderHTML` は React の外で走るので `useT` を呼べない。
  * 表示のたびにロケールストアから引く (言語を変えたあと、その箱が
@@ -533,6 +545,51 @@ export const SigmaDocTextAttrs = Extension.create({
               const type = typeof attributes.sigmaDocType === "string" ? attributes.sigmaDocType : undefined;
               return type ? { "data-sigma-doc-type": type } : {};
             },
+          },
+        },
+      },
+      {
+        // The persisted value remains on a non-rendering leading-paragraph attribute because that
+        // paragraph owns the list-item id and survives split/reconciliation. The `li` gets a
+        // dedicated layout variable: continuations belong above the adjustable edge, while a
+        // nested list belongs below it.
+        types: ["listItem"],
+        attributes: {
+          spaceAfterPx: {
+            default: null,
+            keepOnSplit: false,
+            parseHTML: () => null,
+            renderHTML: (attributes) => listItemSpaceAfterStyleAttr(attributes.spaceAfterPx),
+          },
+        },
+      },
+      {
+        types: ["paragraph", "heading"],
+        attributes: {
+          // Persistence-only list-item field. It must not render the ordinary block spacing
+          // variable on the leading paragraph, or the same item space is drawn twice.
+          listItemSpaceAfterPx: {
+            default: null,
+            keepOnSplit: false,
+            parseHTML: () => null,
+            renderHTML: () => ({}),
+          },
+          // Temporary editor projection ownership. SigmaDoc remains canonical through
+          // layout.columnStartIds; this survives deletion of a column-start block in PM.
+          layoutColumnIndex: {
+            default: null,
+            parseHTML: () => null,
+            renderHTML: () => ({}),
+          },
+        },
+      },
+      {
+        types: ["bulletList", "orderedList", "quote", "codeBlock", "divider", "boxBlock"],
+        attributes: {
+          layoutColumnIndex: {
+            default: null,
+            parseHTML: () => null,
+            renderHTML: () => ({}),
           },
         },
       },
@@ -803,10 +860,10 @@ function findAncestorNodeDepth(
 export const LayoutSectionExtension = TiptapNodeExtension.create({
   name: "layoutSection",
   group: "block",
-  // `divider` を名指しているので、この拡張は `createRichTextEngineExtensions` の
-  // `bodyBlocks: true` (= DividerExtension を積む) と **必ず同時に** 使う。
-  // 片方だけだと ProseMirror がスキーマ構築時に "No node type or group 'divider' found" で落ちる。
-  content: "(paragraph | heading | bulletList | orderedList | divider | boxBlock)+",
+  // `quote` / `codeBlock` / `divider` を名指しているので、この拡張は
+  // `createRichTextEngineExtensions` の `bodyBlocks: true` と **必ず同時に** 使う。SigmaDoc の
+  // LayoutSectionChildBlock とここがずれると、PM が有効な子を落とし列所属ごと失わせる。
+  content: "(paragraph | heading | bulletList | orderedList | quote | codeBlock | divider | boxBlock)+",
   defining: true,
   isolating: true,
 
@@ -827,6 +884,18 @@ export const LayoutSectionExtension = TiptapNodeExtension.create({
         default: 8,
         parseHTML: (element) => Number.parseFloat(element.getAttribute("data-column-gap-mm") ?? "8"),
       },
+      columnStartIds: {
+        default: null,
+        parseHTML: (element) => {
+          try { return JSON.parse(element.getAttribute("data-column-start-ids") ?? "null"); } catch { return null; }
+        },
+      },
+      columnWidths: {
+        default: null,
+        parseHTML: (element) => {
+          try { return JSON.parse(element.getAttribute("data-column-widths") ?? "null"); } catch { return null; }
+        },
+      },
     };
   },
 
@@ -844,6 +913,8 @@ export const LayoutSectionExtension = TiptapNodeExtension.create({
         "data-sigma-doc-type": "layoutSection",
         "data-column-count": String(columnCount),
         "data-column-gap-mm": String(columnGapMm),
+        "data-column-start-ids": Array.isArray(node.attrs.columnStartIds) ? JSON.stringify(node.attrs.columnStartIds) : undefined,
+        "data-column-widths": Array.isArray(node.attrs.columnWidths) ? JSON.stringify(node.attrs.columnWidths) : undefined,
         class: "sigma-doc-layout-section-block",
         style: [
           `--sigma-doc-local-column-count:${columnCount}`,
@@ -1499,6 +1570,7 @@ function TextFlowEditorImpl({
   const selectionBeforeTransactionRef = useRef<TextFlowSelectionBookmark | null>(null);
   const verticalNavigationXRef = useRef<number | null>(null);
   const literalPasteRequestedAtRef = useRef(0);
+  const literalPasteInProgressRef = useRef(false);
   const previousHistoryRevisionRef = useRef(historyRevision);
   /** Blocks key the history-restore layout effect has already pushed into the editor. */
   const syncedContentKeyRef = useRef<string | null>(null);
@@ -1557,9 +1629,19 @@ function TextFlowEditorImpl({
     [t],
   );
   const paginationMarkerLabelRef = useRef(markerLabelOf);
+  const removeMarkerLabelOf = useCallback(
+    (kind: PageBreakMarkerKind) => t("pagination.removeBreak", {
+      replace: { kind: markerLabelOf(kind) },
+    }),
+    [markerLabelOf, t],
+  );
+  const removePaginationMarkerLabelRef = useRef(removeMarkerLabelOf);
+  const removePaginationMarkerButtonLabelRef = useRef(t("pagination.removeBreakButton"));
   useEffect(() => {
     paginationMarkerLabelRef.current = markerLabelOf;
-  }, [markerLabelOf]);
+    removePaginationMarkerLabelRef.current = removeMarkerLabelOf;
+    removePaginationMarkerButtonLabelRef.current = t("pagination.removeBreakButton");
+  }, [markerLabelOf, removeMarkerLabelOf, t]);
   const paginationMarkerLayoutsRef = useRef<Record<string, PageBreakMarkerLayout>>(paginationMarkerLayouts ?? {});
   const columnFlowBlockLayoutsRef = useRef<Record<string, TextFlowColumnBlockLayout>>(columnFlowBlockLayouts ?? {});
   const headingNumbersRef = useRef<Readonly<Record<string, string>>>(headingNumbers);
@@ -1575,6 +1657,18 @@ function TextFlowEditorImpl({
     (kind: PageBreakMarkerKind) => paginationMarkerLabelRef.current(kind),
     [],
   );
+  const getRemovePageBreakMarkerLabel = useCallback(
+    (kind: PageBreakMarkerKind) => removePaginationMarkerLabelRef.current(kind),
+    [],
+  );
+  const getRemovePageBreakMarkerButtonLabel = useCallback(
+    () => removePaginationMarkerButtonLabelRef.current,
+    [],
+  );
+  const removePageBreakMarker = useCallback((blockId: string) => {
+    const detail: TextPageBreakRequestDetail = { blockId, enabled: false };
+    window.dispatchEvent(new CustomEvent(REQUEST_TEXT_PAGE_BREAK_EVENT, { detail }));
+  }, []);
   const getPageBreakMarkerLayouts = useCallback(() => paginationMarkerLayoutsRef.current, []);
   const getColumnFlowBlockLayouts = useCallback(() => columnFlowBlockLayoutsRef.current, []);
   const getHeadingNumbers = useCallback(() => headingNumbersRef.current, []);
@@ -1780,6 +1874,10 @@ function TextFlowEditorImpl({
         getBreakBeforeKind: getPageBreakMarkerKind,
         getBreakBeforeKinds: getPageBreakMarkerKinds,
         getBreakBeforeLabel: getPageBreakMarkerLabel,
+        getRemoveBreakLabel: getRemovePageBreakMarkerLabel,
+        getRemoveBreakButtonLabel: getRemovePageBreakMarkerButtonLabel,
+        onRemoveBreak: removePageBreakMarker,
+        isReplicaSurface: () => isBoxFragmentReplicaRef.current,
         getBreakBeforeMarkerLayouts: getPageBreakMarkerLayouts,
       }),
       // Column-flow positions are computed outside the editor and read by this
@@ -1829,6 +1927,7 @@ function TextFlowEditorImpl({
       attributes: {
         class: "text-flow-editor",
       },
+      transformPasted: (slice, view) => transferManualBreakToPastedSliceAtOwnerStart(view.state, slice),
       // ProseMirror の既定のスクロール追従を止める。既定は `overflow` を見ずに全ての祖先へ
       // `scrollTop += moveY` を試みるので、断片の viewport を動かして「見えない場所へ
       // スクロールした状態」を作ってしまう。
@@ -1951,6 +2050,14 @@ function TextFlowEditorImpl({
           return true;
         }
 
+        if (
+          (event.key === "Backspace" || event.key === "Delete")
+          && deleteManualBreakSpanningSelection(view)
+        ) {
+          event.preventDefault();
+          return true;
+        }
+
         const request = getBoundaryDeleteRequest(view.state, event, blocksRef.current);
         if (!request) {
           return false;
@@ -1962,7 +2069,10 @@ function TextFlowEditorImpl({
         }
         return handled;
       },
-      handleTextInput: (view, _from, _to, text) => handleTextRunSpanTextInput(view.dom, text),
+      handleTextInput: (view, _from, _to, text) => (
+        handleTextRunSpanTextInput(view.dom, text)
+        || deleteManualBreakSpanningSelection(view, text)
+      ),
       handleDOMEvents: {
         mousedown: () => {
           verticalNavigationXRef.current = null;
@@ -1975,10 +2085,16 @@ function TextFlowEditorImpl({
           beginTextRunSpanComposition(view.dom);
           return false;
         },
-        copy: (_view, event) => {
+        copy: (view, event) => {
           if (event.clipboardData && copyActiveTextRunSpan(event.clipboardData)) {
             event.preventDefault();
             return true;
+          }
+          if (event.clipboardData && !view.state.selection.empty) {
+            if (writeTextFlowSelectionClipboard(view, event.clipboardData, blocksRef.current)) {
+              event.preventDefault();
+              return true;
+            }
           }
           return false;
         },
@@ -2014,6 +2130,12 @@ function TextFlowEditorImpl({
           // PM 本体の cut はこの後で `clipboardData.clearData()` を呼ぶので、private MIME
           // ではなくモジュール側の印で overlay へ渡す (混在切り取りの本文側)。
           const slice = view.state.selection.content();
+          const crossesManualBreak = selectionCrossesManualBreak(view.state);
+          if (crossesManualBreak) {
+            // この経路は native cut を止めて独自 transaction で構造を保つため、PM は
+            // clipboard を書かない。copy と同じ直列化を削除前に完了させる。
+            writeTextFlowSelectionClipboard(view, event.clipboardData, blocksRef.current);
+          }
           markBodyTextCut(event, {
             slice: slice.toJSON(),
             text: sliceTextForClipboard(slice),
@@ -2022,10 +2144,23 @@ function TextFlowEditorImpl({
           // 単一エディタ経路は必ず PM 本体の cut が view.dispatch を続けるので、
           // 本文側は onUpdate でこの印を読む。
           markBodyCutHistoryGroup(historyGroup);
+          if (crossesManualBreak && deleteManualBreakSpanningSelection(view, "", {
+            historyGroup,
+            uiEvent: "cut",
+          })) {
+            event.preventDefault();
+            return true;
+          }
           return false;
         },
       },
       handlePaste: (view, event, slice) => {
+        // `view.pasteText()` も同じ handlePaste 群を再入する。literal paste の内側は
+        // ProseMirror の plain-text parser と既定 replacement に任せ、Markdown/custom
+        // payload 分岐へもう一度入れない。
+        if (literalPasteInProgressRef.current) {
+          return false;
+        }
         const literalPasteRequested = Date.now() - literalPasteRequestedAtRef.current
           <= LITERAL_PASTE_SHORTCUT_WINDOW_MS;
         literalPasteRequestedAtRef.current = 0;
@@ -2069,6 +2204,47 @@ function TextFlowEditorImpl({
           // 貼り付けが何もしないのと同じで、選択だけ消える事故を防ぐ。
           return true;
         }
+        const replacesManualBreakSelection = selectionCrossesManualBreak(view.state);
+        if (replacesManualBreakSelection) {
+          const replacement = resolveManualBreakPasteContent(
+            view.state,
+            event,
+            slice,
+            literalPasteRequested,
+          );
+          if (!replacement) {
+            // 画像・ファイルだけ、不正 custom payload、現在の schema へ入らない構造では
+            // 選択も文書も触らない。
+            return consumeRejectedManualBreakPaste(event);
+          }
+          const historyGroup = replacement.shapesPayload
+            ? createMixedClipboardHistoryGroup()
+            : undefined;
+          // 完全な replacement を作れた時点で native paste は止める。dispatch が edit guard に
+          // 拒否されても、焦点側だけの native 置換や overlay 側だけの貼付へ流さない。
+          event.preventDefault();
+          const mutation = replaceManualBreakSpanningSelection(
+            view,
+            replacement.blocks,
+            historyGroup ? { historyGroup, uiEvent: "paste" } : undefined,
+          );
+          if (!mutation) {
+            return true;
+          }
+          if (replacement.shapesPayload && historyGroup) {
+            requestOverlayShapesPaste({
+              payload: toOverlayShapesClipboardPayload(replacement.shapesPayload),
+              anchorBlockIdMap: resolveTextRunSpanAnchorBlockIdMap(
+                replacement.sourceBlocks,
+                replacement.blocks,
+                [mutation],
+              ),
+              historyGroup,
+              source: view.dom,
+            });
+          }
+          return true;
+        }
         // コード・箱のタイトルのように inline しか持てない入れ物への貼り付けは、貼るものを
         // 畳んでその中へ入れる (通常経路へ流すと入れ物が閉じて残りが外へ溢れる)。コードは
         // 書式も Markdown も持ち込まないので、literal paste との違いも無い。
@@ -2097,9 +2273,9 @@ function TextFlowEditorImpl({
           const plan = buildLargeTextPastePlan({
             state: view.state,
             previousBlocks: blocksRef.current,
-            pastedBlocks: literalPasteRequested
+            pastedBlocks: transferManualBreakToPastedBlocksAtOwnerStart(view.state, literalPasteRequested
               ? largeLiteralTextPasteBlocks(plainText, view.state.selection.$from.marks())
-              : largeTextPasteBlocks(plainText, view.state.selection.$from.marks()),
+              : largeTextPasteBlocks(plainText, view.state.selection.$from.marks())),
             scopeId: textRunScopeId,
             unitId: textRunUnitId ?? previousIdsRef.current[0] ?? "document",
           });
@@ -2144,9 +2320,20 @@ function TextFlowEditorImpl({
           }
         }
         if (literalPasteRequested) {
-          return pasteClipboardAsLiteralText(view, event);
+          const clipboardData = event.clipboardData;
+          if (!clipboardData) {
+            return false;
+          }
+          event.preventDefault();
+          literalPasteInProgressRef.current = true;
+          try {
+            view.pasteText(clipboardData.getData("text/plain"));
+          } finally {
+            literalPasteInProgressRef.current = false;
+          }
+          return true;
         }
-        return pasteTextFlowBlocksFromClipboard(view, event, (blockId) => {
+        return pasteTextFlowBlocksFromClipboard(view, event, slice, (blockId) => {
           selectedIdRef.current = blockId;
           onSelectRef.current(blockId);
         });
@@ -3043,7 +3230,7 @@ function TextFlowEditorImpl({
 
     const requestTextPageBreak = (event: Event) => {
       const detail = event instanceof CustomEvent ? detailFromTextPageBreakEvent(event) : null;
-      if (!detail) {
+      if (!detail || !shouldHandleTextPageBreakRequest(detail, isBoxFragmentReplicaRef.current)) {
         return;
       }
 
@@ -4999,6 +5186,7 @@ export function resolveTextFlowFormatCommandOptions(
 function pasteTextFlowBlocksFromClipboard(
   view: EditorView,
   event: ClipboardEvent,
+  parsedSlice: Slice,
   onSelect: (blockId: string) => void,
 ): boolean {
   const clipboardData = event.clipboardData;
@@ -5031,6 +5219,17 @@ function pasteTextFlowBlocksFromClipboard(
   if (pastedBlocks.length === 0) {
     return false;
   }
+  const pasteInline = pastedBlocks.length === 1
+    && parsedSlice.content.childCount === 1
+    && parsedSlice.content.firstChild?.isTextblock === true
+    && parsedSlice.openStart > 0
+    && parsedSlice.openEnd > 0
+    && view.state.selection.empty
+    && view.state.selection.$from.parent.isTextblock;
+  pastedBlocks = dropLeadingPastedBreakAtContainerStart(view.state, pastedBlocks);
+  if (!pasteInline) {
+    pastedBlocks = transferManualBreakToPastedBlocksAtOwnerStart(view.state, pastedBlocks);
+  }
 
   const nodes = pastedBlocks
     .map((block) => {
@@ -5046,10 +5245,12 @@ function pasteTextFlowBlocksFromClipboard(
   }
 
   event.preventDefault();
-  const slice = new Slice(Fragment.fromArray(nodes), 0, 0);
+  const slice = pasteInline
+    ? new Slice(Fragment.fromArray(nodes), 1, 1)
+    : new Slice(Fragment.fromArray(nodes), 0, 0);
   const nextSelectedId = pastedBlocks[pastedBlocks.length - 1]?.id;
   try {
-    const insertPos = getTextBlockBoundaryInsertPosition(view.state);
+    const insertPos = pasteInline ? null : getTextBlockBoundaryInsertPosition(view.state);
     let transaction = insertPos === null
       ? view.state.tr.replaceSelection(slice)
       : view.state.tr.insert(insertPos, slice.content);
@@ -5077,6 +5278,76 @@ function pasteTextFlowBlocksFromClipboard(
   return true;
 }
 
+function dropLeadingPastedBreakAtContainerStart(
+  state: EditorState,
+  blocks: TextFlowBlock[],
+): TextFlowBlock[] {
+  const first = blocks[0];
+  if (!first || first.pagination?.break !== true || !state.selection.empty) {
+    return blocks;
+  }
+  const { $from } = state.selection;
+  let textDepth = -1;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    if ($from.node(depth).isTextblock) {
+      textDepth = depth;
+      break;
+    }
+  }
+  if (textDepth < 1 || $from.parentOffset !== 0 || $from.index(textDepth - 1) !== 0) {
+    return blocks;
+  }
+  const pagination = { ...(first.pagination ?? {}) };
+  delete pagination.break;
+  return [{
+    ...first,
+    pagination: Object.keys(pagination).length > 0 ? pagination : undefined,
+  }, ...blocks.slice(1)];
+}
+
+/** 先頭ブロックの break-before は選択の外。内部の区切りだけを payload に残す。 */
+export function textFlowBlocksForSelectionClipboard(
+  slice: Slice,
+  previousBlocks: TextFlowBlock[],
+): TextFlowBlock[] {
+  const blocks = sliceToTextFlowBlocks(slice, previousBlocks);
+  const first = blocks[0];
+  if (!first || first.pagination?.break !== true) {
+    return blocks;
+  }
+  const pagination = { ...(first.pagination ?? {}) };
+  delete pagination.break;
+  return [{
+    ...first,
+    pagination: Object.keys(pagination).length > 0 ? pagination : undefined,
+  }, ...blocks.slice(1)];
+}
+
+export function writeTextFlowSelectionClipboard(
+  view: EditorView,
+  clipboardData: DataTransfer,
+  previousBlocks: TextFlowBlock[],
+): boolean {
+  const slice = view.state.selection.content();
+  const copiedBlocks = textFlowBlocksForSelectionClipboard(slice, previousBlocks);
+  if (copiedBlocks.length === 0) {
+    return false;
+  }
+  const container = view.dom.ownerDocument.createElement("div");
+  container.appendChild(DOMSerializer.fromSchema(view.state.schema).serializeFragment(
+    slice.content,
+    { document: view.dom.ownerDocument },
+  ));
+  const text = sliceTextForClipboard(slice);
+  writeEditorClipboardData(
+    clipboardData,
+    createTextFlowClipboardPayload(copiedBlocks),
+    { html: container.innerHTML },
+  );
+  writeTextSliceClipboardData(clipboardData, slice.toJSON(), text);
+  return true;
+}
+
 function pasteTextAndShapesFromClipboard(
   view: EditorView,
   event: ClipboardEvent,
@@ -5093,6 +5364,7 @@ function pasteTextAndShapesFromClipboard(
     return false;
   }
 
+  textSlice = transferManualBreakToPastedSliceAtOwnerStart(view.state, textSlice);
   const { transaction, anchorBlockIdMap } = insertTextSliceWithFreshBlockIds(view.state, textSlice);
   event.preventDefault();
   // 本文と図形を 1 つの undo エントリに畳むキー。本文の record が必ず先 (この dispatch は
@@ -5155,21 +5427,7 @@ export function isLiteralPasteShortcut(
     event.key.toLowerCase() === "v";
 }
 
-function pasteClipboardAsLiteralText(view: EditorView, event: ClipboardEvent): boolean {
-  const clipboardData = event.clipboardData;
-  if (!clipboardData) {
-    return false;
-  }
-
-  event.preventDefault();
-  // Use ProseMirror's plain-text parser so newlines still become editor blocks.
-  // Omitting the original event also keeps Sigma Studio's Markdown/math paste
-  // handlers from interpreting the literal clipboard characters a second time.
-  view.pasteText(clipboardData.getData("text/plain"));
-  return true;
-}
-
-function getTextBlockBoundaryInsertPosition(state: EditorState): number | null {
+export function getTextBlockBoundaryInsertPosition(state: EditorState): number | null {
   const { selection } = state;
   if (!selection.empty) {
     return null;
@@ -5197,6 +5455,63 @@ function getTextBlockBoundaryInsertPosition(state: EditorState): number | null {
   }
 
   return null;
+}
+
+/**
+ * break owner のテキスト先頭でブロック貼り付けを行うとき、先頭貼付ブロックへ break を
+ * 明示する。PM 上の挿入位置は owner の直前だが、書き戻し adapter がこの印を読んで旧 owner
+ * から break を外すため、SigmaDoc 上では貼付内容全体が区切りの後ろ側に残る。
+ */
+export function transferManualBreakToPastedBlocksAtOwnerStart(
+  state: EditorState,
+  blocks: TextFlowBlock[],
+): TextFlowBlock[] {
+  if (!isManualBreakOwnerTextStart(state) || blocks.length === 0) {
+    return blocks;
+  }
+  const first = blocks[0];
+  return [{
+    ...first,
+    pagination: { ...(first.pagination ?? {}), break: true },
+  }, ...blocks.slice(1)];
+}
+
+export function transferManualBreakToPastedSliceAtOwnerStart(
+  state: EditorState,
+  slice: Slice,
+): Slice {
+  if (!isManualBreakOwnerTextStart(state) || slice.content.childCount === 0) {
+    return slice;
+  }
+  const nodes: ProseMirrorModelNode[] = [];
+  slice.content.forEach((node, _offset, index) => {
+    if (index !== 0 || !node.isBlock) {
+      nodes.push(node);
+      return;
+    }
+    nodes.push(node.type.create(
+      {
+        ...node.attrs,
+        pagination: { ...(node.attrs.pagination ?? {}), break: true },
+      },
+      node.content,
+      node.marks,
+    ));
+  });
+  return new Slice(Fragment.fromArray(nodes), slice.openStart, slice.openEnd);
+}
+
+function isManualBreakOwnerTextStart(state: EditorState): boolean {
+  if (!state.selection.empty || state.selection.$from.parentOffset !== 0) {
+    return false;
+  }
+  const { $from } = state.selection;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    if ($from.node(depth).attrs.pagination?.break === true) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function findBoxBlockInTextFlowBlocks(blocks: TextFlowBlock[], boxId: string): BoxBlockNode | null {
@@ -5387,18 +5702,25 @@ function getEditorTextBlockKinds(editor: TiptapEditor): Map<string, TextFlowBloc
  * PM の doc から読んだ非構造属性の署名。`hasTextFlowBlockAttributeChange` が SigmaDoc 側と
  * 突き合わせる。**署名を作るのは SigmaDoc 側と同じ関数**なので、属性が増えてもここは変わらない。
  *
- * リスト項目の先頭段落は SigmaDoc では listItem で、あちらの写像に載らない。両側に載っている
- * id だけを突き合わせる規約なので、ここでも素直に外しておく。
+ * リスト項目の先頭段落は専用の非描画属性から署名を作る。通常の `spaceAfterPx`
+ * を読むと、項目内部の辺ではなく段落下端の描画と混同する。
  */
 export function getEditorTextBlockAttributes(editor: TiptapEditor): Map<string, string> {
   const attributes = new Map<string, string>();
 
   editor.state.doc.descendants((node) => {
     const id = node.attrs.sigmaDocId;
-    if (typeof id !== "string" || node.attrs.sigmaDocType === "listItem") {
+    if (typeof id !== "string") {
       return;
     }
-    attributes.set(id, textFlowBlockAttributeSignature(node.attrs));
+    attributes.set(
+      id,
+      textFlowBlockAttributeSignature(
+        node.attrs.sigmaDocType === "listItem"
+          ? { spaceAfterPx: node.attrs.listItemSpaceAfterPx }
+          : node.attrs,
+      ),
+    );
   });
 
   return attributes;
@@ -5705,6 +6027,10 @@ export function focusTextFlowSurface(
   editor: TiptapEditor,
   activeMarks: readonly ProseMirrorMark[] | null,
 ): void {
+  // `view.focus()` は内部で引数なしの `dom.focus()` を呼ぶ。先に同じ DOM を
+  // preventScroll 付きでフォーカスし、ブラウザのネイティブスクロールを発生させない。
+  // DOM 選択の同期は続く `view.focus()` に任せ、スクロール判定は下の専用経路だけが行う。
+  editor.view.dom.focus({ preventScroll: true });
   editor.view.focus();
   if (
     activeMarks
@@ -6126,6 +6452,248 @@ function getBoundaryDeleteRequest(
   };
 }
 
+/**
+ * 改ページ/改段を含む範囲を SigmaDoc ブロック列として置換する。両端の文字断片だけを残し、
+ * 完全選択された中間ブロックは構造ごと削除する一方、break の最小所有構造は保持する。
+ */
+export function deleteManualBreakSpanningSelection(
+  view: EditorView,
+  insertion: string | readonly TextFlowBlock[] = "",
+  metadata?: { historyGroup: string; uiEvent: "cut" | "paste" },
+): boolean {
+  return replaceManualBreakSpanningSelection(view, insertion, metadata) !== null;
+}
+
+function replaceManualBreakSpanningSelection(
+  view: EditorView,
+  insertion: string | readonly TextFlowBlock[],
+  metadata?: { historyGroup: string; uiEvent: "cut" | "paste" },
+): import("./text-flow/text-run-replacement").TextRunReplacementMutation | null {
+  const { state } = view;
+  const { selection } = state;
+  if (selection.empty || !selectionCrossesManualBreak(state)) {
+    return null;
+  }
+
+  const previousBlocks = tiptapToTextFlow(state.doc.toJSON() as TiptapDoc);
+  const before = sliceToTextFlowBlocks(state.doc.slice(0, selection.from), previousBlocks);
+  const after = sliceToTextFlowBlocks(
+    state.doc.slice(selection.to, state.doc.content.size),
+    previousBlocks,
+  );
+  const inserted = typeof insertion === "string"
+    ? insertion
+      ? [{ type: "paragraph" as const, id: createId("p"), children: [{ type: "text" as const, text: insertion }] }]
+      : []
+    : [...insertion];
+  // 単一エディタの両端も span と同じ 2 セグメントとして扱う。入力は先行断片へ結合し、
+  // break を持つ後続断片とは結合しない。
+  const [replacement] = buildTextRunReplacementMutations([{
+    unitId: "single-editor-leading",
+    scopeId: "single-editor",
+    previousIds: getTextFlowBlockIds(previousBlocks),
+    previousBlocks,
+    before,
+    after: [],
+    startsInsideTextBlock: true,
+    preserveEmpty: true,
+  }, {
+    unitId: "single-editor-trailing",
+    scopeId: "single-editor",
+    previousIds: [],
+    before: [],
+    after,
+    endsInsideTextBlock: true,
+    preserveEmpty: true,
+  }], inserted, () => ({ type: "paragraph", id: createId("p"), children: [] }));
+  if (!replacement) {
+    return null;
+  }
+
+  let replacementDoc: ProseMirrorModelNode;
+  try {
+    replacementDoc = state.schema.nodeFromJSON(textFlowToTiptap(replacement.nextBlocks));
+  } catch {
+    return null;
+  }
+  let transaction = state.tr.replaceWith(0, state.doc.content.size, replacementDoc.content);
+  const caret = replacement.selection?.head;
+  if (caret) {
+    let caretPos: number | null = null;
+    transaction.doc.descendants((node, pos) => {
+      if (node.attrs.sigmaDocId === caret.blockId) {
+        caretPos = pos + 1 + clampCaretOffset(caret.offset, node.content.size);
+        return false;
+      }
+      return true;
+    });
+    if (caretPos !== null) {
+      transaction = transaction.setSelection(TextSelection.create(transaction.doc, caretPos));
+    }
+  }
+  if (metadata) {
+    transaction = transaction
+      .setMeta("uiEvent", metadata.uiEvent)
+      .setMeta(MIXED_CLIPBOARD_HISTORY_GROUP_META, metadata.historyGroup);
+  }
+  const dispatched = transaction.scrollIntoView();
+  view.dispatch(dispatched);
+  // edit guard などの filterTransaction が拒否した場合は、挿入成功として後続処理
+  // (特に図形貼付)へ進ませない。
+  return view.state.doc.eq(dispatched.doc) ? replacement : null;
+}
+
+interface ManualBreakPasteContent {
+  blocks: TextFlowBlock[];
+  shapesPayload?: Extract<EditorClipboardPayload, { kind: "textAndShapes" }>;
+  sourceBlocks: TextFlowBlock[];
+}
+
+/**
+ * 改ページ跨ぎ paste を dispatch 前に完全な SigmaDoc 挿入列へ正規化する。
+ * ここで null なら削除 transaction も作らない。
+ */
+export function resolveManualBreakPasteContent(
+  state: EditorState,
+  event: ClipboardEvent,
+  slice: Slice,
+  literalPasteRequested: boolean,
+): ManualBreakPasteContent | null {
+  const clipboardData = event.clipboardData;
+  let sourceBlocks: TextFlowBlock[] = [];
+  let blocks: TextFlowBlock[] = [];
+  let shapesPayload: Extract<EditorClipboardPayload, { kind: "textAndShapes" }> | undefined;
+
+  if (literalPasteRequested) {
+    const text = clipboardData?.getData("text/plain") ?? "";
+    sourceBlocks = text ? plainTextToTextFlowParagraphs(text) : [];
+    blocks = sourceBlocks;
+  } else if (clipboardData) {
+    const payload = readEditorClipboardPayload(clipboardData);
+    if (payload?.kind === "textFlowBlocks") {
+      sourceBlocks = payload.blocks;
+      blocks = cloneTextFlowBlocksForPaste(payload.blocks);
+    } else if (payload?.kind === "textAndShapes") {
+      let textSlice: Slice | null = null;
+      try {
+        textSlice = Slice.fromJSON(state.schema, payload.text.slice);
+      } catch {
+        textSlice = slice.size > 0 ? slice : null;
+      }
+      sourceBlocks = textSlice ? sliceToTextFlowBlocks(textSlice) : [];
+      blocks = cloneTextFlowBlocksForPaste(sourceBlocks);
+      shapesPayload = payload;
+    } else if (payload) {
+      return null;
+    } else {
+      const html = clipboardData.getData("text/html");
+      const hasRejectedSigmaPayload = Boolean(clipboardData.getData(EDITOR_CLIPBOARD_MIME))
+        || html.includes("data-sigma-studio-clipboard");
+      if (hasRejectedSigmaPayload) {
+        return null;
+      }
+      // 通常の rich clipboard は PM が schema に合わせて parse 済みの slice を優先する。
+      // plain text を先に Markdown 化すると、HTML 側の marks や block 構造が失われる。
+      const richBlocks = html.trim() ? sliceToTextFlowBlocks(slice) : [];
+      const markdownBlocks = richBlocks.length === 0
+        ? parsePastedMarkdown(clipboardData.getData("text/plain"))
+        : null;
+      sourceBlocks = richBlocks.length > 0
+        ? richBlocks
+        : markdownBlocks && markdownBlocks.length > 0
+          ? markdownBlocks
+          : sliceToTextFlowBlocks(slice);
+      blocks = cloneTextFlowBlocksForPaste(sourceBlocks);
+    }
+  } else {
+    sourceBlocks = sliceToTextFlowBlocks(slice);
+    blocks = cloneTextFlowBlocksForPaste(sourceBlocks);
+  }
+
+  if (blocks.length === 0 || !blocks.every((block) => {
+    try {
+      state.schema.nodeFromJSON(textFlowBlockToTiptapNode(block));
+      return true;
+    } catch {
+      return false;
+    }
+  })) {
+    return null;
+  }
+  return { blocks, shapesPayload, sourceBlocks };
+}
+
+/** 改ページ跨ぎ選択では native replacement へ決してフォールスルーさせない。 */
+export function consumeRejectedManualBreakPaste(
+  event: Pick<ClipboardEvent, "preventDefault">,
+): true {
+  event.preventDefault();
+  return true;
+}
+
+export function pasteHasUsableContent(
+  state: EditorState,
+  event: ClipboardEvent,
+  slice: Slice,
+  literalPasteRequested: boolean,
+): boolean {
+  const clipboardData = event.clipboardData;
+  if (literalPasteRequested) {
+    return Boolean(clipboardData?.getData("text/plain"));
+  }
+  if (!clipboardData) {
+    return slice.size > 0;
+  }
+  const payload = readEditorClipboardPayload(clipboardData);
+  if (payload?.kind === "textFlowBlocks") {
+    return payload.blocks.some((block) => {
+      try {
+        state.schema.nodeFromJSON(textFlowBlockToTiptapNode(block));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+  if (payload?.kind === "textAndShapes") {
+    try {
+      return Slice.fromJSON(state.schema, payload.text.slice).size > 0 || slice.size > 0;
+    } catch {
+      return slice.size > 0;
+    }
+  }
+  if (payload) {
+    return slice.size > 0;
+  }
+  if (clipboardData.getData("text/plain")) {
+    return true;
+  }
+  return slice.size > 0;
+}
+
+export function selectionCrossesManualBreak(state: EditorState): boolean {
+  const { selection } = state;
+  if (selection.empty) {
+    return false;
+  }
+  let crosses = false;
+  state.doc.descendants((node, pos) => {
+    if (node.attrs.pagination?.break !== true) {
+      return !node.isTextblock && !node.isLeaf;
+    }
+    const first = TextSelection.findFrom(
+      state.doc.resolve(Math.min(state.doc.content.size, pos + 1)),
+      1,
+      true,
+    );
+    if (first && selection.from < first.from && first.from <= selection.to) {
+      crosses = true;
+    }
+    return false;
+  });
+  return crosses;
+}
+
 export function resolveManualBreakBoundaryNavigation(
   state: EditorState,
   direction: "backward" | "forward" | null,
@@ -6134,9 +6702,6 @@ export function resolveManualBreakBoundaryNavigation(
 ): { blockId: string; position: number } | null {
   if (
     !direction
-    || event?.altKey
-    || event?.ctrlKey
-    || event?.metaKey
     || event?.shiftKey
     || event?.isComposing
     || !state.selection.empty
@@ -6154,10 +6719,8 @@ export function resolveManualBreakBoundaryNavigation(
 
   const { $from } = state.selection;
   const parent = $from.parent;
-  if (
-    (parent.type.name !== "paragraph" && parent.type.name !== "heading")
-    || state.selection.from !== (direction === "backward" ? $from.start() : $from.end())
-  ) {
+  if (!parent.isTextblock
+    || state.selection.from !== (direction === "backward" ? $from.start() : $from.end())) {
     return null;
   }
 

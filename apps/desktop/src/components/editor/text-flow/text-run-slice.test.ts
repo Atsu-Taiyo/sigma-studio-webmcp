@@ -80,6 +80,32 @@ describe("sliceToTextFlowBlocks", () => {
     expect(blocks.find((block) => block.id === "p2")?.pagination).toEqual({ break: true });
     editor.destroy();
   });
+
+  it("keeps the original id and break on a trailing partial owner slice", () => {
+    const editor = createEditor();
+    const previousBlocks: TextFlowBlock[] = [
+      { type: "paragraph", id: "p1", children: [{ type: "text", text: "前半" }] },
+      {
+        type: "paragraph",
+        id: "p2",
+        children: [{ type: "text", text: "後半" }],
+        pagination: { break: true },
+      },
+    ];
+    const secondStart = editor.state.doc.resolve(1).end() + 2;
+    const blocks = sliceToTextFlowBlocks(
+      editor.state.doc.slice(secondStart + 1, editor.state.doc.content.size),
+      previousBlocks,
+    );
+
+    expect(blocks).toEqual([{
+      type: "paragraph",
+      id: "p2",
+      children: [{ type: "text", text: "半" }],
+      pagination: { break: true },
+    }]);
+    editor.destroy();
+  });
 });
 
 describe("plainTextToTextFlowParagraphs", () => {

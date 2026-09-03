@@ -53,6 +53,12 @@ export function isDesktopStorageChangeEvent(value: unknown): value is DesktopSto
     return event.change === "changed" && typeof event.timestamp === "number";
   }
 
+  if (event.type === "documentVersion") {
+    return typeof event.fileId === "string"
+      && event.change === "captured"
+      && typeof event.timestamp === "number";
+  }
+
   if (event.type === "watcher") {
     return (event.scope === "documents" || event.scope === "library" || event.scope === "mcpProposal")
       && (event.change === "failed" || event.change === "recovered")
@@ -73,6 +79,39 @@ export function isDesktopStorageChangeEvent(value: unknown): value is DesktopSto
 
 export function uniqueStringIds(ids: string[]): string[] {
   return Array.from(new Set(ids));
+}
+
+export interface DocumentBoundarySafetyInput {
+  isEmbedded: boolean;
+  workspaceReady: boolean;
+  activeDocumentOpenFailed: boolean;
+  externalChangePending: boolean;
+  aiWriteInProgress: boolean;
+  observedRevision: number | null;
+}
+
+export type DocumentBoundarySkipReason =
+  | "embedded"
+  | "workspace-not-ready"
+  | "document-open-failed"
+  | "external-change-pending"
+  | "ai-write-in-progress"
+  | "revision-unknown";
+
+export function getDocumentBoundarySkipReason(
+  input: DocumentBoundarySafetyInput,
+): DocumentBoundarySkipReason | undefined {
+  if (input.isEmbedded) return "embedded";
+  if (!input.workspaceReady) return "workspace-not-ready";
+  if (input.activeDocumentOpenFailed) return "document-open-failed";
+  if (input.externalChangePending) return "external-change-pending";
+  if (input.aiWriteInProgress) return "ai-write-in-progress";
+  if (input.observedRevision === null) return "revision-unknown";
+  return undefined;
+}
+
+export function canCaptureDocumentBoundary(input: DocumentBoundarySafetyInput): boolean {
+  return getDocumentBoundarySkipReason(input) === undefined;
 }
 
 export function createUnsavedEditBackupTitle(

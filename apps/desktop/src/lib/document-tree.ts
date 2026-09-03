@@ -29,6 +29,11 @@ import {
   type RichBlock,
   type SectionNode,
 } from "@/features/document";
+import {
+  getLayoutSectionColumns,
+  getLayoutSectionColumnWidths,
+  setLayoutSectionColumns,
+} from "@/features/text-editing";
 
 export type TopLevelTextFlowBlock = SectionNode | HeadingNode | ParagraphNode | ListNode | BoxBlockNode;
 export type EditableBlock = SigmaBlock | ProblemAreaBlock | ListItemNode;
@@ -126,14 +131,22 @@ export function createLayoutSection(
   columnCount = 2,
   columnGapMm = 8,
 ): LayoutSectionNode {
+  const count = Math.min(4, Math.max(1, Math.floor(columnCount)));
+  const content = children.length > 0 ? [...children] : [createParagraph("")];
+  while (content.length < count) content.push(createParagraph(""));
+  const columnStartIds = Array.from({ length: count }, (_, index) => (
+    content[Math.floor(index * content.length / count)].id
+  ));
   return {
     type: "layoutSection",
     id: createId("layout_section"),
     layout: {
-      columnCount: Math.min(4, Math.max(1, Math.floor(columnCount))),
+      columnCount: count,
       columnGapMm: Math.max(0, columnGapMm),
+      columnStartIds,
+      columnWidths: Array.from({ length: count }, () => 1),
     },
-    children: children.length > 0 ? children : [createParagraph("")],
+    children: content,
   };
 }
 
@@ -887,6 +900,14 @@ export function unwrapLayoutSection(document: SigmaDocument, sectionId: string):
   };
 }
 
+function layoutSectionChildrenForUnwrap(section: LayoutSectionNode): LayoutSectionNode["children"] {
+  const nonEmpty = section.children.filter((child) => !(
+    child.type === "paragraph"
+    && child.children.every((inline) => inline.type === "text" && inline.text.length === 0)
+  ));
+  return nonEmpty.length > 0 ? nonEmpty : section.children.slice(0, 1);
+}
+
 function unwrapLayoutSectionInContent(
   blocks: SigmaBlock[],
   sectionId: string,
@@ -905,7 +926,7 @@ function unwrapLayoutSectionInContent(
     }
 
     if (!changed && block.type === "layoutSection" && block.id === sectionId) {
-      nextBlocks.push(...block.children as ProblemAreaBlock[]);
+      nextBlocks.push(...layoutSectionChildrenForUnwrap(block) as ProblemAreaBlock[]);
       changed = true;
       continue;
     }
@@ -943,7 +964,7 @@ function unwrapLayoutSectionInProblemAreaBlocks(
 
   for (const block of blocks) {
     if (!changed && block.type === "layoutSection" && block.id === sectionId) {
-      nextBlocks.push(...(block.children as ProblemAreaBlock[]));
+      nextBlocks.push(...(layoutSectionChildrenForUnwrap(block) as ProblemAreaBlock[]));
       changed = true;
       continue;
     }
@@ -972,7 +993,7 @@ function unwrapLayoutSectionInBoxChildren(
 
   for (const block of blocks) {
     if (!changed && block.type === "layoutSection" && block.id === sectionId) {
-      nextBlocks.push(...block.children);
+      nextBlocks.push(...layoutSectionChildrenForUnwrap(block));
       changed = true;
       continue;
     }
@@ -1165,10 +1186,19 @@ function insertAfterRichBlock<T extends ProblemAreaBlock>(blocks: T[], selectedI
   return next;
 }
 
-export function removeBlockFromDocument(document: SigmaDocument, blockId: string): SigmaDocument {
+export interface RemoveBlockFromDocumentOptions {
+  /** 純削除では break-before を次の兄弟へ渡す。移動の取り出しでは false にする。 */
+  transferBreak?: boolean;
+}
+
+export function removeBlockFromDocument(
+  document: SigmaDocument,
+  blockId: string,
+  options: RemoveBlockFromDocumentOptions = {},
+): SigmaDocument {
   return {
     ...document,
-    content: removeFromBlocks(document.content, blockId),
+    content: removeFromBlocks(document.content, blockId, options.transferBreak ?? true),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1258,7 +1288,7 @@ export function moveBlocksInDocument(
       throw new Error(`AI編集: 移動対象ブロックが見つかりません(${id})。`);
     }
     extracted.push(block);
-    working = removeBlockFromDocument(working, id);
+    working = removeBlockFromDocument(working, id, { transferBreak: false });
   }
 
   const nextContent = insertBlocksNearTarget(working.content, targetId, extracted, position);
@@ -1266,11 +1296,43 @@ export function moveBlocksInDocument(
     throw new Error("AI編集: 移動先のブロックが見つかりません。");
   }
 
-  return {
+  const moved = {
     ...working,
     content: nextContent,
     updatedAt: new Date().toISOString(),
   };
+  return dropInvalidMovedBreaks(moved, extracted.map((block) => block.id));
+}
+
+/** 移動先で表示できない break-before だけを落とす。移動した subtree 内部の区切りは触らない。 */
+function dropInvalidMovedBreaks(document: SigmaDocument, movedBlockIds: readonly string[]): SigmaDocument {
+  let next = document;
+  for (const blockId of movedBlockIds) {
+    const block = findBlock(next, blockId);
+    if (!block || block.type === "listItem" || block.pagination?.break !== true) {
+      continue;
+    }
+    const layoutSection = findContainingLayoutSection(next, blockId);
+    const containingBox = findContainingBoxBlock(next, blockId);
+    const isFirstLayoutChild = layoutSection?.children[0]?.id === blockId;
+    const isAllowedBoxColumnBreak = !!layoutSection
+      && layoutSection.layout.columnCount > 1
+      && findContainingBoxBlock(next, layoutSection.id)?.id === containingBox?.id;
+    if (isFirstLayoutChild || (containingBox && !isAllowedBoxColumnBreak)) {
+      next = updateBlockInDocument(next, blockId, (current) => {
+        if (current.type === "listItem") {
+          return current;
+        }
+        const pagination = { ...(current.pagination ?? {}) };
+        delete pagination.break;
+        return {
+          ...current,
+          pagination: Object.keys(pagination).length > 0 ? pagination : undefined,
+        };
+      });
+    }
+  }
+  return next;
 }
 
 function blockSubtreeContainsId(block: SigmaBlock, id: string): boolean {
@@ -1382,10 +1444,17 @@ function insertBlocksNearTarget(
     }
 
     if (block.type === "layoutSection") {
+      const directTarget = block.children.some((child) => child.id === targetId);
       const result = insertBlocksNearTargetInLayoutChildren(block.children, targetId, newBlocks, position);
       if (result) {
         found = true;
-        return { ...block, children: result };
+        return {
+          ...block,
+          layout: directTarget && position === "before" && block.layout.columnStartIds?.includes(targetId)
+            ? { ...block.layout, columnStartIds: block.layout.columnStartIds.map((id) => id === targetId ? newBlocks[0].id : id) }
+            : block.layout,
+          children: result,
+        };
       }
       return block;
     }
@@ -1451,10 +1520,17 @@ function insertBlocksNearTargetInBoxChildren(
       return block;
     }
     if (block.type === "layoutSection") {
+      const directTarget = block.children.some((child) => child.id === targetId);
       const result = insertBlocksNearTargetInLayoutChildren(block.children, targetId, newBlocks, position);
       if (result) {
         found = true;
-        return { ...block, children: result };
+        return {
+          ...block,
+          layout: directTarget && position === "before" && block.layout.columnStartIds?.includes(targetId)
+            ? { ...block.layout, columnStartIds: block.layout.columnStartIds.map((id) => id === targetId ? newBlocks[0].id : id) }
+            : block.layout,
+          children: result,
+        };
       }
     }
     if (block.type === "boxBlock") {
@@ -2084,37 +2160,32 @@ function containsBlockId(blocks: Generator<EditableBlock>, blockId: string): boo
   return false;
 }
 
-function removeFromBlocks(blocks: SigmaBlock[], blockId: string): SigmaBlock[] {
-  return blocks
-    .filter((block) => block.id !== blockId)
+function removeFromBlocks(blocks: SigmaBlock[], blockId: string, transferBreak: boolean): SigmaBlock[] {
+  return removeDirectBlock(blocks, blockId, transferBreak)
     .map((block) => {
       if (block.type === "problem") {
         return {
           ...block,
-          lead: removeFromRichBlocks(block.lead, blockId),
-          prompt: removeFromRichBlocks(block.prompt, blockId),
-          solution: removeFromRichBlocks(block.solution, blockId),
-          hints: removeFromRichBlocks(block.hints, blockId),
+          lead: removeFromRichBlocks(block.lead, blockId, transferBreak),
+          prompt: removeFromRichBlocks(block.prompt, blockId, transferBreak),
+          solution: removeFromRichBlocks(block.solution, blockId, transferBreak),
+          hints: removeFromRichBlocks(block.hints, blockId, transferBreak),
         };
       }
 
       if (block.type === "layoutSection") {
-        const children = removeFromLayoutSectionChildren(block.children, blockId);
-        return {
-          ...block,
-          children: children.length > 0 ? children : [createParagraph("")],
-        };
+        return removeFromLayoutSection(block, blockId, transferBreak);
       }
 
       if (block.type === "boxBlock") {
         return {
           ...block,
-          blocks: removeFromBoxBlockChildren(block.blocks, blockId),
+          blocks: removeFromBoxBlockChildren(block.blocks, blockId, transferBreak),
         };
       }
 
       if (block.type === "quote") {
-        return withQuoteChildren(block, removeFromQuoteChildren(block.blocks, blockId));
+        return withQuoteChildren(block, removeFromQuoteChildren(block.blocks, blockId, transferBreak));
       }
 
       if (block.type === "list") {
@@ -2129,9 +2200,9 @@ function removeFromBlocks(blocks: SigmaBlock[], blockId: string): SigmaBlock[] {
 function removeFromLayoutSectionChildren(
   blocks: LayoutSectionChildBlock[],
   blockId: string,
+  transferBreak: boolean,
 ): LayoutSectionChildBlock[] {
-  return blocks
-    .filter((block) => block.id !== blockId)
+  return removeDirectBlock(blocks, blockId, transferBreak)
     .map((block) => {
       if (block.type === "list") {
         return removeFromList(block, blockId);
@@ -2140,12 +2211,12 @@ function removeFromLayoutSectionChildren(
       if (block.type === "boxBlock") {
         return {
           ...block,
-          blocks: removeFromBoxBlockChildren(block.blocks, blockId),
+          blocks: removeFromBoxBlockChildren(block.blocks, blockId, transferBreak),
         };
       }
 
       if (block.type === "quote") {
-        return withQuoteChildren(block, removeFromQuoteChildren(block.blocks, blockId));
+        return withQuoteChildren(block, removeFromQuoteChildren(block.blocks, blockId, transferBreak));
       }
 
       return block;
@@ -2153,25 +2224,49 @@ function removeFromLayoutSectionChildren(
     .filter((block) => block.type !== "list" || block.items.length > 0);
 }
 
-function removeFromRichBlocks<T extends ProblemAreaBlock>(blocks: T[], blockId: string): T[] {
-  return blocks
-    .filter((block) => block.id !== blockId)
+/**
+ * Remove inside each persisted independent column, then rebuild the section from those columns.
+ *
+ * This path is used by grip deletion, AI batch deletion, and move extraction. None of them passes
+ * through a TextFlowEditor/Tiptap projection, so the pre-edit `columnStartIds` must be resolved
+ * here before a boundary owner disappears. Flattening first irreversibly loses that ownership.
+ */
+function removeFromLayoutSection(
+  section: LayoutSectionNode,
+  blockId: string,
+  transferBreak: boolean,
+): LayoutSectionNode {
+  // Every deletion walks every container. Rebuilding an unrelated section is both wasteful and
+  // destructive for a valid sparse section because the normal resolver cannot invent owners for
+  // declared columns that currently have no child. Preserve the exact object until this section
+  // actually owns the target (directly or below one of its children).
+  if (!layoutSectionContainsBlock(section, blockId)) return section;
+
+  const declaredColumnCount = Math.min(4, Math.max(1, Math.floor(section.layout.columnCount)));
+  const columns = getLayoutSectionColumns(section);
+  while (columns.length < declaredColumnCount) columns.push([]);
+  const widths = getLayoutSectionColumnWidths(section, declaredColumnCount);
+  const nextColumns = columns.map((column) => {
+    const children = removeFromLayoutSectionChildren(column, blockId, transferBreak);
+    return children.length > 0 ? children : [createParagraph("")];
+  });
+  return setLayoutSectionColumns(section, nextColumns, widths);
+}
+
+function removeFromRichBlocks<T extends ProblemAreaBlock>(blocks: T[], blockId: string, transferBreak: boolean): T[] {
+  return removeDirectBlock(blocks, blockId, transferBreak)
     .map((block) => {
       if (block.type === "layoutSection") {
-        const children = removeFromLayoutSectionChildren(block.children, blockId);
-        return {
-          ...block,
-          children: children.length > 0 ? children : [createParagraph("")],
-        } as T;
+        return removeFromLayoutSection(block, blockId, transferBreak) as T;
       }
       if (block.type === "boxBlock") {
         return {
           ...block,
-          blocks: removeFromBoxBlockChildren(block.blocks, blockId),
+          blocks: removeFromBoxBlockChildren(block.blocks, blockId, transferBreak),
         } as T;
       }
       if (block.type === "quote") {
-        return withQuoteChildren(block, removeFromQuoteChildren(block.blocks, blockId)) as T;
+        return withQuoteChildren(block, removeFromQuoteChildren(block.blocks, blockId, transferBreak)) as T;
       }
       return block.type === "list" ? removeFromList(block, blockId) as T : block;
     })
@@ -2189,9 +2284,12 @@ function withQuoteChildren(block: QuoteBlockNode, blocks: QuoteChildBlock[]): Qu
   return { ...block, blocks: blocks.length > 0 ? blocks : [createParagraph("")] };
 }
 
-function removeFromQuoteChildren(blocks: QuoteChildBlock[], blockId: string): QuoteChildBlock[] {
-  return blocks
-    .filter((block) => block.id !== blockId)
+function removeFromQuoteChildren(
+  blocks: QuoteChildBlock[],
+  blockId: string,
+  transferBreak: boolean,
+): QuoteChildBlock[] {
+  return removeDirectBlock(blocks, blockId, transferBreak)
     .map((block) => (block.type === "list" ? removeFromList(block, blockId) : block))
     .filter((block) => block.type !== "list" || block.items.length > 0);
 }
@@ -2212,22 +2310,21 @@ function updateQuoteChildren(
   return changed ? next : blocks;
 }
 
-function removeFromBoxBlockChildren(blocks: BoxBlockChildBlock[], blockId: string): BoxBlockChildBlock[] {
-  return blocks
-    .filter((block) => block.id !== blockId)
+function removeFromBoxBlockChildren(
+  blocks: BoxBlockChildBlock[],
+  blockId: string,
+  transferBreak: boolean,
+): BoxBlockChildBlock[] {
+  return removeDirectBlock(blocks, blockId, transferBreak)
     .map((block) => {
       if (block.type === "layoutSection") {
-        const children = removeFromLayoutSectionChildren(block.children, blockId);
-        return {
-          ...block,
-          children: children.length > 0 ? children : [createParagraph("")],
-        };
+        return removeFromLayoutSection(block, blockId, transferBreak);
       }
 
       if (block.type === "boxBlock") {
         return {
           ...block,
-          blocks: removeFromBoxBlockChildren(block.blocks, blockId),
+          blocks: removeFromBoxBlockChildren(block.blocks, blockId, transferBreak),
         };
       }
 
@@ -2238,6 +2335,25 @@ function removeFromBoxBlockChildren(blocks: BoxBlockChildBlock[], blockId: strin
       return block;
     })
     .filter((block) => block.type !== "list" || block.items.length > 0);
+}
+
+/** ブロックそのものを消す操作では、break-before を同じ入れ物の直後の兄弟へ渡す。 */
+function removeDirectBlock<
+  T extends { id: string; pagination?: { break?: boolean; keepTogether?: boolean; keepWithNext?: boolean } },
+>(blocks: T[], blockId: string, transferBreak: boolean): T[] {
+  const index = blocks.findIndex((block) => block.id === blockId);
+  if (index < 0) {
+    return blocks;
+  }
+  const removed = blocks[index];
+  const next = blocks.filter((block) => block.id !== blockId);
+  if (transferBreak && removed.pagination?.break === true && next[index]) {
+    next[index] = {
+      ...next[index],
+      pagination: { ...(next[index].pagination ?? {}), break: true },
+    };
+  }
+  return next;
 }
 
 function removeFromList(list: ListNode, blockId: string): ListNode {
@@ -2287,7 +2403,9 @@ function setFreshIds(block: EditableBlock): void {
   }
 
   if (block.type === "layoutSection") {
+    const columns = getLayoutSectionColumns(block);
     block.children.forEach(setFreshIds);
+    block.layout.columnStartIds = columns.map((column) => column[0].id);
   }
 
   if (block.type === "boxBlock" || block.type === "quote") {
@@ -2340,7 +2458,14 @@ function layoutSectionContainsBlock(section: LayoutSectionNode, blockId: string)
 }
 
 function isLayoutSectionChildBlock(block: EditableBlock): block is LayoutSectionChildBlock {
-  return block.type === "section" || block.type === "heading" || block.type === "paragraph" || block.type === "list" || block.type === "boxBlock";
+  return block.type === "section"
+    || block.type === "heading"
+    || block.type === "paragraph"
+    || block.type === "list"
+    || block.type === "quote"
+    || block.type === "codeBlock"
+    || block.type === "divider"
+    || block.type === "boxBlock";
 }
 
 function isBoxBlockChildBlock(block: EditableBlock): block is BoxBlockChildBlock {

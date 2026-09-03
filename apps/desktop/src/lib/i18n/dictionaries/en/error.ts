@@ -2,9 +2,7 @@ import type { error as ja } from "../ja/error";
 import type { TranslationsOf } from "../types";
 
 /** 対応する日本語 namespace と同時に埋める。詳細は `../ja/error.ts` を参照。 */
-export const error = {
-  download: { fileReadFailed: "Unable to read the file." },
-  schemaRecovery: {
+export const schemaRecovery = {
     whiteboardContent: "Documents in infinite-canvas (whiteboard) mode cannot contain body blocks",
     whiteboardAnchor: "Whiteboard shapes must use absolute coordinates instead of being anchored to body content or a page",
     boxBreakSchema: "A page break cannot be placed directly under a boxBlock. Use a column break in a multi-column layoutSection inside the box.",
@@ -39,7 +37,11 @@ export const error = {
       unknownTexCommand: "Formula {{nodeId}} contains the disallowed TeX command {{command}}.",
       texError: "Formula {{nodeId}} has TeX error {{code}}.",
     },
-  },
+};
+
+export const error = {
+  download: { fileReadFailed: "Unable to read the file." },
+  schemaRecovery,
   runtime: {
     qrTextRequired: "Enter text to create a QR code.",
     documentLoadFailed: "Couldn't load the material.",

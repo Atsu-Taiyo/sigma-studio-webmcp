@@ -4,6 +4,7 @@ import { useMemo, type CSSProperties } from "react";
 
 import {
   blockSpaceAfterStyleVars,
+  listItemSpaceAfterStyleVars,
   normalizeCodeBlockTheme,
   type CodeBlockNode,
   type TextAlign,
@@ -22,7 +23,7 @@ import {
   boxedInlineRunAlignmentSignature,
   renderInlineContent,
   useBoxedInlineRunAlignment,
-} from "@/features/rendering/adapters/react";
+} from "@/features/rendering/adapters/react/static";
 import { stripWrappingMarkdownCodeFence } from "@/features/rendering/core";
 import { useHeadingNumber } from "./HeadingNumberingContext";
 
@@ -419,7 +420,7 @@ function TextFlowStaticList({
         key={item.id}
         data-sigma-doc-id={blockIdAttr(item.id, omitBlockIds)}
         {...markerTypography?.attrs}
-        style={markerTypography?.style as CSSProperties | undefined}
+        style={{ ...markerTypography?.style, ...listItemSpaceAfterStyleVars(item) } as CSSProperties}
       >
         <TextFlowStaticListItemContent item={item} shared={shared} />
         {(item.continuations ?? []).map((continuation) => (

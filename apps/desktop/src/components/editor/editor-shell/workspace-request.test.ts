@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearRequestedFileId,
+  canCaptureDocumentBoundary,
   createUnsavedEditBackupTitle,
   degradedWatcherMessage,
+  getDocumentBoundarySkipReason,
   getRequestedFileId,
   isDesktopStorageChangeEvent,
   updateDegradedWatcherScopes,
@@ -44,6 +46,12 @@ describe("workspace requests", () => {
       timestamp: 4,
     })).toBe(true);
     expect(isDesktopStorageChangeEvent({
+      type: "documentVersion",
+      fileId: "file-1",
+      change: "captured",
+      timestamp: 4,
+    })).toBe(true);
+    expect(isDesktopStorageChangeEvent({
       type: "watcher",
       scope: "documents",
       change: "failed",
@@ -73,6 +81,12 @@ describe("workspace requests", () => {
     expect(isDesktopStorageChangeEvent({
       type: "mcpProposal",
       change: "deleted",
+      timestamp: 4,
+    })).toBe(false);
+    expect(isDesktopStorageChangeEvent({
+      type: "documentVersion",
+      fileId: "file-1",
+      change: "changed",
       timestamp: 4,
     })).toBe(false);
     expect(isDesktopStorageChangeEvent({
@@ -108,6 +122,25 @@ describe("workspace requests", () => {
       "file-1",
       "file-3",
     ]);
+  });
+
+  it("allows boundary capture only when the autosave safety conditions hold", () => {
+    const safe = {
+      isEmbedded: false,
+      workspaceReady: true,
+      activeDocumentOpenFailed: false,
+      externalChangePending: false,
+      aiWriteInProgress: false,
+      observedRevision: 4,
+    };
+    expect(canCaptureDocumentBoundary(safe)).toBe(true);
+    for (const key of ["isEmbedded", "activeDocumentOpenFailed", "externalChangePending", "aiWriteInProgress"] as const) {
+      expect(canCaptureDocumentBoundary({ ...safe, [key]: true })).toBe(false);
+    }
+    expect(canCaptureDocumentBoundary({ ...safe, workspaceReady: false })).toBe(false);
+    expect(canCaptureDocumentBoundary({ ...safe, observedRevision: null })).toBe(false);
+    expect(getDocumentBoundarySkipReason({ ...safe, externalChangePending: true })).toBe("external-change-pending");
+    expect(getDocumentBoundarySkipReason({ ...safe, observedRevision: null })).toBe("revision-unknown");
   });
 
   it("builds the unsaved-edit backup title with the existing empty-title fallback", () => {

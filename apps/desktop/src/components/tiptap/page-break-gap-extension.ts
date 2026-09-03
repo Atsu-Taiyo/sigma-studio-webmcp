@@ -4,6 +4,7 @@ import { Plugin, PluginKey, type Transaction } from "@tiptap/pm/state";
 import { Decoration, DecorationSet, type EditorView } from "@tiptap/pm/view";
 
 import type { PageBreakMarkerKind } from "@/features/text-editing/model";
+import { createPageBreakMarkerContent } from "@/components/editor/page-break-marker";
 
 import { countDecorationBlockWalk } from "./decoration-walk-metrics";
 
@@ -24,6 +25,13 @@ export interface PageBreakGapOptions {
    * `manual-column-break-before` が付かなくなる作りだった。
    */
   getBreakBeforeLabel: (kind: PageBreakMarkerKind) => string;
+  /** Resolves the accessible/action label for removing a marker. */
+  getRemoveBreakLabel: (kind: PageBreakMarkerKind) => string;
+  getRemoveBreakButtonLabel: () => string;
+  /** Explicit removal command. Text editing never calls this callback. */
+  onRemoveBreak: (blockId: string) => void;
+  /** Continuation replicas render markers for context, but only the canonical surface owns commands. */
+  isReplicaSurface: () => boolean;
   /** Returns absolute marker layouts when the surrounding editor positions blocks manually. */
   getBreakBeforeMarkerLayouts: () => Record<string, PageBreakMarkerLayout>;
 }
@@ -57,6 +65,10 @@ export const PageBreakGapExtension = Extension.create<PageBreakGapOptions>({
       // 既定は種別名そのもの。configure を忘れると画面に `pageBreak` と出るので、
       // 「文言が要る面は必ず渡す」ことをテストと型で担保している。
       getBreakBeforeLabel: (kind) => kind,
+      getRemoveBreakLabel: (kind) => `Remove ${kind}`,
+      getRemoveBreakButtonLabel: () => "Remove",
+      onRemoveBreak: () => {},
+      isReplicaSurface: () => false,
       getBreakBeforeMarkerLayouts: () => ({}),
     };
   },
@@ -67,7 +79,10 @@ export const PageBreakGapExtension = Extension.create<PageBreakGapOptions>({
     const getBreakBeforeKind = () => this.options.getBreakBeforeKind();
     const getBreakBeforeKinds = () => this.options.getBreakBeforeKinds();
     const getBreakBeforeLabel = (kind: PageBreakMarkerKind) => this.options.getBreakBeforeLabel(kind);
+    const getRemoveBreakLabel = (kind: PageBreakMarkerKind) => this.options.getRemoveBreakLabel(kind);
+    const getRemoveBreakButtonLabel = () => this.options.getRemoveBreakButtonLabel();
     const getBreakBeforeMarkerLayouts = () => this.options.getBreakBeforeMarkerLayouts();
+    const isReplicaSurface = () => this.options.isReplicaSurface();
 
     const build = (doc: ProseMirrorNode) => createPageBreakDecorations(
       doc,
@@ -78,6 +93,9 @@ export const PageBreakGapExtension = Extension.create<PageBreakGapOptions>({
         markerKinds: getBreakBeforeKinds(),
         markerLayouts: getBreakBeforeMarkerLayouts(),
         markerLabel: getBreakBeforeLabel,
+        removeLabel: getRemoveBreakLabel,
+        removeButtonLabel: getRemoveBreakButtonLabel,
+        onRemove: isReplicaSurface() ? undefined : this.options.onRemoveBreak,
       },
     );
 
@@ -129,6 +147,9 @@ export interface PageBreakDecorationOptions {
   markerLayouts?: Record<string, PageBreakMarkerLayout>;
   /** 種別 → 表示文言。**表示言語はここだけが知っている**ので必須。 */
   markerLabel: (kind: PageBreakMarkerKind) => string;
+  removeLabel?: (kind: PageBreakMarkerKind) => string;
+  removeButtonLabel?: () => string;
+  onRemove?: (blockId: string) => void;
 }
 
 export function createPageBreakDecorations(
@@ -140,6 +161,9 @@ export function createPageBreakDecorations(
     markerKinds = {},
     markerLayouts = {},
     markerLabel,
+    removeLabel,
+    removeButtonLabel,
+    onRemove,
   }: PageBreakDecorationOptions,
 ): DecorationSet {
   const decorations: Decoration[] = [];
@@ -173,7 +197,14 @@ export function createPageBreakDecorations(
       );
     }
     decorations.push(
-      Decoration.widget(pos, () => createPageBreakMarker(id, resolvedMarkerLabel, layout), {
+      Decoration.widget(pos, () => createPageBreakMarker(
+        id,
+        resolvedMarkerLabel,
+        removeLabel?.(resolvedMarkerKind),
+        removeButtonLabel?.(),
+        onRemove,
+        layout,
+      ), {
         blockId: id,
         kind: "page-break-marker",
         // key に種別ではなく**表示文言**を混ぜる。言語を切り替えたとき、
@@ -215,7 +246,14 @@ function own<T>(record: Record<string, T>, key: string): T | undefined {
   return Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
-function createPageBreakMarker(blockId: string, labelText: string, layout?: PageBreakMarkerLayout): HTMLElement {
+function createPageBreakMarker(
+  blockId: string,
+  labelText: string,
+  removeLabel: string | undefined,
+  removeButtonLabel: string | undefined,
+  onRemove: ((blockId: string) => void) | undefined,
+  layout?: PageBreakMarkerLayout,
+): HTMLElement {
   const marker = document.createElement("div");
   marker.className = "page-break-marker";
   marker.contentEditable = "false";
@@ -228,12 +266,12 @@ function createPageBreakMarker(blockId: string, labelText: string, layout?: Page
     marker.style.width = `${Math.round(layout.width)}px`;
   }
 
-  const before = document.createElement("span");
-  const label = document.createElement("strong");
-  const after = document.createElement("span");
-  label.textContent = labelText;
-
-  marker.append(before, label, after);
+  createPageBreakMarkerContent(marker, {
+    labelText,
+    removeLabel,
+    removeButtonLabel,
+    onRemove: onRemove ? () => onRemove(blockId) : undefined,
+  });
   return marker;
 }
 

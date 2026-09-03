@@ -14,6 +14,8 @@ export const BROWSER_STORE_NAMES = [
   "workspaceState",
   "templates",
   "materials",
+  "documentVersionMetadata",
+  "documentVersionSnapshots",
 ] as const;
 
 export type BrowserStoreName = (typeof BROWSER_STORE_NAMES)[number];

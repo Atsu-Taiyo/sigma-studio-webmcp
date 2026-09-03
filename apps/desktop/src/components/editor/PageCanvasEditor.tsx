@@ -31,6 +31,10 @@ import {
   getNextTopLevelTextFlowBlockId,
   getNestedPageBreakBeforeIds,
   getNestedPageBreakBeforeKinds,
+  getLayoutSectionColumns,
+  getLayoutSectionColumnWidths,
+  LAYOUT_SECTION_WIDTH_TOTAL,
+  setLayoutSectionColumns,
   type PageBreakMarkerKind,
   getPageBreakBeforeIds,
   getProblemNumberFontSize,
@@ -71,6 +75,10 @@ import {
   type TextPageBreakRequestDetail,
 } from "@/components/editor/TextFlowEditor";
 import { scrollElementIntoCanvasView } from "@/components/editor/text-flow/caret-scroll";
+import {
+  activatePageBreakMarkerOnClick,
+  activatePageBreakMarkerOnMouseDown,
+} from "@/components/editor/page-break-marker";
 import { mergeLargePasteDeferredBlockIds } from "@/components/editor/text-flow/large-text-paste";
 import {
   cancelCaretKeeperWindow,
@@ -96,8 +104,8 @@ import type { TextFlowChangeDecorationState } from "@/components/tiptap/change-d
 import {
   computeProblemAreaColumnFlow,
   EDITOR_ZOOM_CHANGE_EVENT,
+  getSafeProblemAreaMinHeightPx,
   getVisibleOverlayShapes,
-  hasManualBreakInside,
   type OverlayPreviewStackLayer,
   type TextFlowColumnBlockLayout,
 } from "@/features/rendering/core";
@@ -145,6 +153,7 @@ import {
 } from "@/lib/comments";
 import {
   collectBlocksById,
+  createParagraph,
   createEmptyProblemAreaAnchorBlock,
   findBlock,
   findContainingBoxBlock,
@@ -209,7 +218,6 @@ import type {
   PageCanvasSelectionAction,
 } from "./page-canvas/editor-extension";
 import {
-  canInsertManualColumnBreak,
   emptyProblemAreaEditorBlockId,
   hasBreakBefore,
   isProblemFrameArea,
@@ -247,7 +255,6 @@ import {
 } from "./page-canvas/running-region-text-model";
 import { resolveOverlayBleed } from "./page-canvas/overlay-bleed";
 import {
-  createNestedColumnBoxFragments,
   createSingleColumnBoxFragments,
   getBlockFragmentBreakOffsetsFromMeasured,
   getBoxFragmentBreakOffsetsFromMeasuredBox,
@@ -255,7 +262,6 @@ import {
   getColumnBreakBeforeBlockIdForContextMenu,
   measureLocalColumnContextMenuLayout,
   type LocalColumnContextMenuLayout,
-  getNestedColumnSegmentTop,
   getPageCountForBottom,
   getPageIndexForY,
   computeColumnUnitLayouts,
@@ -304,19 +310,28 @@ import {
 import {
   EMPTY_BLOCK_AFFORDANCE_HOVER,
   blockHitProbeColumnLeftPx,
+  isContainerTopBand,
   resolveBlockAffordanceHover,
+  resolveBlockAffordancePointerOwner,
   resolveBlockInsertButtonLane,
-  resolveBlockSelectionRange,
-  resolveInnerBlockAt,
+  resolveStationaryBlockAffordanceRefresh,
   sameBlockAffordanceHover,
   type BlockAffordanceHover,
   type BlockInsertPoint,
   type BlockSpaceAfterTarget,
   type BlockNeighborKind,
   type HoveredTopLevelBlock,
-  type InnerBlockCandidate,
   type TopLevelBlockBox,
 } from "./page-canvas/block-affordances";
+import { indexDragAnchors, indexDragUnits, type BlockDragMoveRequest } from "@/lib/block-drag-move";
+import {
+  measureDragUnit,
+  pointHitsLayoutColumnResizeHandle,
+  resolveInnerAffordanceProbe,
+  resolveHoverDragUnitAt,
+  type DragIndex,
+} from "./page-canvas/block-drag-dom";
+import { useBlockDrag } from "./page-canvas/use-block-drag";
 import {
   createBlockCommentAnchor,
   createTextCommentAnchorFromRange,
@@ -329,7 +344,6 @@ import {
   getSelectionActionPopoverPosition,
   isRangeInsideElement,
   sameSelectionActionPopoverPosition,
-  viewportToCanvasAnchor,
   type CommentAnchorPopoverState,
   type OverlaySelectionPopoverMeasurement,
 } from "./page-canvas/popover-anchors";
@@ -337,7 +351,6 @@ import {
   buildAppliedGapIndex,
   readAppliedGapPx,
   readInnerSpacerHeightPx,
-  type AppliedGapIndex,
   type AppliedGapItem,
 } from "./page-canvas/applied-gaps";
 import {
@@ -348,6 +361,11 @@ import {
   type PaginationItem,
   type PaginationPlacement,
 } from "./page-canvas/pagination-decisions";
+import {
+  collectProblemAreaPaginationItems,
+  type AtomicProblemAreaItem,
+  type ReservedProblemAreaEndItem,
+} from "./page-canvas/problem-area-pagination";
 import {
   decideSelectedTargetCommentAnchor,
   decideTextSelectionCleared,
@@ -373,18 +391,20 @@ import {
   type ProblemAreaColumnInput,
 } from "./page-canvas/problem-area-flow";
 import {
+  buildProblemAreaOwnerByBlockId,
   buildRenderUnits,
   pickUnitBreakGaps,
   pickUnitCommentThreads,
   reconcileRenderUnits,
   getFlowLayoutStyle,
   getFlowUnitStyle,
+  getProblemAreaUnitGapKey,
+  getSingleColumnProblemLayoutSectionMinHeightMm,
   getLayoutSectionColumnCount,
   getLayoutSectionColumnGapPx,
   getPageColumnSideNoteOffsetPx,
   getProblemAreaSideNoteOffsetPx,
   getTextFlowColumnBlockLayouts,
-  isProblemAreaColumnBlockFlowEligible,
   pickTextFlowBoxFragmentSourceLayouts,
   pickTextFlowColumnBlockLayouts,
 } from "./page-canvas/render-units";
@@ -524,11 +544,17 @@ export interface PageCanvasEditorProps {
   onDeleteBlocks?: (blockIds: string[]) => void;
   /** Adds an empty paragraph next to a top-level block, or at the end when the anchor is null. */
   onInsertBodyBlock?: (anchorBlockId: string | null, position: "before" | "after") => void;
+  /** グリップのドラッグ (Notion 風のブロック移動・段組化)。 */
+  onMoveBlocks?: (request: BlockDragMoveRequest) => void;
+  /** ⌥⇧↑/↓ で前後の兄弟と入れ替える。 */
+  onMoveBlocksByStep?: (unitIds: string[], direction: "up" | "down") => void;
   onCopyBlock: (blockId: string) => void;
   onPasteBlock?: (blockId: string, position: "before" | "after") => void;
   canPasteProblem?: boolean;
   onWrapBlockInColumns?: (blockIds: string[], columnCount: number) => void;
   onUnwrapColumns?: (sectionId: string) => void;
+  onResizeLayoutColumns?: (sectionId: string, dividerIndex: number, leftWidth: number, rightWidth: number) => void;
+  onBlockSpaceAfterChange?: (blockId: string, spaceAfterPx: number) => void;
   onDuplicate: (blockId: string) => void;
   onMove: (blockId: string, direction: "up" | "down") => void;
   onAddProblemBlock: (problemId: string, area: ProblemAreaKind, block: RichBlock) => void;
@@ -607,11 +633,15 @@ function PageCanvasEditorImpl({
   onDelete,
   onDeleteBlocks,
   onInsertBodyBlock,
+  onMoveBlocks,
+  onMoveBlocksByStep,
   onCopyBlock,
   onPasteBlock,
   canPasteProblem = false,
   onWrapBlockInColumns,
   onUnwrapColumns,
+  onResizeLayoutColumns,
+  onBlockSpaceAfterChange,
   onDuplicate,
   onMove,
   onAddProblemBlock,
@@ -878,7 +908,8 @@ function PageCanvasEditorImpl({
   const recomputeDeferredWhileFrozenRef = useRef(false);
   /** 直近にホバー解決した位置。文書が変わった後につまみを置き直すのに使う。 */
   const lastAffordancePointRef = useRef<{ x: number; y: number } | null>(null);
-  /** 下余白を書き込んだ直後だけ、次の文書更新でホバーを取り直す。 */
+  const lastAffordanceLayoutRevisionRef = useRef(0);
+  /** 下余白コミットの再計測予約。通常の本文更新も下の coalesced effect で再計測する。 */
   const spaceAfterHoverRefreshRef = useRef(false);
   // Ids and their measured boxes move together: both are captured when the handle is clicked,
   // so the outline can never point at a block the selection no longer holds.
@@ -1029,7 +1060,7 @@ function PageCanvasEditorImpl({
   const canEditContextMenuColumns = !!activeBodyContextMenu && !!effectiveContextMenuLayoutSection;
   // Box-local layout sections keep their existing flow, but the context menu does not offer
   // manual column-break guidance inside a box.
-  const canUseContextMenuBreak = !contextMenuBox;
+  const canUseContextMenuBreak = !contextMenuBox && !contextMenuLayoutSection;
   const canInsertContextMenuBreak = canUseContextMenuBreak;
   const contextMenuBreaksToColumn = resolveContextMenuBreaksToColumn(isColumnFlow, contextMenuLayoutSection);
   const problemContextMenuLayoutSection = problemContextMenu?.breakBlockId
@@ -1048,7 +1079,7 @@ function PageCanvasEditorImpl({
   const effectiveProblemContextMenuLayoutSection = problemContextMenuBox
     ? problemContextMenuBoxLayoutSection
     : problemContextMenuLayoutSection;
-  const canUseProblemContextMenuBreak = !problemContextMenuBox;
+  const canUseProblemContextMenuBreak = !problemContextMenuBox && !problemContextMenuLayoutSection;
   const canInsertProblemContextMenuBreak = canUseProblemContextMenuBreak;
   const problemContextMenuBreaksToColumn = resolveContextMenuBreaksToColumn(isColumnFlow, problemContextMenuLayoutSection);
   const problemContextMenuBlock = problemContextMenu?.breakBlockId
@@ -1209,6 +1240,18 @@ function PageCanvasEditorImpl({
           problemId: unit.problem.id,
           area: unit.area,
         });
+      }
+    }
+    return map;
+  }, [units]);
+  const unitTextFlowBlocksById = useMemo(() => {
+    const map = new Map<string, TextFlowBlock>();
+    for (const unit of units) {
+      if (!("blocks" in unit)) {
+        continue;
+      }
+      for (const block of unit.blocks) {
+        map.set(block.id, block);
       }
     }
     return map;
@@ -1666,6 +1709,7 @@ function PageCanvasEditorImpl({
       nextBoxFragmentSourceLayouts = columnLayouts.boxFragmentSourceLayouts;
       nextFrameFragmentLayouts = columnLayouts.frameFragmentLayouts;
       nextMarkerLayouts = columnLayouts.markerLayouts;
+      nextAreaLayouts = columnLayouts.nestedColumnLayouts;
       nextGaps = {};
       textPageCount = columnLayouts.pageCount;
     } else {
@@ -1698,25 +1742,53 @@ function PageCanvasEditorImpl({
         }
       }
 
-      // A framed problem is one object on the page: splitting it would cut its border,
-      // and its areas reserve `minHeightMm` of blank space that has to be counted when
-      // deciding whether it fits. Walking its paragraphs individually (each of which
-      // fits on its own) let the reserved answer area run off the bottom of the sheet.
-      const atomicProblems = collectAtomicProblemItems(appliedGaps, flowRect, units, zoomFactor);
+      // Atomicity belongs to an area, not to the whole problem. The frame exists only on
+      // prompt; hints/solution must otherwise return to the ordinary block walk so a long
+      // answer can cross pages. A one-page minHeight reservation is also kept with its area,
+      // because that blank space exists only on the section DOM, not on its paragraphs.
+      const problemAreaPaginationItems = collectProblemAreaPaginationItems(
+        appliedGaps,
+        flowRect,
+        units,
+        zoomFactor,
+        contentHeightPx,
+      );
+      const atomicProblemAreas = problemAreaPaginationItems.atomicItems;
+      const splitFrameEndSpaceByBlockId = new Map<string, number>();
+      for (const frameUnit of problemAreaPaginationItems.splitFrameUnits) {
+        const unit = units.find((candidate) => candidate.id === frameUnit.unitId);
+        if (unit?.type !== "problemArea") {
+          continue;
+        }
+        const endSpacePx = getProblemFrameChromePaddingPx(unit.problem.frame?.styleId).y;
+        for (const blockId of frameUnit.blockIds) {
+          splitFrameEndSpaceByBlockId.set(blockId, endSpacePx);
+        }
+      }
       const atomicOwnedIds = new Set<string>();
-      for (const problem of atomicProblems) {
-        for (const id of problem.ownedBlockIds) {
+      for (const area of atomicProblemAreas) {
+        for (const id of area.ownedBlockIds) {
           atomicOwnedIds.add(id);
         }
       }
+      const problemAreaUnitById = new Map(units.flatMap((unit) => (
+        unit.type === "problemArea" || unit.type === "problemLayoutSection"
+          ? [[unit.id, unit] as const]
+          : []
+      )));
+      const problemAreaOwnerByBlockId = buildProblemAreaOwnerByBlockId(units);
 
       type WalkItem =
         | { kind: "block"; id: string; measuredTop: number; height: number }
-        | { kind: "atomicProblem"; problem: AtomicProblemItem; measuredTop: number }
+        | { kind: "atomicProblemArea"; area: AtomicProblemAreaItem; measuredTop: number }
+        | { kind: "reservedAreaEnd"; boundary: ReservedProblemAreaEndItem; measuredTop: number }
         | { kind: "area"; area: ProblemAreaColumnInput; measuredTop: number };
       const walkItems: WalkItem[] = [];
-      for (const problem of atomicProblems) {
-        walkItems.push({ kind: "atomicProblem", problem, measuredTop: problem.top });
+      for (const area of atomicProblemAreas) {
+        walkItems.push({ kind: "atomicProblemArea", area, measuredTop: area.top });
+      }
+      for (const boundary of problemAreaPaginationItems.reservedAreaEnds) {
+        walkItems.push({ kind: "reservedAreaEnd", boundary, measuredTop: boundary.top });
       }
       for (const block of ordered) {
         if (columnOwnedBlockIds.has(block.id) || atomicOwnedIds.has(block.id)) {
@@ -1725,16 +1797,27 @@ function PageCanvasEditorImpl({
         walkItems.push({ kind: "block", id: block.id, measuredTop: block.top, height: extents.get(block.id)?.height ?? 0 });
       }
       for (const area of columnAreas) {
+        if (atomicOwnedIds.has(area.sectionBlockId)) {
+          continue;
+        }
         walkItems.push({ kind: "area", area, measuredTop: area.sectionTop });
       }
-      walkItems.sort((a, b) => a.measuredTop - b.measuredTop);
+      walkItems.sort((a, b) => {
+        const byTop = a.measuredTop - b.measuredTop;
+        if (Math.abs(byTop) > 0.5) {
+          return byTop;
+        }
+        // エリア末尾と直後ブロックは同じ top になり得る。先に仮想境界を通し、予約高が
+        // 通過したページ間 gap を後続ブロックの実在キャリアへ積む。
+        return a.kind === "reservedAreaEnd" ? -1 : b.kind === "reservedAreaEnd" ? 1 : byTop;
+      });
 
       // Natural (gap-independent) offsets relative to the content area top. Each
       // item's gap is keyed by its block id, or — for a column area — its unit id.
       let cumApplied = 0;
       let cumReserve = 0;
       const naturalItems = walkItems.map((item) => {
-        const gapKey = walkItemGapKey(item);
+        const gapKey = walkItemGapKey(item, problemAreaOwnerByBlockId);
         // Read back what the DOM ACTUALLY carries above this item, not what the previous
         // pass asked for.
         //
@@ -1749,7 +1832,12 @@ function PageCanvasEditorImpl({
         //
         // The rendered spacer or margin cannot disagree with the measurement it is being
         // subtracted from, so this converges regardless of when the pass runs.
-        cumApplied += readAppliedGapPx(appliedGaps, appliedGapItem(item));
+        if (item.kind !== "reservedAreaEnd") {
+          cumApplied += readAppliedGapPx(
+            appliedGaps,
+            appliedGapItem(item, problemAreaOwnerByBlockId),
+          );
+        }
         cumReserve += reserveSpaceGaps[gapKey] ?? 0;
         return {
           item,
@@ -1757,7 +1845,11 @@ function PageCanvasEditorImpl({
           // Remove the previous render's full margin and add the current
           // shape-height-derived reserve gap. This keeps reflow stable even
           // when a reserved figure's persisted h changes between measures.
-          topNat: item.measuredTop - marginTopPx - cumApplied + cumReserve,
+          topNat: item.measuredTop
+            - marginTopPx
+            - cumApplied
+            + cumReserve
+            + (item.kind === "reservedAreaEnd" ? item.boundary.naturalTopAdjustmentPx : 0),
         };
       });
 
@@ -1784,18 +1876,37 @@ function PageCanvasEditorImpl({
       // 判定は `page-canvas/pagination-decisions.ts` の純関数へ。DOM の実測 (フラグメント
       // 分割・段組フロー) だけをフックで返し、ページカーソルの扱いは 1 か所に集約する。
       const walkItemByPaginationItem = new Map<PaginationItem, WalkItem>();
-      const paginationItems = naturalItems.map(({ item, gapKey, topNat }): PaginationItem => {
+      const paginationItems = naturalItems.map(({ item, gapKey, topNat }, itemIndex): PaginationItem => {
         let paginationItem: PaginationItem;
-        if (item.kind === "atomicProblem") {
-          paginationItem = { kind: "atomicProblem", gapKey, topNat, height: item.problem.height };
+        if (item.kind === "atomicProblemArea") {
+          paginationItem = {
+            kind: "atomicProblemArea",
+            gapKey,
+            topNat,
+            height: item.area.height,
+            reservedHeightDeficitPx: item.area.reservedHeightDeficitPx,
+          };
+        } else if (item.kind === "reservedAreaEnd") {
+          paginationItem = { kind: "reservedAreaEnd", gapKey, topNat, height: 0 };
         } else if (item.kind === "area") {
+          const firstBlock = item.area.blockHeights[0];
+          const firstBlockHeight = firstBlock?.height ?? 0;
+          const firstBlockFragmentable = isFlowBlockFragmentable(
+            firstBlock?.type ? { type: firstBlock.type } : undefined,
+            Math.max(0, firstBlockHeight - (firstBlock?.trailingSpacePx ?? 0)),
+            contentHeightPx,
+          );
           paginationItem = {
             kind: "area",
             gapKey,
             topNat,
             height: 0,
             contentOffset: item.area.contentOffset,
-            firstBlockHeight: item.area.blockHeights[0]?.height ?? 0,
+            firstBlockHeight,
+            firstBlockFragmentable,
+            firstBlockMinStartHeightPx: firstBlock?.type === "boxBlock"
+              ? firstBlock.minStartHeightPx ?? 0
+              : 0,
           };
         } else {
           const block = blockById.get(item.id);
@@ -1809,7 +1920,77 @@ function PageCanvasEditorImpl({
           // なると、収まる本文がフラグメントに切られる。
           const trailingSpacePx = block ? blockSpaceAfterPx(block) : 0;
           const fitHeight = Math.max(0, item.height - trailingSpacePx);
-          const isFragmentable = isFlowBlockFragmentable(block, fitHeight, contentHeightPx);
+          const fragmentEndSpacePx = splitFrameEndSpaceByBlockId.get(item.id) ?? 0;
+          const isFragmentable = isFlowBlockFragmentable(block, fitHeight, contentHeightPx)
+            || fitHeight + fragmentEndSpacePx > contentHeightPx + 0.5;
+          const nextNaturalItem = naturalItems[itemIndex + 1]?.item;
+          const nextBlock = nextNaturalItem?.kind === "block"
+            ? blockById.get(nextNaturalItem.id)
+            : undefined;
+          const currentProblemArea = problemAreaOwnerByBlockId.get(item.id);
+          const nextProblemArea = nextNaturalItem?.kind === "atomicProblemArea"
+            ? problemAreaUnitById.get(nextNaturalItem.area.firstUnitId)
+            : nextNaturalItem?.kind === "area"
+              ? problemAreaUnitById.get(nextNaturalItem.area.unitId)
+              : nextNaturalItem?.kind === "block"
+                ? problemAreaOwnerByBlockId.get(nextNaturalItem.id)
+                : undefined;
+          const nextProblemAreaStartsWithBreak = nextNaturalItem?.kind === "area"
+            ? nextNaturalItem.area.blockHeights[0]?.break === true
+            : nextNaturalItem?.kind === "block"
+              ? nextBlock?.type !== "listItem" && nextBlock?.pagination?.break === true
+              : false;
+          const isImplicitLeadKeep = currentProblemArea?.area === "lead"
+            && nextProblemArea?.problem.id === currentProblemArea.problem.id
+            && nextProblemArea.area !== "lead"
+            && !nextProblemAreaStartsWithBreak;
+          const implicitLeadUnitId = isImplicitLeadKeep ? currentProblemArea?.id : undefined;
+          const implicitLeadUnitElement = implicitLeadUnitId
+            ? appliedGaps.unitElementByUnitId.get(implicitLeadUnitId)
+            : undefined;
+          // The keep starts at the lead unit, whose number marker and padding sit outside
+          // the child block. Use the gap-free unit measurement so a short prompt cannot
+          // leave only the problem number behind at the foot of the previous page.
+          const implicitLeadUnitHeightPx = implicitLeadUnitId && implicitLeadUnitElement
+            ? Math.max(
+              0,
+              implicitLeadUnitElement.getBoundingClientRect().height / zoomFactor
+                - readInnerSpacerHeightPx(appliedGaps, implicitLeadUnitId),
+            )
+            : item.height;
+          const nextProblemAreaFrameChromePx = isImplicitLeadKeep
+            && nextNaturalItem?.kind !== "atomicProblemArea"
+            && nextProblemArea.problem.frame?.enabled === true
+            && isProblemFrameArea(nextProblemArea.area)
+            ? getProblemFrameChromePaddingPx(nextProblemArea.problem.frame?.styleId).y * 2
+            : 0;
+          const implicitLeadKeepWithNextHeightPx = isImplicitLeadKeep
+            ? implicitLeadUnitHeightPx + (
+              nextNaturalItem?.kind === "atomicProblemArea"
+                ? nextNaturalItem.area.height
+                : nextNaturalItem?.kind === "area"
+                  ? Math.max(
+                    0,
+                    (nextNaturalItem.area.blockHeights[0]?.height ?? 0)
+                      - (nextNaturalItem.area.blockHeights[0]?.trailingSpacePx ?? 0),
+                  )
+                    + nextProblemAreaFrameChromePx
+                  : nextNaturalItem?.kind === "block" && nextBlock && nextBlock.type !== "listItem"
+                    ? Math.max(0, nextNaturalItem.height - blockSpaceAfterPx(nextBlock))
+                      + nextProblemAreaFrameChromePx
+                    : 0
+            )
+            : 0;
+          const explicitKeepWithNextHeightPx = blockPageBreak?.keepWithNext === true
+            && nextNaturalItem?.kind === "block"
+            && nextBlock?.type !== "listItem"
+            && nextBlock?.pagination?.break !== true
+            ? item.height + Math.max(0, nextNaturalItem.height - (nextBlock ? blockSpaceAfterPx(nextBlock) : 0))
+            : 0;
+          const keepWithNextHeightPx = Math.max(
+            explicitKeepWithNextHeightPx,
+            implicitLeadKeepWithNextHeightPx,
+          );
           const measuredLineBreakOffsets = !isBox && isFragmentable
             ? getBlockFragmentBreakOffsetsFromMeasured(blockCanvasRects.get(item.id))
             : undefined;
@@ -1819,7 +2000,10 @@ function PageCanvasEditorImpl({
             topNat,
             height: item.height,
             ...(trailingSpacePx > 0 ? { trailingSpacePx } : {}),
+            ...(fragmentEndSpacePx > 0 ? { fragmentEndSpacePx } : {}),
             forceBreakBefore: blockPageBreak?.break === true,
+            ...(keepWithNextHeightPx > 0 ? { keepWithNextHeightPx } : {}),
+            ...(isBox && blockPageBreak?.keepTogether === true ? { keepTogether: true } : {}),
             ...(isFragmentable
               ? {
                 minStartHeightPx: isBox && block
@@ -1843,6 +2027,7 @@ function PageCanvasEditorImpl({
         breakOffsets: number[] | undefined,
         placement: PaginationPlacement,
         topNat: number,
+        fragmentEndSpacePx = 0,
       ): PaginationCursorMove | undefined => {
         const measured = blockCanvasRects.get(blockId);
         const fragments = createSingleColumnBoxFragments({
@@ -1855,6 +2040,7 @@ function PageCanvasEditorImpl({
           width: measured?.width ?? metrics.content.widthPx,
           x: measured?.left ?? metrics.margins.leftPx,
           breakOffsets,
+          fragmentEndSpacePx,
         });
         if (fragments.length <= 1) {
           return undefined;
@@ -1874,6 +2060,8 @@ function PageCanvasEditorImpl({
           pendingGap: Math.max(0, lastBottom - (actualTop + height)),
         };
       };
+
+      const splitFrameBlockVisuals = new Map<string, EditorBoxBlockFragmentLayout[]>();
 
       const paginationResult = decidePagination(
         paginationItems,
@@ -1895,30 +2083,86 @@ function PageCanvasEditorImpl({
               }
               if (block.type === "boxBlock" && item.height > 0) {
                 const measured = blockCanvasRects.get(item.id);
-                return placeFragments(
+                const move = placeFragments(
                   item.id,
                   item.height,
                   actualTop,
                   getBoxFragmentBreakOffsetsFromMeasuredBox(block, measured, blockCanvasRects),
                   placement,
                   topNat,
+                  paginationItem.fragmentEndSpacePx,
                 );
+                const source = nextBoxFragmentSourceLayouts[item.id];
+                splitFrameBlockVisuals.set(item.id, source
+                  ? [{
+                    blockId: item.id,
+                    fragmentIndex: 0,
+                    sourceOffsetY: 0,
+                    height: source.visibleHeight,
+                    x: measured?.left ?? metrics.margins.leftPx,
+                    y: actualTop,
+                    width: measured?.width ?? metrics.content.widthPx,
+                    totalHeight: item.height,
+                  }, ...(nextBoxBlockFragmentLayouts[item.id] ?? [])]
+                  : [{
+                    blockId: item.id,
+                    fragmentIndex: 0,
+                    sourceOffsetY: 0,
+                    height: item.height,
+                    x: measured?.left ?? metrics.margins.leftPx,
+                    y: actualTop,
+                    width: measured?.width ?? metrics.content.widthPx,
+                    totalHeight: item.height,
+                  }]);
+                return move;
               }
               // 1 ページに収まらない普通のブロックは、箱と同じようにクリップした
               // フラグメントへ分割する。そうしないとページ下端からはみ出したまま流れる。
               // 判定の高さは収まり判定 (`isFragmentable`) と同じ「余白を除いた高さ」— 生の実測で
               // 見ると、本文は収まるのにブロック下余白で超える段落が分割され、末尾 padding だけの
               // 空フラグメントが次ページ頭に出る。
-              if (paginationItem.height - (paginationItem.trailingSpacePx ?? 0) > contentHeightPx + 0.5) {
+              if (
+                paginationItem.height - (paginationItem.trailingSpacePx ?? 0)
+                  + (paginationItem.fragmentEndSpacePx ?? 0)
+                > contentHeightPx + 0.5
+              ) {
                 const measured = blockCanvasRects.get(item.id);
-                return placeFragments(
+                const move = placeFragments(
                   item.id,
                   item.height,
                   actualTop,
                   getBlockFragmentBreakOffsetsFromMeasured(measured),
                   placement,
                   topNat,
+                  paginationItem.fragmentEndSpacePx,
                 );
+                const source = nextBoxFragmentSourceLayouts[item.id];
+                splitFrameBlockVisuals.set(item.id, source
+                  ? [{
+                    blockId: item.id,
+                    fragmentIndex: 0,
+                    sourceOffsetY: 0,
+                    height: source.visibleHeight,
+                    x: measured?.left ?? metrics.margins.leftPx,
+                    y: actualTop,
+                    width: measured?.width ?? metrics.content.widthPx,
+                    totalHeight: item.height,
+                  }, ...(nextBoxBlockFragmentLayouts[item.id] ?? [])]
+                  : []);
+                return move;
+              }
+              if (splitFrameEndSpaceByBlockId.has(item.id)) {
+                const measured = blockCanvasRects.get(item.id);
+                splitFrameBlockVisuals.set(item.id, [{
+                  blockId: item.id,
+                  fragmentIndex: 0,
+                  sourceOffsetY: 0,
+                  height: item.height,
+                  x: measured?.left ?? metrics.margins.leftPx,
+                  y: actualTop,
+                  width: measured?.width ?? metrics.content.widthPx,
+                  totalHeight: item.height,
+                }]);
               }
               return undefined;
             }
@@ -1949,38 +2193,28 @@ function PageCanvasEditorImpl({
             };
             const shellPaginatedTop = topNat + area.contentOffset + marginTopPx + placement.cumGapPrev;
             for (const block of area.blockHeights) {
-              if (block.type !== "boxBlock" || block.height <= 0) {
+              const fragments = flowResult.fragmentLayouts[block.id];
+              if (!fragments || fragments.length <= 1) {
                 continue;
               }
-              const blockLayout = flowResult.blockLayouts[block.id];
-              if (!blockLayout) {
-                continue;
-              }
-
-              const fragments = createNestedColumnBoxFragments({
+              const absoluteFragments = fragments.map((fragment) => roundEditorBoxBlockFragmentLayout({
                 blockId: block.id,
-                breakOffsets: block.breakOffsets,
-                columnCount: area.columnCount,
-                columnGapPx: area.columnGapPx,
-                columnWidthPx: area.columnWidthPx,
-                contentHeightPx,
-                height: block.height,
-                metrics,
-                pageStride,
-                sourceLeft: area.contentLeft + blockLayout.x,
-                sourceTop: shellPaginatedTop + blockLayout.y,
-                startSegmentTop: getNestedColumnSegmentTop(shellPaginatedTop, shellPaginatedTop + blockLayout.y, metrics, pageStride),
-              });
-              if (fragments.length > 1) {
-                const firstFragment = fragments[0];
-                const lastFragment = fragments[fragments.length - 1];
-                nextBoxFragmentSourceLayouts[block.id] = {
-                  visibleHeight: firstFragment.height,
-                  totalHeight: block.height,
-                };
-                nextBoxBlockFragmentLayouts[block.id] = fragments.slice(1).map(roundEditorBoxBlockFragmentLayout);
-                maxBoxFragmentBottom = Math.max(maxBoxFragmentBottom, lastFragment.y + lastFragment.height);
-              }
+                fragmentIndex: fragment.fragmentIndex,
+                sourceOffsetY: fragment.sourceOffsetY,
+                height: fragment.height,
+                x: area.contentLeft + fragment.x,
+                y: shellPaginatedTop + fragment.y,
+                width: fragment.width,
+                totalHeight: block.height,
+              }));
+              const firstFragment = absoluteFragments[0];
+              const lastFragment = absoluteFragments[absoluteFragments.length - 1];
+              nextBoxFragmentSourceLayouts[block.id] = {
+                visibleHeight: firstFragment.height,
+                totalHeight: block.height,
+              };
+              nextBoxBlockFragmentLayouts[block.id] = absoluteFragments.slice(1);
+              maxBoxFragmentBottom = Math.max(maxBoxFragmentBottom, lastFragment.y + lastFragment.height);
             }
             maxAreaBottom = Math.max(maxAreaBottom, shellPaginatedTop + flowResult.totalHeightPx);
             // The shell height already spans the inter-page gaps, so the cumulative
@@ -1992,6 +2226,45 @@ function PageCanvasEditorImpl({
           },
         },
       );
+
+      for (const frameUnit of problemAreaPaginationItems.splitFrameUnits) {
+        const unitElement = appliedGaps.unitElementByUnitId.get(frameUnit.unitId);
+        if (!unitElement) {
+          continue;
+        }
+        const unitRect = unitElement.getBoundingClientRect();
+        const unitLeft = (unitRect.left - flowRect.left) / zoomFactor;
+        const unitTop = (unitRect.top - flowRect.top) / zoomFactor;
+        const byPage = new Map<number, EditorBoxBlockFragmentLayout[]>();
+        for (const blockId of frameUnit.blockIds) {
+          for (const visual of splitFrameBlockVisuals.get(blockId) ?? []) {
+            const page = getPageIndexForY(visual.y, pageStride);
+            const existing = byPage.get(page);
+            if (existing) {
+              existing.push(visual);
+            } else {
+              byPage.set(page, [visual]);
+            }
+          }
+        }
+        const fragments = [...byPage.entries()]
+          .sort(([a], [b]) => a - b)
+          .map(([, visuals]) => {
+            const left = Math.min(...visuals.map((visual) => visual.x));
+            const top = Math.min(...visuals.map((visual) => visual.y));
+            const right = Math.max(...visuals.map((visual) => visual.x + visual.width));
+            const bottom = Math.max(...visuals.map((visual) => visual.y + visual.height));
+            return {
+              x: left - unitLeft,
+              y: top - unitTop,
+              width: right - left,
+              height: Math.max(1, bottom - top),
+            };
+          });
+        if (fragments.length > 1) {
+          nextFrameFragmentLayouts[frameUnit.unitId] = fragments;
+        }
+      }
 
       nextGaps = paginationResult.gaps;
       // ガードは「同じ入力が違う答えを出し続ける」ことだけを見る。入力 (= 本文の構成) が
@@ -2897,20 +3170,101 @@ function PageCanvasEditorImpl({
   // Both live in a pointer-events:none layer, so only the two small controls take clicks.
   const blockAffordancesEnabled = !isPagedRender && !isOverlayEditing && !runningRegionEditKind;
 
+  /**
+   * 掴む単位の索引 (箱の中の段落・リストの項目まで)。打鍵のたびに引き直すが O(ブロック数) で、
+   * 描画の外 (ホバー・ドラッグ) からしか読まない。
+   */
+  const dragIndex = useMemo<DragIndex>(() => ({
+    units: indexDragUnits(pageDocument.content),
+    anchors: indexDragAnchors(pageDocument.content),
+  }), [pageDocument.content]);
+  // ドラッグはイベント時に最新を読む。render 中に ref を書かず、commit 後に同期する。
+  const dragIndexRef = useRef(dragIndex);
+  const pageDocumentRef = useRef(pageDocument);
+  const blockSelectionIdsRef = useRef<readonly string[]>([]);
+  useLayoutEffect(() => {
+    dragIndexRef.current = dragIndex;
+    pageDocumentRef.current = pageDocument;
+  }, [dragIndex, pageDocument]);
+  const ghostLayerRef = useRef<HTMLDivElement | null>(null);
+
+  const columnProbeClientX = useCallback((clientX: number): number => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return clientX;
+    }
+    const canvasRect = canvas.getBoundingClientRect();
+    const scale = canvasLayoutScale(canvas);
+    const probeColumnLeftPx = blockHitProbeColumnLeftPx(
+      {
+        contentLeftPx: metrics.margins.leftPx,
+        columnCount: metrics.flow.columnCount,
+        columnWidthPx: metrics.flow.columnWidthPx,
+        columnGapPx: metrics.flow.columnGapPx,
+      },
+      (clientX - canvasRect.left) / scale,
+    );
+    return canvasRect.left + (probeColumnLeftPx + BLOCK_HIT_PROBE_INSET_PX) * scale;
+  }, [metrics]);
+
+  const blockDrag = useBlockDrag({
+    getCanvas: () => canvasRef.current,
+    getGhostLayer: () => ghostLayerRef.current,
+    getDocument: () => pageDocumentRef.current,
+    getIndex: () => dragIndexRef.current,
+    getSelectedUnitIds: () => blockSelectionIdsRef.current,
+    getColumnProbeClientX: columnProbeClientX,
+    onCommit: (request) => {
+      onMoveBlocks?.(request);
+      setBlockSelection(EMPTY_BLOCK_SELECTION);
+      setBlockAffordance(EMPTY_BLOCK_AFFORDANCE_HOVER);
+      setBodyContextMenu(null);
+      setProblemContextMenu(null);
+    },
+  });
+
+  const resolveBlockAffordanceAtPoint = useCallback((clientX: number, clientY: number): BlockAffordanceHover => {
+    const canvas = canvasRef.current;
+    if (!canvas || pointHitsLayoutColumnResizeHandle(canvas, clientX, clientY)) {
+      return EMPTY_BLOCK_AFFORDANCE_HOVER;
+    }
+    return resolveBlockAffordanceHover(
+      hitTestTopLevelBlock(
+        canvas,
+        pageDocumentRef.current,
+        dragIndexRef.current,
+        clientX,
+        clientY,
+        metrics,
+      ),
+      toCanvasPoint(canvas, clientX, clientY),
+    );
+  }, [metrics]);
+
   const updateBlockAffordanceHover = useCallback((clientX: number, clientY: number, target?: EventTarget | null) => {
     // 下端つまみを掴んでいる間はホバー解決を凍結する。ポインタがブロックから離れた瞬間に
     // affordance が空になり、掴んでいるつまみごと unmount されるのを防ぐ。
-    if (spaceAfterDragRef.current) {
+    const canvas = canvasRef.current;
+    const pointerOwner = resolveBlockAffordancePointerOwner({
+      dragging: !!spaceAfterDragRef.current || blockDrag.isDragging(),
+      targetIsAffordance: target instanceof Element && !!target.closest(".page-block-affordance-layer"),
+      hitsColumnDivider: !!canvas && pointHitsLayoutColumnResizeHandle(canvas, clientX, clientY),
+    });
+    // 表示中のグリップ／つまみ自身が最前面なら、その上に居る間は現在の解決を保つ。
+    // ドラッグ中も同じ: control が unmount されると pointer capture ごと消える。
+    if (pointerOwner === "frozen") {
       return;
     }
-    // アフォーダンス自身の上では解決し直さない。つまみはブロックの下端を跨いで描かれるので、
-    // 下半分に触れた瞬間に「次のブロック」へ解決が移り、狙ったつまみが逃げる。
-    if (target instanceof Element && target.closest(".page-block-affordance-layer")) {
+    // アフォーダンスが無い場所から直接入ったときだけ、実 DOM の 12px 境界矩形が勝つ。
+    if (pointerOwner === "divider") {
+      lastAffordancePointRef.current = { x: clientX, y: clientY };
+      setBlockAffordance((current) => (
+        current === EMPTY_BLOCK_AFFORDANCE_HOVER ? current : EMPTY_BLOCK_AFFORDANCE_HOVER
+      ));
       return;
     }
     // 書き込み後の取り直しは「次にホバーが動くまで」で十分。ここを通ったら予約は消化済み。
     spaceAfterHoverRefreshRef.current = false;
-    const canvas = canvasRef.current;
     if (!blockAffordancesEnabled || !canvas) {
       setBlockAffordance((current) => (
         current === EMPTY_BLOCK_AFFORDANCE_HOVER ? current : EMPTY_BLOCK_AFFORDANCE_HOVER
@@ -2919,12 +3273,9 @@ function PageCanvasEditorImpl({
     }
 
     lastAffordancePointRef.current = { x: clientX, y: clientY };
-    const next = resolveBlockAffordanceHover(
-      hitTestTopLevelBlock(canvas, pageDocument.content, clientX, clientY, metrics),
-      toCanvasPoint(canvas, clientX, clientY),
-    );
+    const next = resolveBlockAffordanceAtPoint(clientX, clientY);
     setBlockAffordance((current) => (sameBlockAffordanceHover(current, next) ? current : next));
-  }, [blockAffordancesEnabled, metrics, pageDocument.content]);
+  }, [blockAffordancesEnabled, blockDrag, resolveBlockAffordanceAtPoint]);
 
   const updateLastPagePointerPoint = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     lastPagePointerPointRef.current = getOverlayPointFromClient(event.clientX, event.clientY);
@@ -3088,7 +3439,8 @@ function PageCanvasEditorImpl({
         deltaPx: drag.px - drag.startPx,
         bottomBefore: drag.target.bottom,
       };
-      onChange(drag.target.blockId, (block) => setBlockSpaceAfter(block, drag.px));
+      if (onBlockSpaceAfterChange) onBlockSpaceAfterChange(drag.target.blockId, drag.px);
+      else onChange(drag.target.blockId, (block) => setBlockSpaceAfter(block, drag.px));
       // プレビューはここでは外さない。確定した余白が実際に描かれたフレームまで待ってから
       // 外す (コミットが弾かれても数フレームで必ず畳む)。
       releaseSpaceAfterPreviewWhenPaintedRef.current();
@@ -3111,13 +3463,18 @@ function PageCanvasEditorImpl({
     window.addEventListener("pointercancel", handlePointerCancel);
     // capture で拾う: 本文やポップオーバーが Escape を先に食べても、掴んでいる間はこちらが勝つ。
     window.addEventListener("keydown", handleKeyDown, true);
-  }, [onChange, pageDocument.content, resolveBlockSpaceAfterCohort, thawSpaceAfterRecompute, zoom]);
+  }, [onBlockSpaceAfterChange, onChange, pageDocument.content, resolveBlockSpaceAfterCohort, thawSpaceAfterRecompute, zoom]);
 
   /** キーボードからの微調整。ドラッグでは出せない 1px 刻みをここで出す。 */
   const adjustBlockSpaceAfter = useCallback((blockId: string, deltaPx: number) => {
     spaceAfterHoverRefreshRef.current = true;
-    onChange(blockId, (block) => setBlockSpaceAfter(block, blockSpaceAfterPx(block) + deltaPx));
-  }, [onChange]);
+    if (onBlockSpaceAfterChange) {
+      const block = findBlock(pageDocument, blockId);
+      if (block) onBlockSpaceAfterChange(blockId, blockSpaceAfterPx(block) + deltaPx);
+    } else {
+      onChange(blockId, (block) => setBlockSpaceAfter(block, blockSpaceAfterPx(block) + deltaPx));
+    }
+  }, [onBlockSpaceAfterChange, onChange, pageDocument]);
 
   // 掴んだままアンマウントされたときの後始末。ストアは紙面ごとではなくモジュール単位なので、
   // ここで畳まないとプレビューの印と平行移動が残り続ける。
@@ -3134,41 +3491,51 @@ function PageCanvasEditorImpl({
     return registerBlockSpaceAfterPreviewRoot(canvasElement);
   }, [canvasElement]);
 
-  // 書き込んだ直後の 1 回だけホバーを取り直す。取り直さないと、つまみが更新前の下端に
-  // 残ったままになる (次のポインタ移動まで)。毎回の文書更新では走らせない (打鍵が重くなる)。
+  // 文書更新後に、静止中のポインタから singleton affordance を取り直す。Enter / Backspace /
+  // 貼り付け / 通常入力のどれも行高と改ページ位置を変え得るため、space-after 操作だけを
+  // 特別扱いすると座標が古いまま残る。React 更新後の rAF へ集約し、1 文書更新につき最大1回、
+  // 寸法が確定した DOM を測る (pointermove 中の再レンダーは増やさない)。
   useEffect(() => {
-    if (!spaceAfterHoverRefreshRef.current || spaceAfterDragRef.current) {
-      return;
-    }
-    spaceAfterHoverRefreshRef.current = false;
+    const previousRevision = lastAffordanceLayoutRevisionRef.current;
+    const revision = layoutViewState.revision;
+    lastAffordanceLayoutRevisionRef.current = revision;
     const point = lastAffordancePointRef.current;
-    if (point) {
-      updateBlockAffordanceHover(point.x, point.y);
-    }
-  }, [pageDocument.content, updateBlockAffordanceHover]);
+    if (!point || revision <= previousRevision || spaceAfterDragRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      spaceAfterHoverRefreshRef.current = false;
+      const next = resolveBlockAffordanceAtPoint(point.x, point.y);
+      setBlockAffordance((current) => resolveStationaryBlockAffordanceRefresh({
+        previousRevision,
+        revision,
+        point,
+        current,
+        next,
+      }).hover);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [layoutViewState.revision, resolveBlockAffordanceAtPoint]);
 
   const resetBlockSpaceAfter = useCallback((blockId: string) => {
     spaceAfterHoverRefreshRef.current = true;
-    onChange(blockId, (block) => setBlockSpaceAfter(block, 0));
-  }, [onChange]);
+    if (onBlockSpaceAfterChange) onBlockSpaceAfterChange(blockId, 0);
+    else onChange(blockId, (block) => setBlockSpaceAfter(block, 0));
+  }, [onBlockSpaceAfterChange, onChange]);
 
   const selectBlockWithHandle = useCallback((blockId: string, extend: boolean) => {
     const canvas = canvasRef.current;
-    const measure = (ids: string[]) => (canvas
-      ? measureTopLevelBlockBoxes(canvas, pageDocument.content.filter((block) => ids.includes(block.id)))
+    const measure = (ids: string[]): TopLevelBlockBox[] => (canvas
+      ? ids.flatMap((id) => {
+        const info = dragIndex.units.get(id);
+        const geometry = info ? measureDragUnit(canvas, id, info.type) : null;
+        return geometry ? [{ id, ...geometry.box }] : [];
+      })
       : []);
     setBlockSelection((current) => {
-      const anchorId = extend ? blockSelectionAnchorRef.current : null;
-      const ids = anchorId && current.ids.length > 0
-        ? resolveBlockSelectionRange(
-            pageDocument.content.map((block) => block.id),
-            anchorId,
-            blockId,
-          )
-        : [blockId];
-      if (!anchorId || current.ids.length === 0) {
-        blockSelectionAnchorRef.current = blockId;
-      }
+      const selected = new Set(extend ? current.ids : []);
+      if (extend && selected.has(blockId)) selected.delete(blockId);
+      else selected.add(blockId);
+      const ids = [...dragIndex.units.keys()].filter((id) => selected.has(id));
+      blockSelectionAnchorRef.current = blockId;
       return { ids, boxes: measure(ids) };
     });
     setBodyContextMenu(null);
@@ -3180,7 +3547,7 @@ function PageCanvasEditorImpl({
       active.blur();
     }
     window.getSelection()?.removeAllRanges();
-  }, [onSelect, pageDocument.content]);
+  }, [dragIndex, onSelect]);
 
   const insertBodyBlockAtPoint = useCallback((insertPoint: BlockInsertPoint) => {
     onInsertBodyBlock?.(insertPoint.anchorBlockId, insertPoint.position);
@@ -3191,17 +3558,27 @@ function PageCanvasEditorImpl({
   // A selection whose blocks no longer exist (an AI edit landed, undo ran) is dropped on the
   // spot rather than left drawing an outline over whatever moved into that position.
   const activeBlockSelection = useMemo(() => (
-    blockSelection.ids.every((id) => pageDocument.content.some((block) => block.id === id))
+    blockSelection.ids.every((id) => dragIndex.units.has(id))
       ? blockSelection
       : EMPTY_BLOCK_SELECTION
-  ), [blockSelection, pageDocument.content]);
+  ), [blockSelection, dragIndex]);
+  useEffect(() => {
+    blockSelectionIdsRef.current = activeBlockSelection.ids;
+  }, [activeBlockSelection]);
 
   // 掴んでいる間は掴んだ相手に固定する (ホバー解決は凍結済み)。つまみ自体は「動かしている辺」
   // だが、追従は CSS (`[data-dragging]` の translate) がやるので **ここは動かさない** —
   // 毎フレーム `top` を書き換えると、そのたびに紙面全体が React で再レンダーされる。
   const spaceAfterHandle = spaceAfterDrag?.target ?? blockAffordance.spaceAfter;
+  const visibleBlockHandles = useMemo(
+    () => blockAffordance.handle ? [blockAffordance.handle] : [],
+    [blockAffordance.handle],
+  );
+  const visibleSpaceAfterHandles = useMemo(
+    () => spaceAfterDrag ? [spaceAfterDrag.target] : spaceAfterHandle ? [spaceAfterHandle] : [],
+    [spaceAfterDrag, spaceAfterHandle],
+  );
   const insertButtonLane = resolveBlockInsertButtonLane(blockAffordance);
-  const spaceAfterHandleBottom = spaceAfterHandle?.bottom ?? 0;
   /**
    * 殻ごと平行移動するユニット。問題枠・サイドノート・問題番号は殻が持っているので、
    * 中身だけ動かすと枠が置き去りになる。殻を動かすユニットの中身には印を付けない
@@ -3274,6 +3651,87 @@ function PageCanvasEditorImpl({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeBlockSelection, onDeleteBlocks]);
+
+  // グリップ選択のままキーボードで動かしたあと、選択の面を新しい位置で測り直すための予約。
+  const blockSelectionRefreshRef = useRef(false);
+
+  // ⌥⇧↑/↓: キャレットのあるブロック (またはグリップで選んだブロック) を前後の兄弟と入れ替える。
+  // ProseMirror より先に取る (capture)。⌥⇧+矢印は本文では単語選択に使っていない。
+  useEffect(() => {
+    if (!onMoveBlocksByStep || !blockAffordancesEnabled) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        !event.altKey || !event.shiftKey || event.metaKey || event.ctrlKey
+        || (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+        || event.defaultPrevented
+      ) {
+        return;
+      }
+      const direction = event.key === "ArrowUp" ? "up" : "down";
+      const selected = blockSelectionIdsRef.current;
+      let unitIds: string[] = [];
+      if (selected.length > 0) {
+        unitIds = [...selected];
+      } else {
+        const canvas = canvasRef.current;
+        const active = canvas?.ownerDocument.activeElement;
+        if (!canvas || !(active instanceof HTMLElement) || !active.isContentEditable || !canvas.contains(active)) {
+          return;
+        }
+        if (active.closest(".page-running-editor-band, .overlay-canvas-editor, .page-overlay-layer")) {
+          return;
+        }
+        const selection = canvas.ownerDocument.getSelection();
+        const node = selection?.anchorNode;
+        const element = node instanceof Element ? node : node?.parentElement ?? null;
+        let host = element?.closest<HTMLElement>("[data-sigma-doc-id]") ?? null;
+        while (host && !dragIndexRef.current.units.has(host.getAttribute("data-sigma-doc-id") ?? "")) {
+          host = host.parentElement?.closest<HTMLElement>("[data-sigma-doc-id]") ?? null;
+        }
+        const id = host?.getAttribute("data-sigma-doc-id");
+        if (!id) {
+          return;
+        }
+        unitIds = [id];
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      onMoveBlocksByStep(unitIds, direction);
+      if (selected.length > 0) {
+        // 動かした後の箱は次の描画で測り直す (`blockSelectionRefreshRef`)。
+        blockSelectionRefreshRef.current = true;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [blockAffordancesEnabled, onMoveBlocksByStep]);
+
+  useEffect(() => {
+    if (!blockSelectionRefreshRef.current) {
+      return;
+    }
+    blockSelectionRefreshRef.current = false;
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      setBlockSelection((current) => {
+        if (current.ids.length === 0) {
+          return current;
+        }
+        const boxes = current.ids.flatMap((id) => {
+          const info = dragIndexRef.current.units.get(id);
+          const geometry = info ? measureDragUnit(canvas, id, info.type) : null;
+          return geometry ? [{ id, ...geometry.box }] : [];
+        });
+        return { ids: current.ids, boxes };
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pageDocument.content]);
 
   const requestBodyOverlayImages = useCallback((files: File[], point?: OverlayPoint) => {
     if (runningRegionEditKind || files.length === 0) {
@@ -3770,8 +4228,13 @@ function PageCanvasEditorImpl({
     onChange(blockId, (block) => setBlockBreakBefore(block, enabled));
   }, [onChange]);
 
+  const removeBreakBefore = useCallback((blockId: string) => {
+    updateBreakBefore(blockId, false);
+  }, [updateBreakBefore]);
+  const markerRemoveHandler = isPagedRender ? undefined : removeBreakBefore;
+
   const updateLayoutSectionColumnCount = useCallback((sectionId: string, columnCount: number) => {
-    onChange(sectionId, (block) => setLayoutSectionColumnCount(block, columnCount));
+    onChange(sectionId, (block) => setLayoutSectionColumnCount(block, columnCount, () => createParagraph("")));
   }, [onChange]);
 
   // Shared by both the body and problem context menus (the latter reuses it for breaks placed
@@ -3785,7 +4248,7 @@ function PageCanvasEditorImpl({
     closeMenu: () => void,
   ) => {
     const nextBreakBefore = enabled ?? target.nextBreakBefore;
-    if (!canUseManualBreakAtBlock(pageDocument, target.blockId, nextBreakBefore)) {
+    if (!canUseManualBreakAtBlock(pageDocument, target.blockId)) {
       closeMenu();
       return;
     }
@@ -4038,8 +4501,18 @@ function PageCanvasEditorImpl({
    * the very same menu — the problem menu for a problem, the body menu for everything else.
    */
   const openBlockHandleMenu = useCallback((blockId: string, handleElement: HTMLElement) => {
-    const block = pageDocument.content.find((candidate) => candidate.id === blockId);
-    if (!block) {
+    const unit = findBlock(pageDocument, blockId);
+    if (!unit) {
+      return;
+    }
+    // リストの項目にはメニューが無い。項目を含むリストのメニューを出す。
+    const block = unit.type === "listItem"
+      ? (() => {
+        const ownerId = dragIndex.units.get(blockId)?.container.ownerId ?? null;
+        return ownerId ? findBlock(pageDocument, ownerId) : null;
+      })()
+      : unit;
+    if (!block || block.type === "listItem") {
       return;
     }
 
@@ -4052,8 +4525,8 @@ function PageCanvasEditorImpl({
     }
 
     const rect = handleElement.getBoundingClientRect();
-    openBodyContextMenu({ blockId, clientX: rect.right, clientY: rect.top });
-  }, [openBodyContextMenu, openProblemActionMenu, pageDocument.content]);
+    openBodyContextMenu({ blockId: block.id, clientX: rect.right, clientY: rect.top });
+  }, [dragIndex, openBodyContextMenu, openProblemActionMenu, pageDocument]);
 
   const editRunningRegion = useCallback((kind: RunningRegionKind | null, pageNumber = 1) => {
     setRunningRegionOverlayEditing(false);
@@ -4262,6 +4735,10 @@ function PageCanvasEditorImpl({
     if (isWhiteboard) {
       return;
     }
+
+    // A click does not guarantee a preceding pointermove. Keep the exact click position so a
+    // keyboard edit can re-resolve its affordance after the next committed layout revision.
+    lastAffordancePointRef.current = { x: event.clientX, y: event.clientY };
 
     const target = event.target instanceof Element ? event.target : null;
     const overlayPoint = !isOverlayEditing && !runningRegionEditKind
@@ -4970,6 +5447,7 @@ function PageCanvasEditorImpl({
                 visiblePageRange={{ start: -999, end: 9999, overscan: 0 }}
                 stackLayer="all"
                 renderShapes={false}
+                ghostShapes={overlayPresentation?.ghostShapes}
                 pinnedShapeIds={pinnedOverlayShapeIds}
                 commentThreads={displayedCommentThreads}
                 highlightedCommentThreadId={highlightedCommentThreadId}
@@ -5087,7 +5565,12 @@ function PageCanvasEditorImpl({
           onDragOver={handlePageDragOver}
           onDrop={handlePageDrop}
           onPointerMove={updateLastPagePointerPoint}
-          onPointerLeave={() => setBlockAffordance(EMPTY_BLOCK_AFFORDANCE_HOVER)}
+          onPointerLeave={() => {
+            if (!blockDrag.isDragging()) {
+              lastAffordancePointRef.current = null;
+              setBlockAffordance(EMPTY_BLOCK_AFFORDANCE_HOVER);
+            }
+          }}
           onMouseDown={(event) => {
             if (event.button === 0 && !isOverlayEditing) {
               setProblemContextMenu(null);
@@ -5234,7 +5717,7 @@ function PageCanvasEditorImpl({
                 className="page-flow-page-break-marker"
                 style={getFlowLayoutStyle(markerLayout)}
               >
-                <PageBreakMarker blockId={blockId} kind="columnBreak" />
+                <PageBreakMarker blockId={blockId} kind="columnBreak" onRemove={markerRemoveHandler} />
               </div>
             ))}
             {units.map((unit) =>
@@ -5313,9 +5796,13 @@ function PageCanvasEditorImpl({
                   spaceAfterFollowerClass={spaceAfterFollowerUnitClass(unit.id)}
                   pageColumnGapPx={metrics.flow.columnGapPx}
                   pageColumnGapMm={metrics.flow.columnGapMm}
+                  pageContentHeightPx={metrics.content.heightPx}
                   sideNoteOffsetPx={getProblemAreaSideNoteOffsetPx(unit, isColumnFlow, unitLayouts, metrics)}
                   onSelect={onSelect}
                   onChange={updateLayoutSectionBlocks}
+                  onLayoutChange={(sectionId, updater) => onChange(sectionId, updater)}
+                  onResizeColumns={onResizeLayoutColumns}
+                  onRemoveBreak={markerRemoveHandler}
                   commentThreads={displayedCommentThreads}
                   activeCommentThreadId={activeCommentThreadId}
                   highlightedCommentThreadId={highlightedCommentThreadId}
@@ -5338,13 +5825,15 @@ function PageCanvasEditorImpl({
                   gaps={gaps}
                   boxFragmentSourceLayouts={boxFragmentSourceLayouts}
                   columnFlowBlockLayouts={isColumnFlow ? pickTextFlowColumnBlockLayouts(unit.blocks, textFlowBlockLayouts) : undefined}
-                  frameFragments={isColumnFlow ? frameFragmentLayouts[unit.id] : undefined}
+                  frameFragments={frameFragmentLayouts[unit.id]}
                   layoutStyle={getFlowUnitStyle(unit, isColumnFlow, unitLayouts, metrics)}
                   spaceAfterFollowerClass={spaceAfterFollowerUnitClass(unit.id)}
                   sideNoteOffsetPx={getProblemAreaSideNoteOffsetPx(unit, isColumnFlow, unitLayouts, metrics, textFlowBlockLayouts)}
                   draftMinHeightMm={problemAreaHeightDrafts[problemAreaDraftKey(unit.problem.id, unit.area)]}
+                  pageContentHeightPx={metrics.content.heightPx}
                   onSelect={onSelect}
                   onChange={updateProblemAreaBlocks}
+                  onRemoveBreak={markerRemoveHandler}
                   onResizeStart={startProblemAreaResize}
                   onActionMenuOpen={openProblemActionMenu}
                   inlineContentByTargetId={flowInlineContentByTargetId}
@@ -5371,7 +5860,9 @@ function PageCanvasEditorImpl({
                   style={getFlowUnitStyle(unit, isColumnFlow, unitLayouts, metrics) ??
                     (gaps[unit.block.id] ? { marginTop: `${gaps[unit.block.id]}px` } : undefined)}
                 >
-                  {!isColumnFlow && hasBreakBefore(unit.block) && <PageBreakMarker blockId={unit.block.id} />}
+                  {!isColumnFlow && hasBreakBefore(unit.block) && (
+                    <PageBreakMarker blockId={unit.block.id} onRemove={markerRemoveHandler} />
+                  )}
                   <BlockEditor
                     block={unit.block}
                     selectedId={selectedId}
@@ -5403,7 +5894,8 @@ function PageCanvasEditorImpl({
                 const problemAreaSource = problemAreaFlowBlocksById.get(fragment.blockId);
                 const block = boxBlocksById.get(fragment.blockId)
                   ?? topLevelTextBlocksById.get(fragment.blockId)
-                  ?? problemAreaSource?.block;
+                  ?? problemAreaSource?.block
+                  ?? unitTextFlowBlocksById.get(fragment.blockId);
                 return block ? (
                   <EditorBoxBlockFragmentPreview
                     textRunOrder={unitOrderByBlockId.get(fragment.blockId)}
@@ -5432,8 +5924,41 @@ function PageCanvasEditorImpl({
             </div>
           )}
 
-          {!isPagedRender && (blockAffordancesEnabled || activeBlockSelection.boxes.length > 0) && (
+          {!isPagedRender && <div className="page-block-drag-ghost-layer" ref={ghostLayerRef} aria-hidden="true" />}
+          {!isPagedRender && (blockAffordancesEnabled || activeBlockSelection.boxes.length > 0 || blockDrag.session) && (
             <div className="page-block-affordance-layer">
+              {blockDrag.session?.sources.map((source, index) => (
+                <div
+                  key={`block-drag-source-${index}`}
+                  className="page-block-drag-source-veil"
+                  aria-hidden="true"
+                  style={{
+                    top: `${source.top}px`,
+                    left: `${source.left}px`,
+                    width: `${Math.max(0, source.right - source.left)}px`,
+                    height: `${Math.max(0, source.bottom - source.top)}px`,
+                  }}
+                />
+              ))}
+              {blockDrag.session?.resolution && (
+                <div
+                  className="page-block-drop-line"
+                  data-orientation={blockDrag.session.resolution.indicator.orientation}
+                  data-target-kind={blockDrag.session.resolution.target.kind}
+                  aria-hidden="true"
+                  style={blockDrag.session.resolution.indicator.orientation === "horizontal"
+                    ? {
+                      top: `${blockDrag.session.resolution.indicator.top}px`,
+                      left: `${blockDrag.session.resolution.indicator.left}px`,
+                      width: `${blockDrag.session.resolution.indicator.width}px`,
+                    }
+                    : {
+                      top: `${blockDrag.session.resolution.indicator.top}px`,
+                      left: `${blockDrag.session.resolution.indicator.left}px`,
+                      height: `${blockDrag.session.resolution.indicator.height}px`,
+                    }}
+                />
+              )}
               {activeBlockSelection.boxes.map((box) => (
                 <div
                   key={`block-selection-${box.id}`}
@@ -5447,14 +5972,19 @@ function PageCanvasEditorImpl({
                   }}
                 />
               ))}
-              {blockAffordancesEnabled && blockAffordance.handle && onDeleteBlocks && (
+              {/* The mapped values are frozen hover snapshots. These callbacks run only after a
+                  pointer/key event; none of the referenced handlers is invoked during render. */}
+              {/* eslint-disable react-hooks/refs */}
+              {blockAffordancesEnabled && onDeleteBlocks && visibleBlockHandles.map((handle) => (
                 <button
+                  key={`block-handle-${handle.blockId}`}
                   type="button"
-                  className={`page-block-handle ${activeBlockSelection.ids.includes(blockAffordance.handle.blockId) ? "selected" : ""}`}
+                  className={`page-block-handle ${activeBlockSelection.ids.includes(handle.blockId) ? "selected" : ""}`}
+                  data-block-id={handle.blockId}
                   style={{
-                    top: `${blockAffordance.handle.top}px`,
-                    left: `${blockAffordance.handle.left}px`,
-                    height: `${Math.max(BLOCK_HANDLE_MIN_HEIGHT_PX, Math.min(blockAffordance.handle.bottom - blockAffordance.handle.top, BLOCK_HANDLE_MAX_HEIGHT_PX))}px`,
+                    top: `${handle.top}px`,
+                    left: `${handle.left}px`,
+                    height: `${Math.max(BLOCK_HANDLE_MIN_HEIGHT_PX, Math.min(handle.bottom - handle.top, BLOCK_HANDLE_MAX_HEIGHT_PX))}px`,
                   }}
                   aria-label={tEditorText("pageCanvas.selectBlock")}
                   title={tEditorText("pageCanvas.selectBlockHint")}
@@ -5463,33 +5993,40 @@ function PageCanvasEditorImpl({
                     event.preventDefault();
                     event.stopPropagation();
                   }}
+                  onPointerDown={(event) => {
+                    if (onMoveBlocks) {
+                      blockDrag.handlePointerDown(event, handle.blockId);
+                    }
+                  }}
                   onClick={(event) => {
                     event.stopPropagation();
-                    if (!blockAffordance.handle) {
+                    // ドラッグして離した直後の click は「ドラッグの終わり」。選択もメニューも要らない。
+                    if (blockDrag.consumeClickSuppression()) {
                       return;
                     }
-                    selectBlockWithHandle(blockAffordance.handle.blockId, event.shiftKey);
+                    selectBlockWithHandle(handle.blockId, event.shiftKey);
                     // Shift-click is still building a range; the menu would only get in the way.
                     if (!event.shiftKey) {
-                      openBlockHandleMenu(blockAffordance.handle.blockId, event.currentTarget);
+                      openBlockHandleMenu(handle.blockId, event.currentTarget);
                     }
                   }}
                 >
                   <GripVertical size={14} aria-hidden="true" />
                 </button>
-              )}
-              {blockAffordancesEnabled && spaceAfterHandle && (
+              ))}
+              {blockAffordancesEnabled && visibleSpaceAfterHandles.map((handle) => (
                 <button
+                  key={`block-space-${handle.blockId}`}
                   type="button"
                   className="page-block-space-handle"
                   // 問題エリアの左ガターには問題番号・サイドノート・エリア高さハンドルが同居する。
                   // 1 レーン外へ寄せて重なりを構造的に避ける。
-                  data-gutter-lane={spaceAfterHandle.insideProblemArea ? "problem" : undefined}
+                  data-gutter-lane={handle.insideProblemArea ? "problem" : undefined}
                   data-dragging={spaceAfterDrag ? "true" : undefined}
-                  data-block-id={spaceAfterHandle.blockId}
+                  data-block-id={handle.blockId}
                   style={{
-                    top: `${spaceAfterHandleBottom}px`,
-                    left: `${spaceAfterHandle.left}px`,
+                    top: `${handle.bottom}px`,
+                    left: `${handle.left}px`,
                   }}
                   aria-label={tEditorText("pageCanvas.spaceAfter")}
                   title={tEditorText("pageCanvas.spaceAfterHint")}
@@ -5499,11 +6036,11 @@ function PageCanvasEditorImpl({
                     event.preventDefault();
                     event.stopPropagation();
                   }}
-                  onPointerDown={(event) => startBlockSpaceAfterResize(spaceAfterHandle, event)}
+                  onPointerDown={(event) => startBlockSpaceAfterResize(handle, event)}
                   onClick={(event) => event.stopPropagation()}
                   onDoubleClick={(event) => {
                     event.stopPropagation();
-                    resetBlockSpaceAfter(spaceAfterHandle.blockId);
+                    resetBlockSpaceAfter(handle.blockId);
                   }}
                   onKeyDown={(event) => {
                     // ドラッグでは出しにくい 1px 刻み。Shift で 10px、Backspace/Delete で 0 に戻す。
@@ -5511,17 +6048,18 @@ function PageCanvasEditorImpl({
                     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                       event.preventDefault();
                       event.stopPropagation();
-                      adjustBlockSpaceAfter(spaceAfterHandle.blockId, event.key === "ArrowDown" ? step : -step);
+                      adjustBlockSpaceAfter(handle.blockId, event.key === "ArrowDown" ? step : -step);
                       return;
                     }
                     if (event.key === "Backspace" || event.key === "Delete") {
                       event.preventDefault();
                       event.stopPropagation();
-                      resetBlockSpaceAfter(spaceAfterHandle.blockId);
+                      resetBlockSpaceAfter(handle.blockId);
                     }
                   }}
                 />
-              )}
+              ))}
+              {/* eslint-enable react-hooks/refs */}
               {blockAffordancesEnabled && blockAffordance.insertPoint && onInsertBodyBlock && (
                 <div
                   className="page-block-insert-line"
@@ -6578,6 +7116,89 @@ function PageMarginRuler({
   );
 }
 
+function LayoutColumnResizeHandle({
+  sectionId,
+  dividerIndex,
+  positionPercent,
+  gapPx,
+  columnCount,
+  label,
+  onCommit,
+}: {
+  sectionId: string;
+  dividerIndex: number;
+  positionPercent: number;
+  gapPx: number;
+  columnCount: number;
+  label: string;
+  onCommit: (leftWidth: number, rightWidth: number) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="layout-section-column-resize-handle"
+      data-layout-section-id={sectionId}
+      data-divider-index={dividerIndex}
+      style={{ left: `calc(${positionPercent}% + ${(dividerIndex + 0.5 - positionPercent / 100 * (columnCount - 1)) * gapPx}px)` }}
+      aria-label={label}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const handle = event.currentTarget;
+        const grid = handle.closest<HTMLElement>(".layout-section-independent-columns");
+        const columns = grid ? [...grid.querySelectorAll<HTMLElement>(":scope > .layout-section-independent-column")] : [];
+        const left = columns[dividerIndex]?.getBoundingClientRect();
+        const right = columns[dividerIndex + 1]?.getBoundingClientRect();
+        if (!grid || !left || !right) return;
+        const startX = event.clientX;
+        const gridRect = grid.getBoundingClientRect();
+        const scale = grid.offsetWidth > 0 && gridRect.width > 0 ? gridRect.width / grid.offsetWidth : 1;
+        const initialWidths = columns.map((column) => column.getBoundingClientRect().width / scale);
+        const leftWidth = left.width / scale;
+        const rightWidth = right.width / scale;
+        const originalGridTemplateColumns = grid.style.gridTemplateColumns;
+        let delta = 0;
+        let finished = false;
+        handle.dataset.dragging = "true";
+        handle.setPointerCapture(event.pointerId);
+        const onMove = (moveEvent: PointerEvent) => {
+          delta = Math.max(-leftWidth, Math.min(rightWidth, (moveEvent.clientX - startX) / scale));
+          const preview = [...initialWidths];
+          preview[dividerIndex] = leftWidth + delta;
+          preview[dividerIndex + 1] = rightWidth - delta;
+          grid.style.gridTemplateColumns = preview.map((width) => `${Math.max(0, width)}px`).join(" ");
+          handle.style.setProperty("--layout-column-resize-preview-x", `${delta}px`);
+        };
+        const finish = (commit: boolean) => {
+          if (finished) return;
+          finished = true;
+          handle.removeEventListener("pointermove", onMove);
+          handle.removeEventListener("pointerup", onUp);
+          handle.removeEventListener("pointercancel", onCancel);
+          window.removeEventListener("keydown", onKeyDown, true);
+          grid.style.gridTemplateColumns = originalGridTemplateColumns;
+          handle.style.removeProperty("--layout-column-resize-preview-x");
+          delete handle.dataset.dragging;
+          if (commit) onCommit(leftWidth + delta, rightWidth - delta);
+        };
+        const onUp = () => finish(true);
+        const onCancel = () => finish(false);
+        const onKeyDown = (keyEvent: KeyboardEvent) => {
+          if (keyEvent.key !== "Escape") return;
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          finish(false);
+        };
+        handle.addEventListener("pointermove", onMove);
+        handle.addEventListener("pointerup", onUp, { once: true });
+        handle.addEventListener("pointercancel", onCancel, { once: true });
+        window.addEventListener("keydown", onKeyDown, true);
+      }}
+    />
+  );
+}
+
 function LayoutSectionFlowUnit({
   unit,
   textRunAssignment,
@@ -6592,9 +7213,13 @@ function LayoutSectionFlowUnit({
   spaceAfterFollowerClass,
   pageColumnGapPx,
   pageColumnGapMm,
+  pageContentHeightPx,
   sideNoteOffsetPx,
   onSelect,
   onChange,
+  onLayoutChange,
+  onResizeColumns,
+  onRemoveBreak,
   commentThreads,
   activeCommentThreadId,
   highlightedCommentThreadId,
@@ -6619,6 +7244,7 @@ function LayoutSectionFlowUnit({
   spaceAfterFollowerClass: string;
   pageColumnGapPx: number;
   pageColumnGapMm: number;
+  pageContentHeightPx: number;
   sideNoteOffsetPx: number | undefined;
   onSelect: (blockId: string | null) => void;
   onChange: (
@@ -6628,6 +7254,9 @@ function LayoutSectionFlowUnit({
     activeBlockId?: string | null,
     context?: TextFlowChangeContext,
   ) => void;
+  onLayoutChange: (sectionId: string, updater: (block: SigmaBlock | ProblemAreaBlock) => SigmaBlock | ProblemAreaBlock) => void;
+  onResizeColumns?: (sectionId: string, dividerIndex: number, leftWidth: number, rightWidth: number) => void;
+  onRemoveBreak?: (blockId: string) => void;
   commentThreads: SigmaCommentThread[];
   activeCommentThreadId: string | null;
   highlightedCommentThreadId: string | null;
@@ -6641,6 +7270,7 @@ function LayoutSectionFlowUnit({
   const tEditor = useT("editor");
   const selected = selectedId === unit.section.id || unit.blocks.some((block) => block.id === selectedId);
   const isProblemAreaSection = unit.type === "problemLayoutSection";
+  const problemAreaMinHeightMm = getSingleColumnProblemLayoutSectionMinHeightMm(unit, isColumnFlow);
   // memo 済みの本文エディタへ渡るので identity を固定する。跨ぎコピーが段組セクションを
   // 組み直すのに使う (このユニットの doc には段落しか入っていない)。
   const sectionId = unit.section.id;
@@ -6665,10 +7295,15 @@ function LayoutSectionFlowUnit({
   );
   const columnCount = getLayoutSectionColumnCount(unit.section);
   const columnGapPx = getLayoutSectionColumnGapPx(unit.section, pageColumnGapMm, pageColumnGapPx);
-  const columnFlowActive = !isColumnFlow && columnCount > 1 && columnLayout != null;
+  const columnFlowActive = columnCount > 1 && columnLayout != null;
   const gapStyle = !isColumnFlow && gaps[unit.id] ? { marginTop: `${gaps[unit.id]}px` } : undefined;
+  const problemAreaMinHeightPx = getSafeProblemAreaMinHeightPx(
+    problemAreaMinHeightMm,
+    pageContentHeightPx,
+  );
   const style = {
     ...(layoutStyle ?? gapStyle),
+    minHeight: problemAreaMinHeightPx > 0 ? `${problemAreaMinHeightPx}px` : undefined,
     ...(isColumnFlow && typeof sideNoteOffsetPx === "number" ? { "--problem-area-page-x": `${sideNoteOffsetPx}px` } : {}),
   } as CSSProperties;
   const columnStyle = columnFlowActive
@@ -6680,6 +7315,21 @@ function LayoutSectionFlowUnit({
         "--sigma-doc-local-column-count": String(columnCount),
         "--sigma-doc-local-column-gap": `${columnGapPx}px`,
       } as CSSProperties);
+  const blockById = useMemo(() => new Map(unit.blocks.map((block) => [block.id, block] as const)), [unit.blocks]);
+  const columnBlocks = useMemo(() => getLayoutSectionColumns(unit.section).map((column) => (
+    column.flatMap((block) => {
+      const editable = blockById.get(block.id);
+      return editable ? [editable] : [];
+    })
+  )), [blockById, unit.section]);
+  const columnWidths = useMemo(
+    () => getLayoutSectionColumnWidths(unit.section, columnBlocks.length),
+    [columnBlocks.length, unit.section],
+  );
+  const independentColumnStyle = {
+    "--layout-section-column-gap": `${columnGapPx}px`,
+    gridTemplateColumns: columnWidths.map((width) => `${width}fr`).join(" "),
+  } as CSSProperties;
 
   // memo 済みの本文エディタへ渡るので、段組みごとのハンドラは identity を固定する。
   const handleSectionChange = useCallback((
@@ -6716,50 +7366,93 @@ function LayoutSectionFlowUnit({
       <div className="layout-section-side-note">
         <span>{tEditor("block.columns", { replace: { columns: columnCount } })}</span>
       </div>
-      {!isColumnFlow && hasBreakBefore(unit.section) && <PageBreakMarker blockId={unit.section.id} />}
+      {!isColumnFlow && hasBreakBefore(unit.section) && (
+        <PageBreakMarker blockId={unit.section.id} onRemove={onRemoveBreak} />
+      )}
       <div
-        className={`layout-section-paper-body ${columnFlowActive ? "with-layout-column-flow" : "with-layout-columns"}`}
+        className="layout-section-paper-body with-independent-layout-columns"
         style={columnStyle}
       >
-        <TextFlowWithInlineContent
-          blocks={unit.blocks}
-          headingNumbers={unit.headingNumbers}
-          selectedId={selectedId}
-          mathFractionSizing={mathFractionSizing}
-          historyRevision={historyRevision}
-          breakGaps={isColumnFlow || columnCount > 1 ? undefined : gaps}
-          paginationBeforeIds={[
-                      ...(isColumnFlow ? [] : getPageBreakBeforeIds(unit.blocks)),
-                      ...getNestedPageBreakBeforeIds(unit.blocks),
-                    ]}
-          paginationMarkerKind={resolvePageBreakMarkerKind(columnCount > 1)}
-          paginationMarkerKinds={getNestedPageBreakBeforeKinds(unit.blocks)}
-          paginationMarkerLayouts={columnFlowActive ? columnLayout!.markerLayouts : undefined}
-          columnFlowBlockLayouts={columnFlowActive ? columnLayout!.blockLayouts : undefined}
-          boxFragmentSourceLayouts={pickTextFlowBoxFragmentSourceLayouts(unit.blocks, boxFragmentSourceLayouts)}
-          commentThreads={commentThreads}
-          activeCommentThreadId={activeCommentThreadId}
-          highlightedCommentThreadId={highlightedCommentThreadId}
-          placeholder={tEditor("body.inputPlaceholder")}
-          showPlaceholder
-          onSelect={onSelect}
-          onCommentThreadSelect={onCommentThreadSelect}
-          onChange={handleSectionChange}
-          materials={materials}
-          onMaterialInsert={onMaterialInsert}
-          enableSelectionFormatMenu={false}
-          enableBoxCommands
-          enableHeadingCommands={!isProblemAreaSection}
-          onHeadingCommand={onHeadingCommand}
-          inlineContentByTargetId={inlineContentByTargetId}
-          changeDecorationState={changeDecorationState}
-          textRunGroupId={textRunAssignment?.groupId}
-          textRunOrder={textRunAssignment?.order}
-          textRunUnitId={unit.id}
-          textRunScopeId={`layout:${unit.section.id}`}
-          textRunScopeContainer={scopeContainer}
-          textRunPreserveEmpty
-        />
+        <div className="layout-section-independent-columns" style={independentColumnStyle}>
+          {columnBlocks.map((blocks, columnIndex) => (
+            <Fragment key={unit.section.layout.columnStartIds?.[columnIndex] ?? blocks[0]?.id ?? columnIndex}>
+              <div className="layout-section-independent-column" data-layout-column-index={columnIndex}>
+                <TextFlowWithInlineContent
+                  blocks={blocks}
+                  headingNumbers={unit.headingNumbers}
+                  selectedId={selectedId}
+                  mathFractionSizing={mathFractionSizing}
+                  historyRevision={historyRevision}
+                  breakGaps={undefined}
+                  paginationBeforeIds={[]}
+                  paginationMarkerKind={undefined}
+                  paginationMarkerKinds={{}}
+                  paginationMarkerLayouts={undefined}
+                  columnFlowBlockLayouts={columnFlowActive ? columnLayout!.blockLayouts : undefined}
+                  boxFragmentSourceLayouts={pickTextFlowBoxFragmentSourceLayouts(blocks, boxFragmentSourceLayouts)}
+                  commentThreads={commentThreads}
+                  activeCommentThreadId={activeCommentThreadId}
+                  highlightedCommentThreadId={highlightedCommentThreadId}
+                  placeholder={tEditor("body.inputPlaceholder")}
+                  showPlaceholder
+                  onSelect={onSelect}
+                  onCommentThreadSelect={onCommentThreadSelect}
+                  onChange={handleSectionChange}
+                  materials={materials}
+                  onMaterialInsert={onMaterialInsert}
+                  enableSelectionFormatMenu={false}
+                  enableBoxCommands
+                  enableHeadingCommands={!isProblemAreaSection}
+                  onHeadingCommand={onHeadingCommand}
+                  inlineContentByTargetId={inlineContentByTargetId}
+                  changeDecorationState={changeDecorationState}
+                  textRunGroupId={textRunAssignment?.groupId}
+                  textRunOrder={textRunAssignment?.order}
+                  textRunUnitId={`${unit.id}:column:${columnIndex}`}
+                  textRunScopeId={`layout:${unit.section.id}`}
+                  textRunScopeContainer={scopeContainer}
+                  textRunPreserveEmpty
+                />
+              </div>
+              {columnIndex < columnBlocks.length - 1 && (
+                <LayoutColumnResizeHandle
+                  sectionId={unit.section.id}
+                  dividerIndex={columnIndex}
+                  positionPercent={columnWidths.slice(0, columnIndex + 1).reduce((sum, width) => sum + width, 0) / LAYOUT_SECTION_WIDTH_TOTAL * 100}
+                  gapPx={columnGapPx}
+                  columnCount={columnBlocks.length}
+                  label={tEditor("pageCanvas.resizeColumns", {
+                    replace: { left: columnIndex + 1, right: columnIndex + 2 },
+                  })}
+                  onCommit={(leftWidth, rightWidth) => {
+                    if (onResizeColumns) {
+                      onResizeColumns(unit.section.id, columnIndex, leftWidth, rightWidth);
+                      return;
+                    }
+                    onLayoutChange(unit.section.id, (block) => {
+                      if (block.type !== "layoutSection") return block;
+                      const columns = getLayoutSectionColumns(block);
+                      const widths = getLayoutSectionColumnWidths(block, columns.length);
+                      if (!columns[columnIndex] || !columns[columnIndex + 1]) return block;
+                      if (leftWidth <= 0 || rightWidth <= 0) {
+                        const merged = [...columns[columnIndex], ...columns[columnIndex + 1]];
+                        const nextColumns = [...columns.slice(0, columnIndex), merged, ...columns.slice(columnIndex + 2)];
+                        const nextWidths = [...widths.slice(0, columnIndex), widths[columnIndex] + widths[columnIndex + 1], ...widths.slice(columnIndex + 2)];
+                        return setLayoutSectionColumns(block, nextColumns, nextWidths);
+                      }
+                      const pairTotal = widths[columnIndex] + widths[columnIndex + 1];
+                      const pixelTotal = leftWidth + rightWidth;
+                      const nextWidths = [...widths];
+                      nextWidths[columnIndex] = Math.round(pairTotal * leftWidth / pixelTotal);
+                      nextWidths[columnIndex + 1] = pairTotal - nextWidths[columnIndex];
+                      return setLayoutSectionColumns(block, columns, nextWidths);
+                    });
+                  }}
+                />
+              )}
+            </Fragment>
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -6780,8 +7473,10 @@ function ProblemAreaFlowUnit({
   spaceAfterFollowerClass,
   sideNoteOffsetPx,
   draftMinHeightMm,
+  pageContentHeightPx,
   onSelect,
   onChange,
+  onRemoveBreak,
   onResizeStart,
   onActionMenuOpen,
   inlineContentByTargetId,
@@ -6809,6 +7504,7 @@ function ProblemAreaFlowUnit({
   spaceAfterFollowerClass: string;
   sideNoteOffsetPx: number | undefined;
   draftMinHeightMm: number | undefined;
+  pageContentHeightPx: number;
   onSelect: (blockId: string | null) => void;
   onChange: (
     problemId: string,
@@ -6818,6 +7514,7 @@ function ProblemAreaFlowUnit({
     activeBlockId?: string | null,
     context?: TextFlowChangeContext,
   ) => void;
+  onRemoveBreak?: (blockId: string) => void;
   onResizeStart: (
     problem: ProblemNode,
     area: ProblemAreaKind,
@@ -6837,15 +7534,20 @@ function ProblemAreaFlowUnit({
   const tEditor = useT("editor");
   const { problem, area } = unit;
   const selected = selectedId === problem.id || unit.blocks.some((block) => block.id === selectedId);
-  const columnBlockFlowed = isColumnFlow && isProblemAreaColumnBlockFlowEligible(unit) && unit.blocks.length > 0;
-  const minHeightMm = draftMinHeightMm ?? problem.areaLayout?.[area]?.minHeightMm ?? 0;
+  const columnBlockFlowed = isColumnFlow
+    && unit.blocks.length > 0
+    && unit.blocks.some((block) => columnFlowBlockLayouts?.[block.id] !== undefined);
+  const minHeightPx = getSafeProblemAreaMinHeightPx(
+    draftMinHeightMm ?? problem.areaLayout?.[area]?.minHeightMm ?? 0,
+    pageContentHeightPx,
+  );
   const sectionGapPx = !isColumnFlow
-    ? (unit.isFirstProblemArea ? gaps[problem.id] : gaps[unit.id])
+    ? gaps[getProblemAreaUnitGapKey(unit)]
     : undefined;
   const gapStyle = sectionGapPx ? { marginTop: `${sectionGapPx}px` } : undefined;
   const style = {
     ...(layoutStyle ?? gapStyle),
-    minHeight: !columnBlockFlowed && minHeightMm > 0 ? `${mmToPx(minHeightMm)}px` : undefined,
+    minHeight: !columnBlockFlowed && minHeightPx > 0 ? `${minHeightPx}px` : undefined,
     ...(isColumnFlow && typeof sideNoteOffsetPx === "number" ? { "--problem-area-page-x": `${sideNoteOffsetPx}px` } : {}),
     ...(columnBlockFlowed && unit.blocks[0] && columnFlowBlockLayouts?.[unit.blocks[0].id]
       ? { "--problem-area-side-note-y": `${columnFlowBlockLayouts[unit.blocks[0].id].y + 16}px` }
@@ -6867,9 +7569,9 @@ function ProblemAreaFlowUnit({
   const splitFrameFragments = hasFrame && frameFragments && frameFragments.length > 1
     ? frameFragments
     : undefined;
-  const outerFirstFrameClass = hasFrame && !splitFrameFragments && unit.isFirstProblemFrameArea ? "first-frame-area" : "";
-  const outerLastFrameClass = hasFrame && !splitFrameFragments && unit.isLastProblemFrameArea ? "last-frame-area" : "";
-  const outerFrameClasses = splitFrameFragments ? "" : frameClasses;
+  const outerFirstFrameClass = hasFrame && unit.isFirstProblemFrameArea ? "first-frame-area" : "";
+  const outerLastFrameClass = hasFrame && unit.isLastProblemFrameArea ? "last-frame-area" : "";
+  const outerFrameClasses = splitFrameFragments ? `${frameClasses} frame-split` : frameClasses;
   // memo 済みの本文エディタへ渡るので、エリアごとのハンドラは identity を固定する。
   const handleAreaChange = useCallback((
     previousIds: string[],
@@ -6936,7 +7638,9 @@ function ProblemAreaFlowUnit({
           <span>{problemAreaSideLabel(area, unit.problemNumber, tEditor)}</span>
         </div>
       )}
-      {!isColumnFlow && isFirstArea && hasBreakBefore(problem) && <PageBreakMarker blockId={problem.id} />}
+      {!isColumnFlow && isFirstArea && hasBreakBefore(problem) && (
+        <PageBreakMarker blockId={problem.id} onRemove={onRemoveBreak} />
+      )}
       <div className={`problem-area-paper-content ${showNumber ? "with-number" : ""}`}>
         {showNumber && (
           <span className="problem-number-marker" aria-label={tEditor("pageCanvas.problemNumber", { replace: { number: problemNumber } })} style={problemNumberStyle}>
@@ -7095,19 +7799,12 @@ function resolveContextMenuBreaksToColumn(isColumnFlow: boolean, layoutSection: 
   return isColumnFlow || (!!layoutSection && getLayoutSectionColumnCount(layoutSection) > 1);
 }
 
-function canUseManualBreakAtBlock(document: SigmaDocument, blockId: string, inserting: boolean): boolean {
-  const containingBox = findContainingBoxBlock(document, blockId);
-  if (!containingBox) {
-    return true;
-  }
+function canUseManualBreakAtBlock(document: SigmaDocument, blockId: string): boolean {
   const layoutSection = findContainingLayoutSection(document, blockId);
-  const isBoxLocalColumnSection = !!layoutSection
-    && getLayoutSectionColumnCount(layoutSection) > 1
-    && findContainingBoxBlock(document, layoutSection.id)?.id === containingBox.id;
-  if (!isBoxLocalColumnSection || !layoutSection) {
+  if (layoutSection && getLayoutSectionColumnCount(layoutSection) > 1) {
     return false;
   }
-  return !inserting || canInsertManualColumnBreak(layoutSection);
+  return !findContainingBoxBlock(document, blockId);
 }
 
 /** 段組の中かどうかで区切りの**種別**を決める (表示文言は描画側が作る)。 */
@@ -7802,15 +8499,39 @@ function RunningRegionDirectEditor({
   );
 }
 
-function PageBreakMarker({ blockId, kind = "pageBreak" }: { blockId: string; kind?: PageBreakMarkerKind }) {
+export function PageBreakMarker({
+  blockId,
+  kind = "pageBreak",
+  onRemove,
+}: {
+  blockId: string;
+  kind?: PageBreakMarkerKind;
+  onRemove?: (blockId: string) => void;
+}) {
   // 区切り印の文言は本文編集面の語彙 (`editor` namespace)。
   const t = useT("editor");
   const label = kind === "columnBreak" ? t("pagination.columnBreak") : t("pagination.pageBreak");
+  const removeLabel = t("pagination.removeBreak", { replace: { kind: label } });
   return (
     <div className="page-break-marker" data-page-break-marker="" data-page-break-block-id={blockId}>
       <span />
       <strong>{label}</strong>
       <span />
+      {onRemove && (
+        <button
+          type="button"
+          className="page-break-marker-remove"
+          aria-label={removeLabel}
+          onMouseDown={(event) => {
+            activatePageBreakMarkerOnMouseDown(event, () => onRemove(blockId));
+          }}
+          onClick={(event) => {
+            activatePageBreakMarkerOnClick(event, () => onRemove(blockId));
+          }}
+        >
+          {t("pagination.removeBreakButton")}
+        </button>
+      )}
     </div>
   );
 }
@@ -7988,117 +8709,74 @@ function collectEmptyProblemAreaOverlayAnchorTargets(
  */
 function appliedGapItem(item:
   | { kind: "block"; id: string }
-  | { kind: "atomicProblem"; problem: AtomicProblemItem }
-  | { kind: "area"; area: ProblemAreaColumnInput }): AppliedGapItem {
+  | { kind: "atomicProblemArea"; area: AtomicProblemAreaItem }
+  | { kind: "area"; area: ProblemAreaColumnInput },
+  problemAreaOwnerByBlockId: ReadonlyMap<
+    string,
+    Extract<RenderUnit, { type: "problemArea" | "problemLayoutSection" }>
+  >,
+): AppliedGapItem {
   if (item.kind === "block") {
-    return { kind: "block", id: item.id };
+    return getBlockPaginationGapCarrier(item.id, problemAreaOwnerByBlockId).appliedGapItem;
   }
   return {
     kind: "unit",
-    unitId: item.kind === "atomicProblem" ? item.problem.firstUnitId : item.area.unitId,
+    unitId: item.kind === "atomicProblemArea" ? item.area.firstUnitId : item.area.unitId,
   };
 }
 
 function walkItemGapKey(item:
   | { kind: "block"; id: string }
-  | { kind: "atomicProblem"; problem: AtomicProblemItem }
-  | { kind: "area"; area: ProblemAreaColumnInput }): string {
+  | { kind: "atomicProblemArea"; area: AtomicProblemAreaItem }
+  | { kind: "reservedAreaEnd"; boundary: ReservedProblemAreaEndItem }
+  | { kind: "area"; area: ProblemAreaColumnInput },
+  problemAreaOwnerByBlockId: ReadonlyMap<
+    string,
+    Extract<RenderUnit, { type: "problemArea" | "problemLayoutSection" }>
+  >,
+): string {
   if (item.kind === "block") {
-    return item.id;
+    return getBlockPaginationGapCarrier(item.id, problemAreaOwnerByBlockId).gapKey;
   }
-  return item.kind === "atomicProblem" ? item.problem.gapKey : item.area.unitId;
-}
-
-interface AtomicProblemItem {
-  /** The gap for a problem's first area is keyed by the problem id (see ProblemAreaFlowUnit). */
-  gapKey: string;
-  /** The unit the gap is rendered on — the problem's first area. */
-  firstUnitId: string;
-  /** Top of the first area, unzoomed, relative to the flow top. */
-  top: number;
-  /** Height across every area of the problem, including the blank space they reserve. */
-  height: number;
-  ownedBlockIds: string[];
+  if (item.kind === "reservedAreaEnd") {
+    return item.boundary.gapKey;
+  }
+  return item.kind === "atomicProblemArea" ? item.area.gapKey : item.area.unitId;
 }
 
 /**
- * Problems that automatic pagination must keep whole.
- *
- * A framed problem is a single object on the page — cutting it would slice its border —
- * and its areas reserve `areaLayout.*.minHeightMm` of blank space that only exists in
- * the DOM, not in any block's own height. Measuring the rendered areas captures both.
- * An explicit manual break inside is a deliberate request to split and wins, matching
- * `isProblemAreaFlowEligible`.
+ * A break before the first block in a problem's first area must move the area's
+ * outer chrome too. In particular, the problem number lives outside TextFlowEditor,
+ * so a block spacer would leave it behind on the previous page. Keep the gap key
+ * and the DOM read-back carrier as one decision so they cannot diverge between
+ * pagination passes.
  */
-function collectAtomicProblemItems(
-  appliedGaps: AppliedGapIndex,
-  flowRect: DOMRect,
-  units: RenderUnit[],
-  zoomFactor: number,
-): AtomicProblemItem[] {
-  const unitElements = appliedGaps.unitElementByUnitId;
-  const byProblemId = new Map<string, Extract<RenderUnit, { type: "problemArea" }>[]>();
-  for (const unit of units) {
-    if (unit.type !== "problemArea") {
-      continue;
-    }
-    const existing = byProblemId.get(unit.problem.id);
-    if (existing) {
-      existing.push(unit);
-    } else {
-      byProblemId.set(unit.problem.id, [unit]);
-    }
+export function getBlockPaginationGapCarrier(
+  blockId: string,
+  problemAreaOwnerByBlockId: ReadonlyMap<
+    string,
+    Extract<RenderUnit, { type: "problemArea" | "problemLayoutSection" }>
+  >,
+): { gapKey: string; appliedGapItem: AppliedGapItem } {
+  const owner = problemAreaOwnerByBlockId.get(blockId);
+  const firstBlockId = owner?.type === "problemArea"
+    ? owner.blocks[0]?.id ?? emptyProblemAreaEditorBlockId(owner.problem.id, owner.area)
+    : null;
+  if (
+    owner?.type === "problemArea"
+    && owner.isFirstProblemArea
+    && owner.isFirstProblemAreaUnit
+    && blockId === firstBlockId
+  ) {
+    return {
+      gapKey: getProblemAreaUnitGapKey(owner),
+      appliedGapItem: { kind: "unit", unitId: owner.id },
+    };
   }
-
-  const items: AtomicProblemItem[] = [];
-  for (const [problemId, areaUnits] of byProblemId) {
-    const problem = areaUnits[0].problem;
-    if (problem.frame?.enabled !== true) {
-      continue;
-    }
-    if (areaUnits.some((unit) => hasManualBreakInside(unit.blocks))) {
-      continue;
-    }
-
-    let firstUnitId = areaUnits[0].id;
-    let top = Number.POSITIVE_INFINITY;
-    // Summed, not bottom-minus-top: the span between areas includes whatever gap a
-    // previous pass inserted, which would feed the height back into the decision that
-    // produced it and leave two mounts of the same engine on different pages.
-    let height = 0;
-    const ownedBlockIds: string[] = [];
-    for (const unit of areaUnits) {
-      const element = unitElements.get(unit.id);
-      if (!element) {
-        continue;
-      }
-      const rect = element.getBoundingClientRect();
-      const unitTop = (rect.top - flowRect.top) / zoomFactor;
-      if (unitTop < top) {
-        top = unitTop;
-        firstUnitId = unit.id;
-      }
-      // 前パスがこのエリアの内部に入れた spacer を引いて gap-free にする。引かないと
-      // 「収まらない → 分割 → 内部に spacer → さらに高い」で測定値が自分の出力に依存し、
-      // 同じ問題の gap が毎パス往復する。
-      // rect はズーム込み、spacer の offsetHeight はレイアウト値 (ズーム非依存)。
-      // 引き算する前に座標系を揃える。
-      height += rect.height / zoomFactor - readInnerSpacerHeightPx(appliedGaps, unit.id);
-      for (const block of unit.blocks) {
-        ownedBlockIds.push(block.id);
-      }
-    }
-    if (!Number.isFinite(top) || height <= 0) {
-      continue;
-    }
-    // ページより高い問題もここで落とさない。落とすと「atomic として次ページ頭へ送る」と
-    // 「分割して個別に walk する」が毎パス入れ替わり、gap が往復する。収まらない問題は
-    // 次ページの頭から始め、占有するページ数だけカーソルを進める規則に一本化した
-    // (`pagination-decisions.ts`)。
-
-    items.push({ gapKey: problemId, firstUnitId, top, height, ownedBlockIds });
-  }
-  return items;
+  return {
+    gapKey: blockId,
+    appliedGapItem: { kind: "block", id: blockId },
+  };
 }
 
 function collectDocumentBlockIds(document: SigmaDocument): Set<string> {
@@ -8459,8 +9137,8 @@ interface ProblemAreaResizeState {
 /**
  * そのフローユニットの面が **自分で描く** ブロックの id。
  *
- * 定義は下端つまみのホバー解決 (`resolveFlowUnitInnerBlock` の `.ProseMirror > [data-sigma-doc-id]`)
- * と同じ「編集面の直下」。ここが食い違うと、掴めるのに追従しないブロックが出る。
+ * 定義は下端つまみが `resolveHoverDragUnitAt` で拾う編集単位と同じ。ここが食い違うと、
+ * 掴めるのに追従しないブロックが出る。
  */
 const EMPTY_SPACE_AFTER_FOLLOWER_UNITS: ReadonlySet<string> = new Set();
 
@@ -8625,11 +9303,13 @@ function shouldHandlePageImagePaste(
  */
 function hitTestTopLevelBlock(
   canvas: HTMLElement,
-  content: readonly SigmaBlock[],
+  document: SigmaDocument,
+  dragIndex: DragIndex,
   clientX: number,
   clientY: number,
   metrics: PageMetrics,
 ): HoveredTopLevelBlock | null {
+  const content = document.content;
   // プローブは **ポインタが居る段** の中へ、レイアウト px で組んでから画面 px へ換算して打つ。
   // 常に 1 段目 (かつ換算なし) だと、2 段目のつまみへ近づいた途中の段間で 1 段目のブロックへ
   // 解決し直されて (ズーム≠100% では左ガターでも空振りして) つまみが消える。
@@ -8677,6 +9357,50 @@ function hitTestTopLevelBlock(
     return null;
   }
 
+  // グリップは **掴む単位** (箱の中の段落・リストの項目) に出す。左ガターや段間では、
+  // 全ブロックを測らず、現在の段の本文内へ 1 点だけプローブして同じ高さの行を拾う。
+  // 入れ物の上端帯ではプローブも入れ物自身へ当たるため、そこだけ殻を掴める。
+  const unitY = gapAbove ? clientY - gapProbePx : gapBelow ? clientY + gapProbePx : clientY;
+  const directUnit = direct
+    ? resolveHoverDragUnitAt(canvas, document, dragIndex, clientX, unitY)
+    : null;
+  const innerLane = resolveInnerAffordanceProbe(owner.element, clientX, unitY);
+  const innerProbeX = innerLane?.probeX ?? columnProbeX;
+  const probeUnit = resolveHoverDragUnitAt(canvas, document, dragIndex, innerProbeX, unitY);
+  const directInnerUnit = directUnit?.id !== content[index].id && !directUnit?.resolvedFromContainer
+    ? directUnit
+    : null;
+  // A hit on actual content is authoritative. The gutter probe only fills the otherwise empty
+  // lane; it must never replace a valid hit with a same-height block from another nested grid.
+  const resolvedUnit = directInnerUnit ?? (
+    probeUnit && probeUnit.id !== content[index].id ? probeUnit : directUnit ?? probeUnit
+  );
+  const ownerCanOwnTopBand = content[index].type === "boxBlock"
+    || content[index].type === "problem"
+    || content[index].type === "layoutSection";
+  const unitCanvasY = (unitY - canvasRect.top) / scale;
+  const ownerOwnsTopBand = ownerCanOwnTopBand && isContainerTopBand(
+    box.top,
+    unitCanvasY,
+    resolvedUnit?.id !== content[index].id ? resolvedUnit?.ownBox.top : undefined,
+  );
+  const hoveredUnit = ownerOwnsTopBand ? null : resolvedUnit;
+  const hoveredBlock = hoveredUnit ? findBlock(document, hoveredUnit.id) : null;
+  const hoveredLeft = innerLane
+    ? (innerLane.laneLeft - canvasRect.left) / scale
+    : hoveredUnit?.ownBox.left ?? box.left;
+  const useProblemGutterLane = hoveredUnit?.insideProblemArea === true
+    && (innerLane?.firstColumn ?? true);
+  const spaceAfterTarget = hoveredUnit && hoveredBlock && rendersBlockSpaceAfter(hoveredBlock.type)
+    ? {
+        blockId: hoveredUnit.id,
+        bottom: hoveredUnit.ownBox.bottom,
+        left: hoveredLeft,
+        insideProblemArea: useProblemGutterLane,
+        spaceAfterPx: blockSpaceAfterPx(hoveredBlock),
+      }
+    : null;
+
   return {
     box,
     nextBlockId: content[index + 1]?.id ?? null,
@@ -8684,137 +9408,27 @@ function hitTestTopLevelBlock(
     aboveKind: neighborKind(index > 0 ? content[index - 1] : null),
     belowKind: neighborKind(content[index + 1] ?? null),
     gapEdge: gapAbove ? "bottom" : gapBelow ? "top" : null,
-    spaceAfterTarget: resolveBlockSpaceAfterTarget(canvas, owner, content[index], box, clientX, clientY),
+    spaceAfterTarget,
+    useOwnerAffordance: ownerOwnsTopBand || hoveredUnit?.id === content[index].id,
+    unit: hoveredUnit
+      ? {
+        id: hoveredUnit.id,
+        top: hoveredUnit.ownBox.top,
+        bottom: hoveredUnit.ownBox.bottom,
+        left: hoveredLeft,
+        insideProblemArea: useProblemGutterLane,
+      }
+      : null,
   };
 }
 
-/** 問題エリア・局所段組の中のブロックを拾うときの許容幅。行間の隙間でつまみが消えないぶんだけ。 */
-const FLOW_UNIT_INNER_HIT_SLACK_PX = 4;
 /**
- * 「ポインタより上で最も下のブロック」を救済として採る距離の上限。無制限にすると、
- * 最低高さで空けてある解答欄の下の方を指したときに、遥か上のブロックにつまみが出る。
- */
-const FLOW_UNIT_INNER_FALLBACK_REACH_PX = 24;
-
-/**
- * 下端つまみの掴み先。**描く種別かどうかは `rendersBlockSpaceAfter` が唯一の出典**
- * (描画・ページ割りと同じ判定でないと、出ないところにつまみが出る)。
+ * 左ガター／段間から、ポインタが属する内側レーンへ打つプローブの x。
  *
- * 問題エリアと局所段組では `resolveTopLevelBlockAtPoint` がユニットの殻を返すので、
- * その中からポインタに対応するブロックを幾何で選び直す (段のレーン判定は
- * `resolveInnerBlockAt`)。問題エリアの中の局所段組はユニット自身が `data-problem-id` を
- * 持つ別ユニットなので、owner はその段組ユニットになり、SigmaDoc 側は段組の children から引く。
+ * DOM は列の殻だけを測るため、行数には比例しない。まず外側グリッドで段間を右列へ帰属させ、
+ * その列の子グリッドだけへ順に降りる。幅だけで最内側を選ぶと、同じ高さにある別レーンの
+ * 入れ子段組が選ばれるため、兄弟レーンを探索対象へ入れない。
  */
-function resolveBlockSpaceAfterTarget(
-  canvas: HTMLElement,
-  owner: { id: string; element: HTMLElement; isProblem: boolean },
-  block: SigmaBlock,
-  box: TopLevelBlockBox,
-  clientX: number,
-  clientY: number,
-): BlockSpaceAfterTarget | null {
-  if (!owner.isProblem) {
-    if (block.type === "layoutSection") {
-      const inner = resolveFlowUnitInnerBlock(owner.element, clientX, clientY);
-      const innerBlock = inner
-        ? block.children.find((child) => child.id === inner.id)
-        : undefined;
-      return inner && innerBlock
-        ? toInnerSpaceAfterTarget(canvas, inner, innerBlock, false)
-        : null;
-    }
-    return rendersBlockSpaceAfter(block.type)
-      ? {
-        blockId: block.id,
-        bottom: box.bottom,
-        left: box.left,
-        insideProblemArea: false,
-        spaceAfterPx: blockSpaceAfterPx(block),
-      }
-      : null;
-  }
-
-  if (block.type !== "problem") {
-    return null;
-  }
-  const area = owner.element.getAttribute("data-problem-area");
-  if (!isProblemAreaKind(area)) {
-    return null;
-  }
-  const inner = resolveFlowUnitInnerBlock(owner.element, clientX, clientY);
-  if (!inner) {
-    return null;
-  }
-  const sectionId = owner.element.getAttribute("data-layout-section-id");
-  const section = sectionId
-    ? block[area].find((child) => child.type === "layoutSection" && child.id === sectionId)
-    : undefined;
-  const innerBlock = section && section.type === "layoutSection"
-    ? section.children.find((child) => child.id === inner.id)
-    : block[area].find((child) => child.id === inner.id);
-  // 問題番号・サイドノート・エリア高さハンドルはエリアの左端に固まっている。左端の段の
-  // つまみだけ 1 レーン外へ逃がし、2 段目以降は通常レーンに出す (そこに chrome は無く、
-  // 遠いレーンだと段間を跨いで隣の段のレーンに食い込む)。
-  return innerBlock
-    ? toInnerSpaceAfterTarget(canvas, inner, innerBlock, inner.firstColumn)
-    : null;
-}
-
-/** ユニット内ブロックの掴み先を組む。描かない種別 (入れ子の入れ物・枠付き) は null。 */
-function toInnerSpaceAfterTarget(
-  canvas: HTMLElement,
-  inner: { id: string; element: HTMLElement },
-  innerBlock: { id: string; type: string; spaceAfterPx?: number },
-  insideProblemArea: boolean,
-): BlockSpaceAfterTarget | null {
-  if (!rendersBlockSpaceAfter(innerBlock.type)) {
-    return null;
-  }
-  const innerBox = toCanvasBox(inner.id, [inner.element], canvas);
-  return innerBox
-    ? {
-      blockId: innerBlock.id,
-      bottom: innerBox.bottom,
-      left: innerBox.left,
-      insideProblemArea,
-      spaceAfterPx: blockSpaceAfterPx(innerBlock),
-    }
-    : null;
-}
-
-/**
- * ユニット (問題エリア・局所段組) の中で、ポインタに対応するフローユニット。候補の定義は
- * `layout-measure.ts` の `FLOW_UNIT_SELECTOR` と同じ「`.ProseMirror` の直下」。段の復元と
- * レーン帰属は `resolveInnerBlockAt` (純関数) に任せ、ここは DOM の実測を集めるだけ。
- */
-function resolveFlowUnitInnerBlock(
-  unitElement: HTMLElement,
-  clientX: number,
-  clientY: number,
-): { id: string; element: HTMLElement; firstColumn: boolean } | null {
-  const elements = new Map<string, HTMLElement>();
-  const candidates: InnerBlockCandidate[] = [];
-  for (const element of unitElement.querySelectorAll<HTMLElement>(".ProseMirror > [data-sigma-doc-id]")) {
-    const id = element.getAttribute("data-sigma-doc-id");
-    if (!id) {
-      continue;
-    }
-    const rect = element.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) {
-      continue;
-    }
-    elements.set(id, element);
-    candidates.push({ id, top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right });
-  }
-
-  const hit = resolveInnerBlockAt(candidates, clientX, clientY, {
-    hitSlackPx: FLOW_UNIT_INNER_HIT_SLACK_PX,
-    fallbackReachPx: FLOW_UNIT_INNER_FALLBACK_REACH_PX,
-  });
-  const element = hit ? elements.get(hit.id) : undefined;
-  return hit && element ? { id: hit.id, element, firstColumn: hit.firstColumn } : null;
-}
-
 function neighborKind(block: SigmaBlock | null): BlockNeighborKind {
   if (!block) {
     return "none";

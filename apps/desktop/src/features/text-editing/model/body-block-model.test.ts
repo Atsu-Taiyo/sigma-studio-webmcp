@@ -15,6 +15,7 @@ import {
   findTopLevelBlock,
   getNextTopLevelTextFlowBlockId,
   getNestedPageBreakBeforeKinds,
+  getLayoutSectionColumns,
   getPageBreakBeforeIds,
   getProblemNumberFontSize,
   isBodyContextMenuBlock,
@@ -68,6 +69,59 @@ function problem(id: string): ProblemNode {
 }
 
 describe("body block model", () => {
+  it("repairs a moved first-column start without inventing another column", () => {
+    const section: LayoutSectionNode = {
+      ...layoutSection("layout", [
+        paragraph("split-head"),
+        paragraph("left-start"),
+        paragraph("left-tail"),
+        paragraph("right-start"),
+        paragraph("right-tail"),
+      ]),
+      layout: {
+        columnCount: 2,
+        columnGapMm: 8,
+        columnStartIds: ["left-start", "right-start"],
+        columnWidths: [6000, 4000],
+      },
+    };
+
+    expect(getLayoutSectionColumns(section).map((column) => column.map((block) => block.id)))
+      .toEqual([
+        ["split-head", "left-start", "left-tail"],
+        ["right-start", "right-tail"],
+      ]);
+  });
+
+  it("keeps the requested column count without moving an unrelated survivor across a missing boundary", () => {
+    const children = [paragraph("a"), paragraph("b"), paragraph("c"), paragraph("d")];
+    const missing: LayoutSectionNode = {
+      ...layoutSection("missing", children),
+      layout: { columnCount: 2, columnGapMm: 8, columnStartIds: ["a", "gone"] },
+    };
+    const outOfOrder: LayoutSectionNode = {
+      ...layoutSection("out-of-order", children),
+      layout: { columnCount: 2, columnGapMm: 8, columnStartIds: ["c", "a"] },
+    };
+
+    for (const section of [missing, outOfOrder]) {
+      const columns = getLayoutSectionColumns(section);
+      expect(columns).toHaveLength(2);
+      expect(columns.flat().map((block) => block.id)).toEqual(["a", "b", "c", "d"]);
+      expect(columns.map((column) => column[0].id)).toEqual(["a", "d"]);
+    }
+  });
+
+  it("keeps the surviving prefix in its original column when the next column start was deleted", () => {
+    const section: LayoutSectionNode = {
+      ...layoutSection("deleted-boundary", [paragraph("a"), paragraph("b"), paragraph("d")]),
+      layout: { columnCount: 2, columnGapMm: 8, columnStartIds: ["a", "c"] },
+    };
+
+    expect(getLayoutSectionColumns(section).map((column) => column.map((block) => block.id)))
+      .toEqual([["a", "b"], ["d"]]);
+  });
+
   it("recognizes only canonical problem area names", () => {
     expect(["lead", "prompt", "hints", "solution"].filter(isProblemAreaKind))
       .toEqual(["lead", "prompt", "hints", "solution"]);
@@ -203,17 +257,18 @@ describe("body block model", () => {
     expect(bodyTextFlowBlockContainsId(tree, "missing")).toBe(false);
   });
 
-  it("clamps layout section columns without mutating layout metadata", () => {
+  it("clamps explicit layout columns and creates a block for every requested column", () => {
     const section = layoutSection("layout", [paragraph("body")]);
+    let emptyIndex = 0;
+    const empty = () => paragraph(`empty-${emptyIndex++}`);
 
-    const aboveMaximum = setLayoutSectionColumnCount(section, 9.9);
+    const aboveMaximum = setLayoutSectionColumnCount(section, 9.9, empty);
     const belowMinimum = setLayoutSectionColumnCount(section, -4);
-    const fractional = setLayoutSectionColumnCount(section, 3.9);
+    const fractional = setLayoutSectionColumnCount(section, 3.9, empty);
 
-    expect(aboveMaximum).toEqual({
-      ...section,
-      layout: { columnCount: 4, columnGapMm: 8 },
-    });
+    expect(aboveMaximum.layout.columnCount).toBe(4);
+    expect(aboveMaximum.children).toHaveLength(4);
+    expect(aboveMaximum.layout.columnStartIds).toEqual(aboveMaximum.children.map((child) => child.id));
     expect(belowMinimum.layout.columnCount).toBe(1);
     expect(fractional.layout.columnCount).toBe(3);
     expect(section.layout.columnCount).toBe(2);
@@ -222,7 +277,7 @@ describe("body block model", () => {
     expect(setLayoutSectionColumnCount(nonSection, 3)).toBe(nonSection);
   });
 
-  it("prunes surplus manual breaks in document order when decreasing layout columns", () => {
+  it("removes legacy column breaks when rebuilding explicit columns", () => {
     const section = layoutSection("layout", [
       paragraph("first"),
       {
@@ -244,17 +299,15 @@ describe("body block model", () => {
       "pruned-break",
       "last",
     ]);
-    expect(updated.children[1].pagination).toEqual({
-      break: true,
-      keepWithNext: true,
-    });
+    expect(updated.children[1].pagination).toEqual({ keepWithNext: true });
     expect(updated.children[2].pagination).toEqual({ keepTogether: true });
     expect(updated.children.filter((child, index) => (
       index > 0 && child.pagination?.break === true
-    ))).toHaveLength(1);
+    ))).toHaveLength(0);
+    expect(updated.layout.columnStartIds).toEqual(["first", "pruned-break"]);
   });
 
-  it("keeps existing manual breaks untouched when increasing layout columns", () => {
+  it("uses structural ownership instead of retaining manual column breaks", () => {
     const firstBreak = {
       ...paragraph("first-break"),
       pagination: { break: true as const },
@@ -267,11 +320,12 @@ describe("body block model", () => {
 
     const updated = setLayoutSectionColumnCount(section, 3);
 
-    expect(updated.children[1]).toBe(firstBreak);
-    expect(updated.children[2]).toBe(secondBreak);
+    expect(updated.children[1]).not.toBe(firstBreak);
+    expect(updated.children[2]).not.toBe(secondBreak);
     expect(updated.children.filter((child, index) => (
       index > 0 && child.pagination?.break === true
-    ))).toHaveLength(2);
+    ))).toHaveLength(0);
+    expect(updated.layout.columnStartIds).toEqual(["first", "first-break", "second-break"]);
   });
 
   it("toggles the manual break while retaining unrelated pagination hints", () => {

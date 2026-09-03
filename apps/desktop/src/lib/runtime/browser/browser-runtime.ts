@@ -30,6 +30,13 @@ import {
 import { normalizeTemplateName, parseTemplateDocument } from "@/lib/templates";
 import { resolveDocumentTitle } from "@/lib/document-title";
 import { ensurePageLayout } from "@/features/document";
+import {
+  isValidDocumentVersionCapturedAt,
+  selectDocumentVersionsToPrune,
+  shouldCaptureDocumentVersion,
+  type DocumentVersion,
+  type DocumentVersionMetadata,
+} from "@/lib/document-version-history";
 import type { MaterialContent, MaterialItem } from "@/types/material";
 import type { TemplateItem } from "@/types/template";
 
@@ -104,6 +111,67 @@ export function createBrowserRuntime(options: BrowserRuntimeOptions): AppRuntime
     channel.publish({ type: "document", fileId, change, timestamp: Date.now() });
   };
 
+  const publishVersionChange = (fileId: string, change: "captured" | "pruned" = "captured"): void => {
+    channel.publish({ type: "documentVersion", fileId, change, timestamp: Date.now() });
+  };
+
+  type StoredVersionMetadata = DocumentVersionMetadata & { fileId: string };
+  const toPublicVersionMetadata = (entry: StoredVersionMetadata): DocumentVersionMetadata => ({
+    versionId: entry.versionId,
+    revision: entry.revision,
+    capturedAt: entry.capturedAt,
+    origin: entry.origin,
+  });
+  const versionKey = (fileId: string, versionId: string) => `${fileId}:${versionId}`;
+  const listVersionMetadata = async (tx: BrowserStoreTransaction, fileId: string): Promise<StoredVersionMetadata[]> => (
+    (await tx.getAll<StoredVersionMetadata>("documentVersionMetadata"))
+      .filter((entry) => entry.fileId === fileId && isValidDocumentVersionCapturedAt(entry.capturedAt))
+      .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))
+  );
+  const captureVersion = async (
+    tx: BrowserStoreTransaction,
+    fileId: string,
+    revision: number,
+    document: DocumentVersion["document"],
+    origin: DocumentVersion["origin"],
+    force: boolean,
+    previousDocument: DocumentVersion["document"] | null,
+  ): Promise<DocumentVersionMetadata | null> => {
+    const versions = await listVersionMetadata(tx, fileId);
+    const latestMetadata = versions[0] ?? null;
+    const latest = latestMetadata && (origin === "tab-switch" || origin === "app-close")
+      ? await tx.get<DocumentVersion["document"]>("documentVersionSnapshots", versionKey(fileId, latestMetadata.versionId))
+      : undefined;
+    let capturedAt = new Date().toISOString();
+    if (latestMetadata && capturedAt <= latestMetadata.capturedAt) {
+      capturedAt = new Date(Date.parse(latestMetadata.capturedAt) + 1).toISOString();
+    }
+    if (!shouldCaptureDocumentVersion({
+      previousDocument,
+      latestVersionDocument: latest ?? null,
+      nextDocument: document,
+      latestVersion: latestMetadata,
+      origin,
+      nowMs: Date.parse(capturedAt),
+      force,
+    })) return null;
+    const metadata: StoredVersionMetadata = {
+      fileId,
+      versionId: createId("version"),
+      revision,
+      capturedAt,
+      origin,
+    };
+    await tx.put("documentVersionSnapshots", versionKey(fileId, metadata.versionId), document);
+    await tx.put("documentVersionMetadata", versionKey(fileId, metadata.versionId), metadata);
+    const pruned = selectDocumentVersionsToPrune([...versions, metadata]);
+    for (const entry of pruned) {
+      await tx.delete("documentVersionMetadata", versionKey(fileId, entry.versionId));
+      await tx.delete("documentVersionSnapshots", versionKey(fileId, entry.versionId));
+    }
+    return toPublicVersionMetadata(metadata);
+  };
+
   /** ワークスペース系の操作は結果が常に overview なので、失敗の畳み方も 1 か所に閉じる。 */
   async function withOverview(
     workspaceId: string | null | undefined,
@@ -167,6 +235,23 @@ export function createBrowserRuntime(options: BrowserRuntimeOptions): AppRuntime
       await tx.put("workspaceState", WORKSPACE_STATE_KEY, resolved.value);
     }
   }
+
+  const documentSaveQueues = new Map<string, Promise<void>>();
+  const runDocumentSaveExclusive = <T>(fileId: string, run: () => Promise<T>): Promise<T> => {
+    const prior = documentSaveQueues.get(fileId) ?? Promise.resolve();
+    const next = prior.catch(() => undefined).then(async () => {
+      if (typeof navigator !== "undefined" && navigator.locks) {
+        return navigator.locks.request(`sigma-studio:document-save:${fileId}`, () => run());
+      }
+      return run();
+    });
+    const queueTail = next.then(() => undefined, () => undefined);
+    documentSaveQueues.set(fileId, queueTail);
+    void queueTail.then(() => {
+      if (documentSaveQueues.get(fileId) === queueTail) documentSaveQueues.delete(fileId);
+    });
+    return next;
+  };
 
   const library: DocumentLibraryRepository = {
     async initializeWorkspace() {
@@ -241,9 +326,10 @@ export function createBrowserRuntime(options: BrowserRuntimeOptions): AppRuntime
     },
 
     async saveDocument(fileId, document, saveOptions): Promise<StorageResult> {
-      let saved = false;
-      try {
-        const result = await backend.write(["library", "documents"], async (tx) => {
+      return runDocumentSaveExclusive(fileId, async () => {
+        let saved = false;
+        try {
+        const canonical = await backend.write(["library", "documents"], async (tx) => {
           const record = await readLibrary(tx);
           const now = new Date().toISOString();
           // 自動保存の経路なので zod 検証はしない (エディタが出したSigmaDocが入力で、
@@ -270,22 +356,113 @@ export function createBrowserRuntime(options: BrowserRuntimeOptions): AppRuntime
               : { ok: false as const, error: tWorkspace("error.materialMissing") };
           }
 
+          const previousStored = await tx.get<StoredDocumentRecord>("documents", fileId);
+
           await tx.put("documents", fileId, {
             fileId,
             document: normalized,
             updatedAt: outcome.file.updatedAt,
           } satisfies StoredDocumentRecord);
           await writeLibrary(tx, record);
-          return { ok: true as const, revision: outcome.file.revision };
+          return {
+            ok: true as const,
+            revision: outcome.file.revision,
+            normalized,
+            previousDocument: previousStored?.document ?? null,
+          };
         });
-        saved = result.ok;
+        saved = canonical.ok;
+        if (!canonical.ok) return canonical;
+
+        let versionCaptured = false;
+        let versionCaptureError: string | undefined;
+        try {
+          versionCaptured = Boolean(await backend.write(
+            ["documentVersionMetadata", "documentVersionSnapshots"],
+            (tx) => captureVersion(
+              tx,
+              fileId,
+              canonical.revision,
+              canonical.normalized,
+              saveOptions.origin ?? "user",
+              false,
+              canonical.previousDocument,
+            ),
+          ));
+        } catch (error) {
+          versionCaptureError = describeStorageError(error, tWorkspace("error.saveFailed"));
+        }
+        if (versionCaptured) publishVersionChange(fileId);
+        return {
+          ok: true,
+          revision: canonical.revision,
+          versionCaptured,
+          versionCaptureError,
+        };
+        } catch (error) {
+          return { ok: false, error: describeStorageError(error, tWorkspace("error.saveFailed")) };
+        } finally {
+          if (saved) {
+            publishDocumentChange(fileId, "changed");
+          }
+        }
+      });
+    },
+
+    async listDocumentVersions(fileId) {
+      return backend.read(["library", "documentVersionMetadata"], async (tx) => {
+        const record = await readLibrary(tx);
+        if (!findVisibleFile(record, fileId)) return [];
+        return (await listVersionMetadata(tx, fileId)).map(toPublicVersionMetadata);
+      });
+    },
+
+    async getDocumentVersion(fileId, versionId) {
+      return backend.read(["library", "documentVersionMetadata", "documentVersionSnapshots"], async (tx) => {
+        const record = await readLibrary(tx);
+        if (!findVisibleFile(record, fileId)) return null;
+        const metadata = await tx.get<StoredVersionMetadata>("documentVersionMetadata", versionKey(fileId, versionId));
+        const document = await tx.get<DocumentVersion["document"]>("documentVersionSnapshots", versionKey(fileId, versionId));
+        if (
+          !metadata
+          || !document
+          || metadata.fileId !== fileId
+          || !isValidDocumentVersionCapturedAt(metadata.capturedAt)
+        ) return null;
+        return { ...toPublicVersionMetadata(metadata), document: ensurePageLayout(document) };
+      });
+    },
+
+    async captureDocumentVersion(fileId, document, captureOptions) {
+      let captured: DocumentVersionMetadata | null = null;
+      try {
+        const result = await backend.write(["library", "documentVersionMetadata", "documentVersionSnapshots"], async (tx) => {
+          const record = await readLibrary(tx);
+          const file = findVisibleFile(record, fileId);
+          if (!file) return { ok: false as const, error: tWorkspace("error.materialMissing") };
+          if (file.revision !== captureOptions.expectedRevision) {
+            return { ok: false as const, error: tWorkspace("error.saveConflict") };
+          }
+          const normalized = ensurePageLayout(document);
+          const versions = await listVersionMetadata(tx, fileId);
+          const latest = versions[0]
+            ? await tx.get<DocumentVersion["document"]>("documentVersionSnapshots", versionKey(fileId, versions[0].versionId))
+            : undefined;
+          captured = await captureVersion(
+            tx,
+            fileId,
+            file.revision,
+            normalized,
+            captureOptions.origin,
+            true,
+            latest ?? null,
+          );
+          return { ok: true as const, ...(captured ? { version: captured } : {}) };
+        });
+        if (captured) publishVersionChange(fileId);
         return result;
       } catch (error) {
         return { ok: false, error: describeStorageError(error, tWorkspace("error.saveFailed")) };
-      } finally {
-        if (saved) {
-          publishDocumentChange(fileId, "changed");
-        }
       }
     },
 
@@ -378,7 +555,21 @@ export function createBrowserRuntime(options: BrowserRuntimeOptions): AppRuntime
           return { ok: true as const };
         });
         deleted = result.ok;
-        return result;
+        if (!result.ok) return result;
+
+        let versionCleanupError: string | undefined;
+        try {
+          await backend.write(["documentVersionMetadata", "documentVersionSnapshots"], async (tx) => {
+            const versions = await listVersionMetadata(tx, fileId);
+            for (const version of versions) {
+              await tx.delete("documentVersionMetadata", versionKey(fileId, version.versionId));
+              await tx.delete("documentVersionSnapshots", versionKey(fileId, version.versionId));
+            }
+          });
+        } catch (error) {
+          versionCleanupError = describeStorageError(error, tWorkspace("error.deleteMaterialFailed"));
+        }
+        return { ok: true, ...(versionCleanupError ? { versionCleanupError } : {}) };
       } catch (error) {
         return { ok: false, error: describeStorageError(error, tWorkspace("error.deleteMaterialFailed")) };
       } finally {

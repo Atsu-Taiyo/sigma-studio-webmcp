@@ -24,6 +24,10 @@ export type RenderUnit =
       problemNumber?: number;
       isFirstProblemArea: boolean;
       isLastProblemArea: boolean;
+      /** 同じ semantic area を構成する render unit の中で先頭か。 */
+      isFirstProblemAreaUnit: boolean;
+      /** 同じ semantic area を構成する render unit の総数。 */
+      problemAreaUnitCount: number;
       isFirstProblemFrameArea: boolean;
       isLastProblemFrameArea: boolean;
     }
@@ -45,6 +49,8 @@ export type RenderUnit =
       problemNumber?: number;
       isFirstProblemArea: boolean;
       isLastProblemArea: boolean;
+      isFirstProblemAreaUnit: boolean;
+      problemAreaUnitCount: number;
       isFirstProblemFrameArea: boolean;
       isLastProblemFrameArea: boolean;
       showAreaSideNote: boolean;

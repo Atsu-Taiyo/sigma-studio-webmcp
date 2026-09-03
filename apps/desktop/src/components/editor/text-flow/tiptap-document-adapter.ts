@@ -9,6 +9,7 @@ import {
   type BoxBlockChildBlock,
   type BoxBlockNode,
   type BoxFrameSpec,
+  type CodeBlockNode,
   type DividerNode,
   type HeadingNode,
   type LayoutSectionChildBlock,
@@ -30,12 +31,16 @@ import {
 } from "@/lib/tiptap-adapter";
 import {
   getTextFlowBlockChildren,
+  getLayoutSectionColumns,
+  getLayoutSectionColumnWidths,
   idPrefixForTextBlock,
   isNonEmptyInlineNode,
   isRecord,
   normalizeLayoutSectionColumnCount,
   normalizeNonnegativeNumber,
   normalizeTextAlign,
+  preserveManualBreaksAfterTextEdit,
+  setLayoutSectionColumns,
   type TextFlowBlock,
 } from "@/features/text-editing";
 
@@ -57,11 +62,15 @@ export function textFlowToTiptap(blocks: TextFlowBlock[]): TiptapDoc {
   };
 }
 
-export function tiptapToTextFlow(doc: TiptapDoc, previousBlocks: TextFlowBlock[] = []): TextFlowBlock[] {
+export function tiptapToTextFlow(
+  doc: TiptapDoc,
+  previousBlocks: TextFlowBlock[] = [],
+  options: { retainDeletedManualBreakOwners?: boolean } = {},
+): TextFlowBlock[] {
   const usedIds = new Set<string>();
   const previousById = new Map(previousBlocks.map((block) => [block.id, block]));
 
-  return (doc.content ?? [])
+  const converted = (doc.content ?? [])
     .filter(isSupportedTiptapBlockNode)
     .map((node) => {
       const block = tiptapNodeToTextBlock(node);
@@ -85,6 +94,67 @@ export function tiptapToTextFlow(doc: TiptapDoc, previousBlocks: TextFlowBlock[]
           : block;
       return ensureUniqueTextFlowBlockIds(carried, usedIds);
     });
+  const preserved = options.retainDeletedManualBreakOwners === false
+    ? converted
+    : preserveManualBreaksAfterTextEdit(
+      previousBlocks,
+      converted,
+      { retainDeletedOwners: true },
+    );
+  return applyExplicitLeadingPasteBreakTransfers(previousBlocks, preserved);
+}
+
+/**
+ * ブロック貼り付けは、break owner の直前へ入る先頭新規ブロックに pagination.break を
+ * 明示して「区切りの後ろ側へ挿入した」ことを表す。旧 owner も生きているため通常の id
+ * 引き継ぎだけでは break が二重になる。新規ブロックの明示 attr を移譲印として読み、
+ * 直後の旧 owner からだけ break を外す。
+ */
+function applyExplicitLeadingPasteBreakTransfers(
+  previousBlocks: readonly TextFlowBlock[],
+  converted: readonly TextFlowBlock[],
+): TextFlowBlock[] {
+  const previousIds = new Set(previousBlocks.map((block) => block.id));
+  const breakOwnerIds = new Set(
+    previousBlocks
+      .filter((block) => block.pagination?.break === true)
+      .map((block) => block.id),
+  );
+  if (breakOwnerIds.size === 0) {
+    return [...converted];
+  }
+
+  return converted.map((block, index) => {
+    if (!breakOwnerIds.has(block.id)) {
+      return block;
+    }
+    let hasLeadingPasteTransfer = false;
+    for (let leadingIndex = index - 1; leadingIndex >= 0; leadingIndex -= 1) {
+      const leading = converted[leadingIndex];
+      if (previousIds.has(leading.id)) {
+        break;
+      }
+      if (leading.pagination?.break === true) {
+        hasLeadingPasteTransfer = true;
+        break;
+      }
+    }
+    if (!hasLeadingPasteTransfer) {
+      return block;
+    }
+    return withoutManualBreak(block);
+  });
+}
+
+function withoutManualBreak<T extends TextFlowBlock>(block: T): T {
+  const pagination = { ...(block.pagination ?? {}) };
+  delete pagination.break;
+  const next = { ...block };
+  if (Object.keys(pagination).length > 0) {
+    return { ...next, pagination };
+  }
+  delete next.pagination;
+  return next;
 }
 
 /**
@@ -283,6 +353,7 @@ function boxBlockToTiptapNode(block: BoxBlockNode): TiptapNode {
 }
 
 function layoutSectionToTiptapNode(block: LayoutSectionNode): TiptapNode {
+  const columns = getLayoutSectionColumns(block);
   return {
     type: "layoutSection",
     attrs: {
@@ -290,11 +361,19 @@ function layoutSectionToTiptapNode(block: LayoutSectionNode): TiptapNode {
       sigmaDocType: "layoutSection",
       columnCount: normalizeLayoutSectionColumnCount(block.layout.columnCount),
       columnGapMm: block.layout.columnGapMm ?? 8,
+      columnStartIds: block.layout.columnStartIds,
+      columnWidths: block.layout.columnWidths,
       pagination: paginationAttr(block),
       spaceAfterPx: spaceAfterAttr(block),
     },
     content: block.children.length > 0
-      ? block.children.map(layoutSectionChildToTiptapNode)
+      ? columns.flatMap((column, columnIndex) => column.map((child) => {
+          const node = layoutSectionChildToTiptapNode(child);
+          return {
+            ...node,
+            attrs: { ...(node.attrs ?? {}), layoutColumnIndex: columnIndex },
+          };
+        }))
       : [layoutSectionChildToTiptapNode({ type: "paragraph", id: createId("p"), children: [] })],
   };
 }
@@ -328,6 +407,9 @@ function listNodeToTiptapNode(list: ListNode): TiptapNode {
 function listItemNodeToTiptapNode(item: ListItemNode): TiptapNode {
   return {
     type: "listItem",
+    attrs: {
+      spaceAfterPx: spaceAfterAttr(item),
+    },
     content: [
       {
         type: "paragraph",
@@ -335,6 +417,7 @@ function listItemNodeToTiptapNode(item: ListItemNode): TiptapNode {
           sigmaDocId: item.id,
           sigmaDocType: "listItem",
           ...(item.align ? { textAlign: item.align } : {}),
+          ...(item.spaceAfterPx ? { listItemSpaceAfterPx: item.spaceAfterPx } : {}),
         },
         content: inlineNodesToTiptapNodes(item.children),
       },
@@ -635,13 +718,17 @@ function tiptapBoxNodeToTextBlock(node: TiptapNode): BoxBlockNode {
 }
 
 function tiptapLayoutSectionNodeToTextBlock(node: TiptapNode): LayoutSectionNode {
-  const children = tiptapNodesToLayoutSectionChildren(node.content ?? []);
-  return {
+  const columnCount = normalizeLayoutSectionColumnCount(node.attrs?.columnCount);
+  const childNodes = (node.content ?? []).filter(isSupportedTiptapBlockNode);
+  const children = childNodes.map(tiptapNodeToLayoutSectionChildBlock);
+  const section: LayoutSectionNode = {
     type: "layoutSection",
     id: typeof node.attrs?.sigmaDocId === "string" ? node.attrs.sigmaDocId : createId("layout_section"),
     layout: {
-      columnCount: normalizeLayoutSectionColumnCount(node.attrs?.columnCount),
+      columnCount,
       columnGapMm: normalizeNonnegativeNumber(node.attrs?.columnGapMm) ?? 8,
+      ...(Array.isArray(node.attrs?.columnStartIds) ? { columnStartIds: node.attrs.columnStartIds.filter((id): id is string => typeof id === "string") } : {}),
+      ...(Array.isArray(node.attrs?.columnWidths) ? { columnWidths: node.attrs.columnWidths.filter((width): width is number => typeof width === "number" && width > 0) } : {}),
     },
     ...(paginationFromAttrs(node) ? { pagination: paginationFromAttrs(node) } : {}),
     ...(spaceAfterFromAttrs(node) ? { spaceAfterPx: spaceAfterFromAttrs(node) } : {}),
@@ -651,6 +738,42 @@ function tiptapLayoutSectionNodeToTextBlock(node: TiptapNode): LayoutSectionNode
       children: [],
     }],
   };
+  const ownedColumns = Array.from({ length: columnCount }, () => [] as LayoutSectionChildBlock[]);
+  const projectedOwners = childNodes.map((child) => {
+    const projected = child.attrs?.layoutColumnIndex;
+    return typeof projected === "number" && Number.isInteger(projected) && projected >= 0 && projected < columnCount
+      ? projected
+      : null;
+  });
+  const hasProjectedOwnership = projectedOwners.some((owner) => owner !== null);
+  if (hasProjectedOwnership) {
+    // A newly inserted node may not have inherited a projection attribute. Keep it beside the
+    // nearest owned sibling instead of repartitioning the entire flattened section.
+    for (const [index, child] of children.entries()) {
+      const projected = projectedOwners[index];
+      const previous = projectedOwners.slice(0, index).reverse().find((owner) => owner !== null);
+      const next = projectedOwners.slice(index + 1).find((owner) => owner !== null);
+      const owner = projected ?? previous ?? next ?? 0;
+      ownedColumns[Math.min(columnCount - 1, Math.max(0, owner))].push(child);
+    }
+    for (const column of ownedColumns) {
+      if (column.length === 0) column.push(createEmptyParagraph(createId("p")));
+    }
+    return setLayoutSectionColumns(
+      section,
+      ownedColumns,
+      getLayoutSectionColumnWidths(section, ownedColumns.length),
+    );
+  }
+  while (section.children.length < columnCount) {
+    section.children.push(createEmptyParagraph(createId("p")));
+  }
+  const columns = getLayoutSectionColumns(section);
+  return setLayoutSectionColumns(
+    section,
+    columns,
+    getLayoutSectionColumnWidths(section, columns.length),
+  );
 }
 
 function tiptapNodesToBoxBlockChildren(nodes: TiptapNode[]): BoxBlockChildBlock[] {
@@ -663,12 +786,6 @@ function tiptapNodesToBoxBlockChildren(nodes: TiptapNode[]): BoxBlockChildBlock[
       const block = tiptapNodeToTextBlock(node);
       return isBoxBlockChildBlock(block) ? block : degradeToParagraph(block);
     });
-}
-
-function tiptapNodesToLayoutSectionChildren(nodes: TiptapNode[]): LayoutSectionChildBlock[] {
-  return nodes
-    .filter(isSupportedTiptapBlockNode)
-    .map(tiptapNodeToLayoutSectionChildBlock);
 }
 
 function tiptapNodeToLayoutSectionChildBlock(node: TiptapNode): LayoutSectionChildBlock {
@@ -720,6 +837,7 @@ function tiptapListItemNodeToSigmaNode(node: TiptapNode): ListItemNode {
   const firstBody = firstTextBlock >= 0 ? bodyBlocks[firstTextBlock] : undefined;
   const children = tiptapNodesToInlineNodes(firstBody?.content ?? []).filter(isNonEmptyInlineNode);
   const align = normalizeTextAlign(firstBody?.attrs?.textAlign);
+  const spaceAfterPx = normalizeBlockSpaceAfterPx(firstBody?.attrs?.listItemSpaceAfterPx);
   const continuations = bodyBlocks
     .filter((_, index) => index !== firstTextBlock)
     .map(tiptapNodeToTextBlock)
@@ -735,6 +853,7 @@ function tiptapListItemNodeToSigmaNode(node: TiptapNode): ListItemNode {
     id: typeof firstBody?.attrs?.sigmaDocId === "string" ? firstBody.attrs.sigmaDocId : createId("li"),
     children,
     ...(align && align !== "left" ? { align } : {}),
+    ...(spaceAfterPx ? { spaceAfterPx } : {}),
     ...(continuations.length > 0 ? { continuations } : {}),
     ...(nested.length > 0 ? { nested } : {}),
   };
@@ -746,9 +865,8 @@ function normalizePositiveInteger(value: unknown): number | undefined {
 }
 
 /**
- * n 段組の中に置ける子。SigmaDoc の `LayoutSectionChildBlock` は引用とコードも許すが、
- * 編集面の `LayoutSectionExtension` の content 式
- * (`paragraph | heading | bulletList | orderedList | divider | boxBlock`) は持てない。
+ * n 段組の中に置ける子。SigmaDoc の `LayoutSectionChildBlock` と編集面の
+ * `LayoutSectionExtension` の content 式はこの集合を一致させる。
  * **PM が持てる集合**をここで型にしておく — 広げると SigmaDoc → PM で content 式に合わない
  * ノードを作ってしまう。
  */
@@ -757,6 +875,8 @@ type EditableLayoutSectionChildBlock =
   | HeadingNode
   | ParagraphNode
   | ListNode
+  | QuoteBlockNode
+  | CodeBlockNode
   | DividerNode
   | BoxBlockNode;
 
@@ -765,13 +885,15 @@ function isLayoutSectionChildBlock(block: TextFlowBlock): block is EditableLayou
     || block.type === "heading"
     || block.type === "paragraph"
     || block.type === "list"
+    || block.type === "quote"
+    || block.type === "codeBlock"
     || block.type === "divider"
     || block.type === "boxBlock";
 }
 
 /**
- * 箱の中に置ける子。`boxBlockBody` の content 式は `block+` なので、引用とコードも入る
- * (段組の子より広い)。ここを狭めると、箱の中で引用にした瞬間に保存で潰れる。
+ * 箱の中に置ける子。`boxBlockBody` の content 式は `block+` なので、引用とコードも入る。
+ * ここを狭めると、箱の中で引用にした瞬間に保存で潰れる。
  */
 function isBoxBlockChildBlock(block: TextFlowBlock): block is LayoutSectionChildBlock {
   return block.type !== "layoutSection";

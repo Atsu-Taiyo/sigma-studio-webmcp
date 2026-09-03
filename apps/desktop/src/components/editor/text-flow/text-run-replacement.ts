@@ -4,6 +4,7 @@ import {
   caretAddressAtBlockStart,
   collapsedCaretBookmark,
   getTextFlowBlockEditorLength,
+  preserveManualBreaksAfterTextEdit,
   textCaretAddress,
   type CaretAddress,
   type TextFlowBlock,
@@ -20,6 +21,7 @@ export interface TextRunReplacementSegment {
   endsInsideTextBlock?: boolean;
   preserveEmpty: boolean;
   previousIds: string[];
+  previousBlocks?: TextFlowBlock[];
   scopeId: string;
   startsInsideTextBlock?: boolean;
   unitId: string;
@@ -83,7 +85,15 @@ export function buildTextRunReplacementMutations(
   const groups: Array<{ segments: TextRunReplacementSegment[]; startsAt: number }> = [];
   segments.forEach((segment, index) => {
     const current = groups.at(-1);
-    if (current?.segments[0].scopeId === segment.scopeId) {
+    // 自動ページ分割だけで分かれた隣接チャンクは従来どおり 1 回の SigmaDoc 変更へ束ねる。
+    // 一方、手動 break で始まるチャンクは独立した所有境界である。ここまで束ねると、先頭
+    // writer の optimistic content に後続ユニットの owner が入り、同じ id の mounted editor
+    // が二重になる。さらに retainDeletedOwners が別ユニットの owner を先頭側へ補うため、
+    // 保存側の previousIds と DOM の対応も崩れる。
+    if (
+      current?.segments[0].scopeId === segment.scopeId
+      && !startsWithManualBreakOwner(segment)
+    ) {
       current.segments.push(segment);
     } else {
       groups.push({ segments: [segment], startsAt: index });
@@ -105,6 +115,12 @@ export function buildTextRunReplacementMutations(
     const endsInsideTextBlock = endsAt === lastSegmentIndex && last.endsInsideTextBlock === true;
     let joinedDeletionBoundary = false;
     let joinedInsertionIds: Record<string, string> | undefined;
+
+    // 入れ物の先頭には break-before の相手がいない。コピー元の先頭ブロックに付いていた
+    // 区切りだけを黙って落とし、2 ブロック目以降の相対区切りはそのまま運ぶ。
+    if (startsAt === 0 && before.length === 0 && inserted[0]?.pagination?.break === true) {
+      inserted[0] = withoutManualBreak(inserted[0]);
+    }
 
     if (inserted.length > 0) {
       if (startsAt === 0 && before.length === 0) {
@@ -160,7 +176,11 @@ export function buildTextRunReplacementMutations(
       }
     }
 
-    const nextBlocks = [...before, ...inserted, ...after];
+    const nextBlocks = preserveManualBreaksAfterTextEdit(
+      scopeSegments.flatMap((segment) => segment.previousBlocks ?? []),
+      [...before, ...inserted, ...after],
+      { retainDeletedOwners: true },
+    );
     if (insertion.length === 0) {
       const firstAfter = after[0];
       if (firstAfter && !joinedDeletionBoundary && !deletionAfterCaret) {
@@ -219,6 +239,19 @@ export function buildTextRunReplacementMutations(
   return mutations;
 }
 
+function startsWithManualBreakOwner(segment: TextRunReplacementSegment): boolean {
+  return segment.previousBlocks?.[0]?.pagination?.break === true;
+}
+
+function withoutManualBreak<T extends TextFlowBlock>(block: T): T {
+  const pagination = { ...(block.pagination ?? {}) };
+  delete pagination.break;
+  return {
+    ...block,
+    pagination: Object.keys(pagination).length > 0 ? pagination : undefined,
+  };
+}
+
 /**
  * 変更後にキャレットの配送を予約すべきか。
  * 通常の打鍵は Tiptap 自身がキャレットを保つので、復元は「キャレットのブロックが新しく
@@ -261,6 +294,9 @@ export function joinCompatibleTextBlocks(
   leading: TextFlowBlock,
   trailing: TextFlowBlock,
 ): TextFlowBlock | null {
+  if (trailing.pagination?.break === true && leading.id !== trailing.id) {
+    return null;
+  }
   if (leading.type === "paragraph" || leading.type === "heading") {
     if (trailing.type !== "paragraph" && trailing.type !== "heading") {
       return null;

@@ -330,6 +330,15 @@ describe("TextFlowStaticBlock block space after", () => {
     const reset = css.match(/\.print-list > li \{[^}]*\}/)?.[0] ?? "";
 
     expect(reset).toContain("--sigma-doc-space-after: 0px");
+    expect(reset).toContain("--sigma-doc-list-item-space-after: 0px");
+  });
+
+  it("draws list-item spacing once after owned content and before nested lists", () => {
+    const css = documentSurfaceCss();
+    const edgeRule = css.match(/\.print-list > li > :not\(ul, ol\):not\(:has\(~ :not\(ul, ol\)\)\) \{[^}]*\}/)?.[0] ?? "";
+
+    expect(edgeRule).toContain("padding-bottom: var(--sigma-doc-list-item-space-after, 0px)");
+    expect(css).not.toMatch(/\.print-list > li[^,{]*,[^{]*\{[^}]*padding-bottom: var\(--sigma-doc-space-after/);
   });
 
   it("moves the blocks below a dragged handle without changing any size", () => {

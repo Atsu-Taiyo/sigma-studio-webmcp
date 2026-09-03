@@ -24,6 +24,7 @@ export const PROBLEM_FRAME_STYLE_OPTIONS = [
 ] as const;
 
 export type ProblemFrameStyleId = (typeof PROBLEM_FRAME_STYLE_OPTIONS)[number]["id"];
+export type ProblemFrameFragmentRole = "single" | "first" | "middle" | "last";
 
 const PROBLEM_FRAME_STYLE_ID_SET = new Set<string>(
   PROBLEM_FRAME_STYLE_OPTIONS.map((option) => option.id),
@@ -91,6 +92,29 @@ export function getPrintProblemFrameChromePaddingMm(
     return { x: 8, y: 6.4 };
   }
   return { x: 3, y: 2.5 };
+}
+
+/**
+ * Returns only the vertical chrome that a print problem-area fragment actually
+ * paints. Continuations have no top padding, while the first/last outer edges
+ * also reserve their style-specific border width. These values mirror
+ * document-surface.css and are kept separate from the editor's overlay-piece
+ * geometry, whose padding contract is intentionally different.
+ */
+export function getPrintProblemFrameFragmentChromeHeightMm(
+  styleId: string | undefined,
+  role: ProblemFrameFragmentRole,
+): number {
+  const normalizedStyleId = normalizeProblemFrameStyleId(styleId);
+  const paddingY = getPrintProblemFrameChromePaddingMm(normalizedStyleId).y;
+  const borderWidth = normalizedStyleId === "doublebox"
+    ? 0.8
+    : normalizedStyleId === "cornerbox"
+      ? 0
+      : 0.3;
+  const hasTop = role === "single" || role === "first";
+  const hasBottom = role === "single" || role === "last";
+  return paddingY + (hasTop ? paddingY + borderWidth : 0) + (hasBottom ? borderWidth : 0);
 }
 
 export function setProblemFrameEnabled<T extends SigmaBlock | RichBlock>(block: T, enabled: boolean): T {

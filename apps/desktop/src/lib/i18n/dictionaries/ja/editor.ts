@@ -42,6 +42,7 @@ export const editor = {
   pagination: {
     insertBreak: "{{kind}}を挿入",
     removeBreak: "{{kind}}を解除",
+    removeBreakButton: "× 解除",
     pageBreak: "改ページ",
     columnBreak: "改段",
   },
@@ -66,7 +67,7 @@ export const editor = {
   /** 紙面そのものの操作 (ブロックハンドル・余白ルーラー・問題エリア)。 */
   pageCanvas: {
     selectBlock: "ブロックを選択",
-    selectBlockHint: "クリックでブロックを選択（Delete で削除）",
+    selectBlockHint: "クリックで選択（Delete で削除）・ドラッグで移動（左右端で段組）",
     addBodyHere: "ここに本文を追加",
     addComment: "コメントを追加",
     zoomOut: "縮小",
@@ -76,6 +77,7 @@ export const editor = {
     marginRuler: "本文の左右余白",
     marginLeft: "左余白",
     marginRight: "右余白",
+    resizeColumns: "{{left}}列目と{{right}}列目の幅を変更",
     problemActions: "問題操作",
     bodyActions: "本文操作",
     problemNumber: "問題番号 {{number}}",
@@ -235,6 +237,21 @@ export const editor = {
     guest: "ゲスト",
     untitledDocument: "無題の教材",
   },
+  windowCloseSave: {
+    title: "保存できませんでした",
+    description: "終了する前に、もう一度保存を試すか、保存せずに閉じるかを選んでください。",
+    retry: "もう一度保存",
+    closeWithoutSaving: "保存せずに閉じる",
+    cancel: "キャンセル",
+    timedOut: "保存が15秒以内に完了しませんでした。",
+    unknownError: "保存を完了できませんでした。",
+    responseFailed: "終了処理の応答に失敗しました。もう一度お試しください。",
+    reason: {
+      externalChangePending: "他の場所で行われた変更を取り込んでいるため、まだ保存できません。",
+      aiWriteInProgress: "AIが編集を適用中のため、まだ保存できません。",
+      revisionUnknown: "教材の保存状態を確認できないため、保存できません。",
+    },
+  },
   /** ステータスバー / トーストの文言。ほぼ全て `setStatusMessage` から出る。 */
   status: {
     ready: "準備完了",
@@ -309,6 +326,7 @@ export const editor = {
     mathAdded: "数式を追加しました",
     bodyDeleted: "本文を削除しました",
     blockDeleted: "ブロックを削除しました",
+    blockMoved: "ブロックを移動しました",
     boxCopied: "boxをコピーしました",
     blockCopied: "ブロックをコピーしました",
     copyFailed: "コピーできませんでした",

@@ -1,3 +1,5 @@
+import { classifyBoundarySaveSafety } from "./boundary-save-policy";
+
 export function syncDocumentRefWhenStateIsCurrent<T>(
   documentRef: { current: T },
   document: T,
@@ -20,6 +22,8 @@ export interface DocumentSaveResult {
   ok: boolean;
   error?: string;
   code?: "revision-mismatch";
+  skipped?: true;
+  skippedReason?: string;
 }
 
 export interface SuccessfulDocumentSave<T> {
@@ -54,13 +58,19 @@ export function recordSuccessfulDocumentSave<T>(params: {
   return true;
 }
 
-/** A document replacement may continue only after the current save succeeds. */
+/** A document replacement may continue only when the boundary leaves no unsaved edits or save failure. */
 export async function saveBeforeDocumentReplacement(params: {
   save: () => Promise<DocumentSaveResult>;
+  isDirtyAfterSave: () => boolean;
   onFailure: (result: DocumentSaveResult) => void | Promise<void>;
 }): Promise<boolean> {
   const result = await params.save();
-  if (result.ok) {
+  const safety = classifyBoundarySaveSafety({
+    saveOk: result.ok,
+    skipped: result.skipped === true,
+    dirty: params.isDirtyAfterSave(),
+  });
+  if (safety === "safe") {
     return true;
   }
   await params.onFailure(result);

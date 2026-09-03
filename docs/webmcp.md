@@ -51,7 +51,7 @@ WebMCP用の別文書はありません。SigmaDocが唯一の正本です。読
 | `edit_problem` | proposal | lead/prompt/answer/solution/hintsを持つ問題を作成・部分更新 |
 | `organize_blocks` | proposal | 本文ブロックを移動・削除 |
 | `update_layout` | proposal | 用紙・余白・文書全体または局所段組みを目的指定で更新 |
-| `create_overlay` | proposal | 通常図形・テキスト・吹き出しを作成 |
+| `create_overlay` | proposal | 通常図形・テキスト・吹き出しを作成。`kind:"text"`は複数段落の`markdown`に対応 |
 | `update_overlay` | proposal | 通常図形・テキスト・吹き出しをその場で部分更新 |
 | `arrange_overlay` | proposal | 複数overlayを整列・等間隔配置 |
 | `delete_overlay` | proposal | 通常図形・テキスト・表・グラフを削除 |
@@ -81,6 +81,12 @@ WebMCP用の別文書はありません。SigmaDocが唯一の正本です。読
 対応範囲は、空行区切りの段落、ATX見出し、箇条書き・番号付きリストとその入れ子、`**太字**`、`*斜体*`、fenced code、`$...$` / `$$...$$` です。Markdownの表、リンク、画像、blockquote、inline codeはまだ構造変換しません。paginationは同じ呼び出しの`pagination`、囲み枠は`container`で指定します。段組みは`update_layout`を使います。
 
 表の1セルだけを直すときは削除して作り直さず、`update_table.cellPatches`を使います。2Dグラフは`update_graph`、3Dグラフは`update_graph3d`、通常図形は`update_overlay`を使います。どの更新も完全な`expectedShape`で対象の鮮度を確認し、ID・位置・サイズ・未指定fieldを保持します。
+
+## Whiteboard
+
+`inspect_document`は`documentMode`として`"whiteboard"`または`"paged"`を返します。ホワイトボードには本文フローがないため、`insert_markdown`、`edit_text`、`edit_problem`、`organize_blocks`などの本文ツールは`WHITEBOARD_NO_BODY`を返します。
+
+文章は`create_overlay`の`kind:"text"`と`markdown`でキャンバスへ置きます。表・2Dグラフ・3Dグラフはそれぞれのinsertツールに`targetId:"CANVAS"`と絶対座標`x`/`y`を渡します。作成されたproposalはキャンバス上に破線のghost shapeとして表示され、同じキャンバス上の承認widgetから適用または破棄できます。
 
 ## Comments
 
