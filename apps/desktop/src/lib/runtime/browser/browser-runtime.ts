@@ -69,6 +69,7 @@ import {
 } from "./browser-library";
 import {
   createPinnedBrowserDocument,
+  isLegacyPinnedBrowserDocument,
   PINNED_BROWSER_DOCUMENT_TITLES,
 } from "./initial-documents";
 import type { StorageChangeChannel } from "./change-channel";
@@ -268,6 +269,32 @@ export function createBrowserRuntime(options: BrowserRuntimeOptions): AppRuntime
           for (const title of PINNED_BROWSER_DOCUMENT_TITLES) {
             const existing = visibleFiles(record).find((file) => file.title === title);
             if (existing) {
+              const storedDocument = await tx.get<StoredDocumentRecord>("documents", existing.fileId);
+              if (storedDocument && isLegacyPinnedBrowserDocument(title, storedDocument.document)) {
+                const replacement = {
+                  ...createPinnedBrowserDocument(title, now),
+                  docId: storedDocument.document.docId,
+                };
+                const outcome = applyDocumentSave(record, existing.fileId, {
+                  expectedRevision: existing.revision,
+                  docId: replacement.docId,
+                  title,
+                  updatedAt: now,
+                  now,
+                });
+                if (!outcome.ok) {
+                  throw new Error(
+                    outcome.reason === "revision-mismatch"
+                      ? tWorkspace("error.saveConflict")
+                      : describeLedgerFailure(outcome.reason),
+                  );
+                }
+                await tx.put("documents", existing.fileId, {
+                  fileId: existing.fileId,
+                  document: replacement,
+                  updatedAt: outcome.file.updatedAt,
+                } satisfies StoredDocumentRecord);
+              }
               pinnedFileIds.push(existing.fileId);
               continue;
             }
