@@ -9,14 +9,22 @@ const INITIAL_BROWSER_DOCUMENTS = [
   mathTestDocument,
 ] as const;
 
+export const PINNED_BROWSER_DOCUMENT_TITLES = INITIAL_BROWSER_DOCUMENTS.map(
+  (document) => document.metadata.title,
+);
+
 /**
- * 空のブラウザ保管庫にだけ入れる初回教材。import した JSON を直接返すと編集時に
- * モジュール共有値を汚すため、インストールごとに複製して新しい docId を割り当てる。
+ * ブラウザで常に開く固定教材を作る。import した JSON を直接返すと編集時に
+ * モジュール共有値を汚すため、作成ごとに複製して新しい docId を割り当てる。
  */
-export function createInitialBrowserDocuments(now: string): SigmaDocument[] {
-  return INITIAL_BROWSER_DOCUMENTS.map((source) => ({
+export function createPinnedBrowserDocument(title: string, now: string): SigmaDocument {
+  const source = INITIAL_BROWSER_DOCUMENTS.find((document) => document.metadata.title === title);
+  if (!source) {
+    throw new Error(`Unknown pinned browser document: ${title}`);
+  }
+  return {
     ...(structuredClone(source) as SigmaDocument),
     docId: createId("doc"),
     updatedAt: now,
-  }));
+  };
 }
