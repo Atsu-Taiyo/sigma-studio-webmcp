@@ -107,6 +107,35 @@ describe("browser runtime", () => {
     expect(await runtime.library.listFiles()).toHaveLength(2);
   });
 
+  it("restores the two pinned tabs on every start without closing the current tab", async () => {
+    const initialized = await runtime.library.initializeWorkspace();
+    expect(initialized.ok).toBe(true);
+    const pinnedFileIds = initialized.ok ? initialized.state.openFileIds : [];
+    const current = await runtime.library.createDocument({ title: "作業中" });
+    await runtime.library.saveWorkspace({ openFileIds: [current.fileId], activeFileId: current.fileId });
+
+    const restored = await runtime.library.initializeWorkspace();
+
+    expect(restored.ok && restored.state.openFileIds).toEqual([...pinnedFileIds, current.fileId]);
+    expect(restored.ok && restored.state.activeFileId).toBe(current.fileId);
+  });
+
+  it("recreates a pinned document after it is deleted", async () => {
+    const initialized = await runtime.library.initializeWorkspace();
+    const deletedFileId = initialized.ok ? initialized.state.openFileIds[0] : "";
+    await runtime.library.deleteFile(deletedFileId);
+
+    const restored = await runtime.library.initializeWorkspace();
+    const files = await runtime.library.listFiles();
+
+    expect(files.map((file) => file.title)).toEqual([
+      "Sigma Studio basics",
+      "Math Test – Calculator Questions",
+    ]);
+    expect(restored.ok && restored.state.openFileIds).toHaveLength(2);
+    expect(restored.ok && restored.state.openFileIds[0]).not.toBe(deletedFileId);
+  });
+
   /** 「再読み込みしても消えない」の最小形。保管層を共有した別ランタイムから読み直す。 */
   it("keeps documents across a fresh runtime over the same store", async () => {
     const initialized = await runtime.library.initializeWorkspace();
@@ -125,7 +154,7 @@ describe("browser runtime", () => {
     const loaded = await reopened.library.loadDocumentWithRecovery(fileId);
     expect(loaded.ok && loaded.document.docId).toBe("doc_persisted");
     expect(loaded.ok && loaded.revision).toBe(2);
-    expect((await reopened.library.listFiles())[0].title).toBe("保存した教材");
+    expect((await reopened.library.listFiles()).find((file) => file.fileId === fileId)?.title).toBe("保存した教材");
   });
 
   it("skips stored version metadata with an invalid capturedAt", async () => {
@@ -375,7 +404,7 @@ describe("browser runtime tab state", () => {
     const backend = createMemoryStoreBackend();
     const runtime = createRuntime(backend);
     await runtime.library.initializeWorkspace();
-    const keeper = (await runtime.library.listFiles())[0];
+    const keepers = await runtime.library.listFiles();
 
     const second = await runtime.workspace.createWorkspace("消す方");
     const secondWorkspaceId = second.state === "ready" ? second.overview.activeWorkspaceId : "";
@@ -385,7 +414,7 @@ describe("browser runtime tab state", () => {
     await runtime.workspace.deleteWorkspace(secondWorkspaceId);
 
     const restored = await createRuntime(backend).library.initializeWorkspace();
-    expect(restored.ok && restored.state.openFileIds).toEqual([keeper.fileId]);
-    expect(restored.ok && restored.state.activeFileId).toBe(keeper.fileId);
+    expect(restored.ok && restored.state.openFileIds).toEqual(keepers.map((file) => file.fileId));
+    expect(restored.ok && restored.state.activeFileId).toBe(keepers[0].fileId);
   });
 });

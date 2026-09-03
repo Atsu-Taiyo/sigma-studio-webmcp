@@ -67,7 +67,10 @@ import {
   WORKSPACE_STATE_KEY,
   type StoredDocumentRecord,
 } from "./browser-library";
-import { createInitialBrowserDocuments } from "./initial-documents";
+import {
+  createPinnedBrowserDocument,
+  PINNED_BROWSER_DOCUMENT_TITLES,
+} from "./initial-documents";
 import type { StorageChangeChannel } from "./change-channel";
 import { createStorageChangeChannel } from "./change-channel";
 import { createIndexedDbStoreBackend, isIndexedDbAvailable } from "./idb-backend";
@@ -260,31 +263,35 @@ export function createBrowserRuntime(options: BrowserRuntimeOptions): AppRuntime
           const record = await readLibrary(tx);
           const now = new Date().toISOString();
           repairLibrary(record, now);
-
-          if (visibleFiles(record).length === 0) {
-            const created = [];
-            for (const document of createInitialBrowserDocuments(now)) {
-              created.push(await createFileFromDocument(tx, record, { document, now }));
+          const stored = await tx.get<WorkspaceState>("workspaceState", WORKSPACE_STATE_KEY);
+          const pinnedFileIds: string[] = [];
+          for (const title of PINNED_BROWSER_DOCUMENT_TITLES) {
+            const existing = visibleFiles(record).find((file) => file.title === title);
+            if (existing) {
+              pinnedFileIds.push(existing.fileId);
+              continue;
             }
-            const state = {
-              openFileIds: created.map((file) => file.fileId),
-              activeFileId: created[0].fileId,
-            };
-            await writeWorkspaceState(tx, record, state);
-            return {
-              ok: true as const,
-              state,
-            };
+            const created = await createFileFromDocument(tx, record, {
+              document: createPinnedBrowserDocument(title, now),
+              now,
+            });
+            pinnedFileIds.push(created.fileId);
           }
 
-          const stored = await tx.get<WorkspaceState>("workspaceState", WORKSPACE_STATE_KEY);
           const resolved = resolveWorkspaceState(record, stored ?? null);
           if (!resolved.ok) {
             throw new Error(describeLedgerFailure(resolved.reason));
           }
+          const state = {
+            openFileIds: [
+              ...pinnedFileIds,
+              ...resolved.value.openFileIds.filter((fileId) => !pinnedFileIds.includes(fileId)),
+            ],
+            activeFileId: stored ? resolved.value.activeFileId : pinnedFileIds[0],
+          };
           await writeLibrary(tx, record);
-          await writeWorkspaceState(tx, record, resolved.value);
-          return { ok: true as const, state: resolved.value };
+          await writeWorkspaceState(tx, record, state);
+          return { ok: true as const, state };
         });
       } catch (error) {
         if (error instanceof BrowserLedgerSchemaError) {
