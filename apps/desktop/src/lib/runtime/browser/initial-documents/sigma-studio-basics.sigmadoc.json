@@ -30,7 +30,7 @@
           "children": [
             {
               "type": "text",
-              "text": "Write and format content in a block editor. Drag blocks to reorder them or arrange them in columns."
+              "text": "Write and format content in a block editor. Drag a block up or down to reorder it. Drop it beside another block to create columns."
             }
           ]
         },
@@ -218,6 +218,16 @@
             {
               "type": "text",
               "text": "Switch to Whiteboard for an infinite canvas."
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "id": "li_8f3d4ee6-0a9e-4c3a-b6d0-b98ca4872a31",
+          "children": [
+            {
+              "type": "text",
+              "text": "Choose File > Export > Export PDF to open PDF preview. On the web, open it in a new window, then use your browser’s print dialog to save it as a PDF."
             }
           ]
         },

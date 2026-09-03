@@ -91,6 +91,8 @@ describe("browser runtime", () => {
 
     const guide = await runtime.library.loadDocumentWithRecovery(files[0].fileId);
     expect(guide.ok && JSON.stringify(guide.document)).toContain("Write and format content in a block editor.");
+    expect(guide.ok && JSON.stringify(guide.document)).toContain("Drop it beside another block to create columns.");
+    expect(guide.ok && JSON.stringify(guide.document)).toContain("use your browser’s print dialog to save it as a PDF.");
     expect(guide.ok && JSON.stringify(guide.document)).not.toMatch(/[ぁ-んァ-ン一-龯]/);
 
     const overview = await runtime.workspace.listOverview();
