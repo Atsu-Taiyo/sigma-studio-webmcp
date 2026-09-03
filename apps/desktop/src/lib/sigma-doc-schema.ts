@@ -234,6 +234,7 @@ const ListItemNodeSchema: z.ZodType<ListItemNode> = z.lazy(() => z.object({
   id: z.string().min(1),
   children: z.array(InlineNodeSchema),
   align: TextAlignSchema,
+  spaceAfterPx: BlockSpaceAfterSchema,
   continuations: z.array(z.union([
     HeadingNodeSchema,
     ParagraphNodeSchema,
@@ -484,6 +485,8 @@ const LayoutSectionNodeSchema: z.ZodType<LayoutSectionNode> = z.lazy(() => BaseN
   layout: z.object({
     columnCount: z.number().int().min(1).max(4),
     columnGapMm: z.number().nonnegative().optional(),
+    columnStartIds: z.array(z.string().min(1)).min(1).max(4).optional(),
+    columnWidths: z.array(z.number().positive()).min(1).max(4).optional(),
   }),
   children: z.array(LayoutSectionChildBlockSchema).min(1),
 }));

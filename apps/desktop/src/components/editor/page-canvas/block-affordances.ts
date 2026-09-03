@@ -46,6 +46,10 @@ export interface HoveredTopLevelBlock {
    * where the user is aiming — between a problem and the box under it, say.
    */
   gapEdge?: "top" | "bottom" | null;
+  /** グリップを出す単位。無ければトップレベルのブロックそのもの。 */
+  unit?: HoveredDragUnit | null;
+  /** 入れ物の上端帯に居るため、計測済みの子より入れ物自身を優先する。 */
+  useOwnerAffordance?: boolean;
 }
 
 export interface BlockInsertPoint {
@@ -81,6 +85,21 @@ export interface BlockHandleTarget {
   top: number;
   bottom: number;
   left: number;
+  /** 問題エリアの中。左ガターの chrome と重ならないレーンへ出す。 */
+  insideProblemArea?: boolean;
+}
+
+/**
+ * ポインタの下の **掴む単位** — 箱の中の段落、リストの 1 項目など、トップレベルより内側の
+ * 1 ブロック。グリップはこれに出す (Notion と同じ「段落ごと」の粒度)。挿入線・下端つまみは
+ * これまでどおりトップレベルの箱で決める。
+ */
+export interface HoveredDragUnit {
+  id: string;
+  top: number;
+  bottom: number;
+  left: number;
+  insideProblemArea: boolean;
 }
 
 /**
@@ -127,6 +146,54 @@ export interface InnerBlockHit {
 /** 同じ段と見なす左端のゆらぎ。リストと段落の描画差・小数丸めを吸収する程度。 */
 const INNER_COLUMN_CLUSTER_TOLERANCE_PX = 4;
 
+/** The shared lane rule: every gap begins the lane on its right. */
+export function resolveInnerLaneIndex(
+  columns: readonly { left: number; right: number }[],
+  x: number,
+): number {
+  let lane = 0;
+  for (let index = 1; index < columns.length; index += 1) {
+    if (x >= columns[index - 1].right) {
+      lane = index;
+    }
+  }
+  return lane;
+}
+
+export interface InnerLaneProbe {
+  laneIndex: number;
+  probeX: number;
+  laneLeft: number;
+  firstColumn: boolean;
+}
+
+/** A container keeps its real padding above the first row, with a 6px minimum at zero padding. */
+export function isContainerTopBand(
+  ownerTop: number,
+  pointerY: number,
+  firstInnerTop?: number,
+  minimumPx = 6,
+): boolean {
+  return pointerY < Math.max(ownerTop + minimumPx, firstInnerTop ?? ownerTop);
+}
+
+/** Resolve one grid lane while carrying problem-area first-column ownership through nesting. */
+export function resolveInnerLaneProbe(
+  columns: readonly { left: number; right: number }[],
+  x: number,
+  parentFirstColumn = true,
+): InnerLaneProbe | null {
+  if (columns.length === 0) return null;
+  const lane = Math.min(resolveInnerLaneIndex(columns, x), columns.length - 1);
+  const column = columns[lane];
+  return {
+    laneIndex: lane,
+    probeX: column.left + Math.min(8, (column.right - column.left) / 2),
+    laneLeft: column.left,
+    firstColumn: parentFirstColumn && lane === 0,
+  };
+}
+
 /**
  * フローユニットの中 (問題エリア・局所段組) で、ポインタ位置に対応するブロックを選ぶ。
  *
@@ -161,12 +228,7 @@ export function resolveInnerBlockAt(
     }
   }
 
-  let lane = 0;
-  for (let index = 1; index < columns.length; index += 1) {
-    if (x >= columns[index - 1].right) {
-      lane = index;
-    }
-  }
+  const lane = resolveInnerLaneIndex(columns, x);
   const laneLeft = columns[lane].left;
   const inLane = candidates.filter(
     (candidate) => Math.abs(candidate.left - laneLeft) <= INNER_COLUMN_CLUSTER_TOLERANCE_PX,
@@ -200,6 +262,8 @@ export interface BlockAffordanceHoverOptions {
   edgeThresholdPx?: number;
   /** How far left of a block the pointer may stray and still count as hovering it. */
   gutterWidthPx?: number;
+  /** 局所段組の列境界ハンドルがこのポインタを所有している。 */
+  suppressGutterControls?: boolean;
 }
 
 export const EMPTY_BLOCK_AFFORDANCE_HOVER: BlockAffordanceHover = {
@@ -208,6 +272,20 @@ export const EMPTY_BLOCK_AFFORDANCE_HOVER: BlockAffordanceHover = {
   spaceAfter: null,
 };
 
+export type BlockAffordancePointerOwner = "frozen" | "divider" | "content";
+
+/** Decide which already-measured hover surface owns the current pointer position. */
+export function resolveBlockAffordancePointerOwner(input: {
+  dragging: boolean;
+  targetIsAffordance: boolean;
+  hitsColumnDivider: boolean;
+}): BlockAffordancePointerOwner {
+  if (input.dragging) return "frozen";
+  if (input.targetIsAffordance) return "frozen";
+  if (input.hitsColumnDivider) return "divider";
+  return "content";
+}
+
 export function resolveBlockAffordanceHover(
   hovered: HoveredTopLevelBlock | null,
   point: { x: number; y: number },
@@ -215,7 +293,7 @@ export function resolveBlockAffordanceHover(
 ): BlockAffordanceHover {
   const edgeThresholdPx = options.edgeThresholdPx ?? 7;
   const gutterWidthPx = options.gutterWidthPx ?? 48;
-  if (!hovered) {
+  if (!hovered || options.suppressGutterControls) {
     return EMPTY_BLOCK_AFFORDANCE_HOVER;
   }
 
@@ -257,8 +335,11 @@ export function resolveBlockAffordanceHover(
         }
       : null;
 
+  const unit = hovered.useOwnerAffordance ? null : hovered.unit ?? null;
   return {
-    handle: { blockId: box.id, top: box.top, bottom: box.bottom, left: box.left },
+    handle: unit
+      ? { blockId: unit.id, top: unit.top, bottom: unit.bottom, left: unit.left, insideProblemArea: unit.insideProblemArea }
+      : { blockId: box.id, top: box.top, bottom: box.bottom, left: box.left },
     insertPoint,
     // グリップと同じ条件 (段の中 + ブロックの縦範囲) で出す。掴む相手だけがブロック本体では
     // なく「その下端」なので、幾何は呼び出し側が実測した値をそのまま運ぶ。
@@ -354,7 +435,13 @@ export function sameBlockAffordanceHover(
   a: BlockAffordanceHover,
   b: BlockAffordanceHover,
 ): boolean {
-  if (a.handle?.blockId !== b.handle?.blockId || a.handle?.top !== b.handle?.top) {
+  if (
+    a.handle?.blockId !== b.handle?.blockId
+    || a.handle?.top !== b.handle?.top
+    || a.handle?.bottom !== b.handle?.bottom
+    || a.handle?.left !== b.handle?.left
+    || a.handle?.insideProblemArea !== b.handle?.insideProblemArea
+  ) {
     return false;
   }
   // 下端つまみは位置も値も比べる。ここを省くとポインタが動くたびに新しいオブジェクトが
@@ -379,4 +466,22 @@ export function sameBlockAffordanceHover(
     a.insertPoint.left === b.insertPoint.left &&
     a.insertPoint.width === b.insertPoint.width
   );
+}
+
+export function resolveStationaryBlockAffordanceRefresh(input: {
+  previousRevision: number;
+  revision: number;
+  point: { x: number; y: number } | null;
+  current: BlockAffordanceHover;
+  next: BlockAffordanceHover;
+}): { revision: number; hover: BlockAffordanceHover; changed: boolean } {
+  if (!input.point || input.revision <= input.previousRevision) {
+    return { revision: input.revision, hover: input.current, changed: false };
+  }
+  const changed = !sameBlockAffordanceHover(input.current, input.next);
+  return {
+    revision: input.revision,
+    hover: changed ? input.next : input.current,
+    changed,
+  };
 }

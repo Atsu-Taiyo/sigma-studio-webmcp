@@ -53,32 +53,53 @@ const DOCUMENT: SigmaDocument = {
 };
 
 /**
- * かつては `test.fail()` 付きの既知の制限だった。
- *
- * この問題は 90mm のページに 32mm + 32mm を予約するのでページ内容高さより高く、どの紙面にも
- * 丸ごとは収まらない。以前は「収まらない問題には keep-together を適用しない」= その場から
- * 流す規則だったので、次の紙面の頭から始めることができなかった。WI-4 で規則を
- * 「収まらなくても次ページの頭から始め、占有するページ数だけページカーソルを進める」に
- * 一本化した結果 (`page-canvas/pagination-decisions.ts`)、後続を 1 ページ早く送ってしまう
- * 副作用も消え、この期待どおりの配置になった。
+ * エリア単位 keep-together を固定する（問題全体をまとめて動かす規則は 3 エンジン統一で撤去済み）。
+ * 各エリアは自分の予約込みで残りに収まるページに置かれ、90mm 文書では prompt が 1 ページ目、
+ * solution が 2 ページ目に置かれる。どちらも予約高さを確保し、紙面外へはみ出さない。
  */
-test("keeps a framed problem prompt and solution on the same printed page when they fit", async ({ page }) => {
+test("places the 90mm prompt and solution by area without overflowing either reservation", async ({ page }) => {
   await installDesktopRuntimeMock(page, DOCUMENT);
   await page.goto("/print?fileId=file_e2e_document&profile=teacher", { waitUntil: "domcontentloaded" });
 
   const pages = page.locator(".paged-surface-page");
   await expect(pages).toHaveCount(2);
   await expect(pages.nth(0).locator('[data-sigma-doc-id="before_problem"]')).toBeVisible();
-  await expect(pages.nth(0).locator('[data-sigma-doc-id="kept_prompt"]')).toHaveCount(0);
-  await expect(pages.nth(1).locator('[data-sigma-doc-id="kept_prompt"]')).toBeVisible();
+  await expect(pages.nth(0).locator('[data-sigma-doc-id="kept_prompt"]')).toBeVisible();
+  await expect(pages.nth(0).locator('[data-sigma-doc-id="kept_solution"]')).toHaveCount(0);
+  await expect(pages.nth(1).locator('[data-sigma-doc-id="kept_prompt"]')).toHaveCount(0);
   await expect(pages.nth(1).locator('[data-sigma-doc-id="kept_solution"]')).toBeVisible();
+
+  const areas = await page.evaluate(() => {
+    const pageElements = Array.from(document.querySelectorAll<HTMLElement>(".paged-surface-page"));
+    return ["kept_prompt", "kept_solution"].map((id) => {
+      const area = pageElements
+        .map((pageElement) => pageElement.querySelector<HTMLElement>(`[data-sigma-doc-id="${id}"]`)?.closest<HTMLElement>(".problem-area-flow-unit"))
+        .find((candidate) => candidate);
+      const pageElement = area?.closest<HTMLElement>(".paged-surface-page");
+      if (!area || !pageElement) return null;
+      const rect = area.getBoundingClientRect();
+      const pageRect = pageElement.getBoundingClientRect();
+      return {
+        height: rect.height,
+        insidePage: rect.top >= pageRect.top - 0.5
+          && rect.left >= pageRect.left - 0.5
+          && rect.bottom <= pageRect.bottom + 0.5
+          && rect.right <= pageRect.right + 0.5,
+      };
+    });
+  });
+  expect(areas).not.toBeNull();
+  expect(areas).not.toContain(null);
+  for (const area of areas!) {
+    expect(area!.height).toBeGreaterThanOrEqual(32 * (96 / 25.4) - 1);
+    expect(area!.insidePage).toBe(true);
+  }
 });
 
 
 /**
- * The keep-together rule itself: a framed problem that fits on a page must not be split
- * across one, and the blank space its areas reserve through `areaLayout.*.minHeightMm`
- * counts towards "fits" even though no block has that height of its own.
+ * エリア単位 keep-together を固定する（問題全体をまとめて動かす規則は 3 エンジン統一で撤去済み）。
+ * 各エリアは自分の予約込みで残りに収まるページに置かれる。
  */
 const RESERVED_AREA_DOCUMENT: SigmaDocument = {
   version: "2.0",
@@ -120,7 +141,7 @@ const RESERVED_AREA_DOCUMENT: SigmaDocument = {
   },
 };
 
-test("moves a framed problem whole rather than letting its reserved answer area overflow", async ({ page }) => {
+test("places the 110mm prompt and solution on separate pages and keeps both areas in bounds", async ({ page }) => {
   test.setTimeout(120_000);
   await installDesktopRuntimeMock(page, RESERVED_AREA_DOCUMENT);
   await page.goto("/print?fileId=file_e2e_document&profile=teacher", { waitUntil: "domcontentloaded" });
@@ -128,26 +149,35 @@ test("moves a framed problem whole rather than letting its reserved answer area 
 
   const pages = page.locator(".paged-surface-page");
   await expect(pages).toHaveCount(2);
-  // Prompt and answer stay together, on the sheet that can hold the whole frame.
-  await expect(pages.nth(0).locator('[data-sigma-doc-id="reserved_prompt"]')).toHaveCount(0);
-  await expect(pages.nth(1).locator('[data-sigma-doc-id="reserved_prompt"]')).toBeVisible();
+  await expect(pages.nth(0).locator('[data-sigma-doc-id="reserved_prompt"]')).toBeVisible();
+  await expect(pages.nth(0).locator('[data-sigma-doc-id="reserved_solution"]')).toHaveCount(0);
+  await expect(pages.nth(1).locator('[data-sigma-doc-id="reserved_prompt"]')).toHaveCount(0);
   await expect(pages.nth(1).locator('[data-sigma-doc-id="reserved_solution"]')).toBeVisible();
 
-  // And the frame — reserved blank space included — stays inside the printable area.
-  const overflow = await page.evaluate(() => {
-    const canvas = document.querySelector<HTMLElement>(".paged-surface-stage .page-canvas");
-    const frame = canvas?.querySelector<HTMLElement>(".problem-area-flow-unit.with-frame");
-    if (!canvas || !frame) {
-      return null;
-    }
-    const stride = Number(canvas.dataset.pageStride ?? "0");
-    const pageHeight = Number(canvas.dataset.pageHeight ?? "0");
-    const canvasTop = canvas.getBoundingClientRect().top;
-    const rect = frame.getBoundingClientRect();
-    const top = rect.top - canvasTop;
-    const withinPage = top % stride;
-    return Math.round((withinPage + rect.height - pageHeight) * 10) / 10;
+  // 各エリアが予約高さを確保し、紙面外へはみ出さない。
+  const areas = await page.evaluate(() => {
+    const pageElements = Array.from(document.querySelectorAll<HTMLElement>(".paged-surface-page"));
+    return ["reserved_prompt", "reserved_solution"].map((id) => {
+      const area = pageElements
+        .map((pageElement) => pageElement.querySelector<HTMLElement>(`[data-sigma-doc-id="${id}"]`)?.closest<HTMLElement>(".problem-area-flow-unit"))
+        .find((candidate) => candidate);
+      const pageElement = area?.closest<HTMLElement>(".paged-surface-page");
+      if (!area || !pageElement) return null;
+      const rect = area.getBoundingClientRect();
+      const pageRect = pageElement.getBoundingClientRect();
+      return {
+        height: rect.height,
+        insidePage: rect.top >= pageRect.top - 0.5
+          && rect.left >= pageRect.left - 0.5
+          && rect.bottom <= pageRect.bottom + 0.5
+          && rect.right <= pageRect.right + 0.5,
+      };
+    });
   });
-  expect(overflow).not.toBeNull();
-  expect(overflow!).toBeLessThanOrEqual(0);
+  expect(areas).not.toBeNull();
+  expect(areas).not.toContain(null);
+  for (const area of areas!) {
+    expect(area!.height).toBeGreaterThanOrEqual(22 * (96 / 25.4) - 1);
+    expect(area!.insidePage).toBe(true);
+  }
 });

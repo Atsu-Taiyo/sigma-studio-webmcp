@@ -95,6 +95,8 @@ describe("stale flow measurement detection", () => {
         blocks: [paragraph("p_prompt")],
         isFirstProblemArea: true,
         isLastProblemArea: true,
+        isFirstProblemAreaUnit: true,
+        problemAreaUnitCount: 1,
         isFirstProblemFrameArea: true,
         isLastProblemFrameArea: true,
       },

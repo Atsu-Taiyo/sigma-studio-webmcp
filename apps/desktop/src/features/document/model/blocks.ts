@@ -168,6 +168,8 @@ export interface ListItemNode {
   id: string;
   children: InlineNode[];
   align?: TextAlign;
+  /** Extra space after this item. List items are independently draggable blocks in the editor. */
+  spaceAfterPx?: number;
   /** Additional text blocks that stay under the same list marker. */
   continuations?: ListItemContinuationNode[];
   nested?: ListNode[];
@@ -231,6 +233,14 @@ export interface LayoutSectionNode extends BaseNode {
 export interface LayoutSectionLayout {
   columnCount: number;
   columnGapMm?: number;
+  /**
+   * Independent column ownership. Each entry is the id of the first child in that column,
+   * ordered from left to right. Unlike `pagination.break`, this is layout structure rather than
+   * pagination state, so editing one column can never cause its blocks to flow into another.
+   */
+  columnStartIds?: string[];
+  /** Relative widths, ordered like `columnStartIds`. Values are normalized at render time. */
+  columnWidths?: number[];
 }
 
 export interface BoxBlockNode extends BaseNode {

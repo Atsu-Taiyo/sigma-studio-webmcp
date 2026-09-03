@@ -1,17 +1,5 @@
-/* 文書面 (document surface) の共有スタイル。
-
-   このファイルは「印刷プレビュー / PDF / 埋め込みビューアが共通で描く文書の中身」だけを持つ。
-   apps/desktop 側は globals.css が @import し、packages/viewer/src/styles.css も同じファイルを
-   @import する。viewer が手写しコピーを持たないための唯一の出典であり、
-   apps/desktop/src/app/document-surface.test.ts と packages/viewer/src/styles-sync.test.ts が
-   この境界を機械的に守っている。
-
-   ここに置いてはいけないもの (packages/viewer/scripts/build.mjs のスコープ機構の制約):
-   - :root / CSS 変数の定義   → viewer は自前で変数を供給する契約 (styles.css の .sigma-viewer)
-   - 「*」セレクタ             → build.mjs が 「.sigma-viewer *」 に変換するため .sigma-viewer 自身に効かない
-   - @media print             → globals の @media print はエディタクロームの display:none を含む
-   - @page                    → at-rule はスコープ検査をすり抜け、埋め込み先の用紙設定を壊す
-   - エディタ専用のクローム   → ツールバー・ナビ・ハンドル等は globals.css に置く */
+/* 印刷・PDF・埋め込みビューアで共有する文書面。アプリ固有のクロームや
+   グローバル at-rule / 変数は globals.css または viewer 側に置く。 */
 
 .page-running-region {
   position: absolute;
@@ -89,11 +77,7 @@
   vertical-align: baseline;
 }
 
-/* The height-target is nested below `.boxed-text` on the editing surface (a ProseMirror
-   inline decoration wraps the text inside every mark) and sits on the `.boxed-text` span
-   itself in static output, so these rules give both forms. The nested form needs the
-   descendant combinator rather than `>`: a direct-child selector silently fails on styled
-   boxed text and leaves it as a standalone box. */
+/* 編集面ではheight-targetが入れ子、静的出力ではboxed-text自身になる。 */
 
 .boxed-text:has([data-boxed-run-height-target="true"]) {
   border: 0;
@@ -146,85 +130,20 @@
   /* line-height:1 removes the font's line-box leading so a 0pt frame hugs the
      content top & bottom (みっちり) instead of the large CJK leading gap. */
   line-height: 1;
-  /* Baseline anchor: each box sits on the line at its own content baseline, and the
-     measured extra padding above/below stretches the frame to match its neighbours'
-     height. We intentionally do NOT set an explicit `height` + `vertical-align: top`
-     here — when the line box's strut (line-height 1.8) is taller than the frame
-     (short math / text-only runs), that combination pins the frame to the top of the
-     line and leaves its content floating below the surrounding text's baseline. */
+  /* 明示heightではなくbaselineと計測paddingで隣接枠の高さを揃える。 */
   vertical-align: baseline;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
 
-/* 数式が囲みランの計測対象になったときは、左右のマージンを**同じ幅の padding へ振り替える**。
-   枠線 (この要素の border、または本文で描き直す 1 枚の矩形) は数式の外形に沿って描かれるので、
-   マージンのままだと枠の外へ 2px はみ出し、隣の箱との間に隙間ができて 1 本の囲みが割れて見える。
-   数式ノードが素の DOM になる前は Tiptap の包みが計測対象で、その包みのインラインボックスが
-   マージンを含んでいた。マージンが 0 の面 (図形テキスト・下線ラン) では振り替えも 0 になる。 */
+/* 囲み内の数式marginは同幅のpaddingへ移し、枠の外形と計測を一致させる。 */
 .boxed-text [data-boxed-run-height-target="true"].inline-math-node {
   margin-inline: 0;
   padding-inline: calc(0.18em + var(--inline-math-node-margin-x, 0px));
 }
 
-/* Where a single rectangle is drawn for the whole run, the segments keep their border BOX —
- * it reserves the space and the frame is measured from it — but paint nothing. Per-segment
- * borders cannot be made to meet exactly: padding only grows a box, so the segment defining
- * the run's height has nothing to adjust with, and padding its neighbours moves their
- * baselines relative to it.
- *
- * The condition is the drawn frame itself (`.boxed-run-framed` is put on the container by the
- * same pass that creates the frame layer), not the surface: a surface that does not draw
- * frames has to keep painting its segments, or its boxes would disappear.
- *
- * Why the surfaces that CANNOT draw a frame (overlay text shapes, table cells) still live with
- * the seam — measured, not assumed:
- *
- * The way out that needs no measuring is to stop having segments at all: put the run's pieces in
- * ONE span and let that span's own line box be the frame. The CSS side of that works. Measured on
- * the overlay preview with a `\sum_{k=1}^{n} k` whose real extent is 47.52px, in a run of
- * text + math + text:
- *
- *   display                       boxes  box height          math outside the frame
- *   per-segment (today)             3    49.48/49.52/49.48   0 (it is measured to fit)
- *   merged, `display: inline`       1    20.00               16.95
- *   merged, `inline-flex`           1    49.52               0
- *   merged, `inline-flex` + wrap    1    49.52               0
- *   merged, `inline-block`          1    49.52               0
- *
- * — the last three with the measuring pass never running and the geometry identical over 30
- * frames. The `inline` row is not a tuning problem: a non-replaced inline box's border box comes
- * from the font's metrics and never from its children, so raising `line-height` does not grow it
- * (measured: 20.00px at line-height 1, 1.8, 3 and normal alike). Only a box that establishes its
- * own formatting context can enclose a tall child, which is what the other three rows are.
- *
- * What that buys is bounded, though. Those three displays are all ATOMIC inline-level boxes: the
- * merged run can no longer break across lines, and `box-decoration-break: clone` (above) stops
- * producing one frame per line. Measured with the run alone in a 200px shape it looks like a win —
- * the `inline-block` merge wraps inside its own box (113.52px tall, nothing past the shape) where
- * today's three segments are 50/49.52/34px tall and hang 29.5px below it. Measured with the run
- * starting mid-line in a 360px column it is a loss: the merged box takes one 360px-wide fragment
- * of its own (the surrounding text is pushed off its line), where the segmented run breaks in
- * place into three fragments of 136/311/72px. That alone rules the merge out for the document
- * body, where long boxed runs must wrap in place; the body is why `drawRunFrames` exists at all.
- *
- * For the overlay surfaces the blocker is the editing surface. A Tiptap editor and a static
- * renderer swap places on focus here, and ProseMirror can only hold one `.boxed-text` span across
- * adjacent nodes when the mark is EQUAL on both. `lib/tiptap-adapter.ts` puts `math: true` on the
- * boxed mark of every math atom, so a text + math run splits at the mark level before any
- * decoration is involved — measured: two adjacent boxed maths do coalesce into one span, the text
- * beside them never joins it. `styledText` (mark priority 300) also nests outside `boxed` (200) so
- * the `0.18em` padding scales with the font the styling sets, which splits the run again at every
- * colour/font/size change. Merging only the static side would put a seamless box on blur and a
- * segmented one on focus — the jump this whole area exists to remove.
- *
- * So a merge is not impossible, it is a document-schema change rather than the DOM-level regroup
- * it was scoped as. `math` would have to leave the boxed mark: its only styling job (the
- * `boxed-inline-math` rules above) could be recovered with `:has(.inline-math-node)` the way the
- * underline run already does, but it is also a paste-parse input as
- * `data-sigma-doc-boxed-math`. And `boxed` would have to outrank `styledText`, reversing the
- * reason the styled span wraps the box. Until that is taken on deliberately, these surfaces keep
- * per-segment borders. See `BoxedTextRunHeightOptions.drawRunFrames`. */
+/* drawRunFramesでは各segmentの外形を計測用に残し、描画だけを透明化する。
+   atomic化すると本文内の折返しを失うため、segment統合はしない。 */
 
 .boxed-run-framed .boxed-text[data-boxed-run-height-target="true"],
 .boxed-run-framed .boxed-text [data-boxed-run-height-target="true"] {
@@ -246,19 +165,7 @@
   line-height: 1;
 }
 
-/* Measuring pass: a segment must report its OWN natural height.
- *
- * This used to be `display: contents`, which removes the box entirely — the element
- * then has no client rects, so a coalesced run (two adjacent boxed maths share one mark
- * span) could only be measured as the whole span. Both members inherited the union
- * height, computed zero extra padding, and the shorter one rendered at its natural size:
- * a notch in what should be one continuous frame.
- *
- * Keeping the steady-state box minus the frame gives every segment — text or math — a
- * measurable natural height, under the same rules. Both forms of the target are listed
- * because the editing surface nests it below `.boxed-text` and static output puts it on
- * the `.boxed-text` span itself; measuring them under different rules is what made a
- * shape's boxes change height the moment it took focus. */
+/* 計測中もsegment自身のboxを残し、編集面と静的出力で同じ自然高を得る。 */
 
 .boxed-run-measuring .boxed-text[data-boxed-run-height-target="true"],
 .boxed-run-measuring .boxed-text [data-boxed-run-height-target="true"] {
@@ -982,21 +889,7 @@ u:has(.math-preview) .inline-math-node {
   margin-left: 0;
 }
 
-/* text-decoration is only ever drawn across the span between the first and last
-   text glyph inside a decorating box, so an atomic inline (the math node's
-   inline-block) at the run's edge — or a run made entirely of math — leaves the
-   underline missing there. Runs containing math instead draw one continuous
-   border under the whole run.
-
-   Important details:
-   - `display: inline-block` makes the box enclose tall math (fractions, ∑ with
-     limits, stacked scripts). A plain inline's decoration/background area is
-     only the text em-box, so a "bottom" stroke still cuts through tall formulas.
-   - Do NOT also put text-decoration on child math nodes (`u .inline-math-node`
-     etc.): that paints a second stroke at the math baseline while the run stroke
-     sits under the tallest ink, producing stepped underlines (和文と数式で高さが
-    ずれる).
-   - Match bare <u> wrappers (legacy mark DOM) the same way. */
+/* 数式を含む下線はrun全体のborderで描き、背の高い数式と二重線を避ける。 */
 
 .sigma-underline-run:has(.math-preview),
 u:has(.math-preview) {
@@ -1314,6 +1207,10 @@ li[data-list-marker-typography]::marker {
   margin-bottom: 0;
 }
 
+.print-problem-area.print-problem-area-reservation-only {
+  margin: 0;
+}
+
 .print-problem-area.with-frame {
   position: relative;
   box-sizing: border-box;
@@ -1519,13 +1416,7 @@ li[data-list-marker-typography]::marker {
   font-size: 11px;
 }
 
-/* --- Overlay shapes ---------------------------------------------------------------------------
-   The static shape renderer (`overlay-canvas/shape-renderer.tsx`) draws header/footer and body
-   figures with these classes, and `packages/viewer` mounts it through the print surface. They used
-   to live in globals.css, which the viewer never loads — the running region got away with it only
-   while its shapes were an injected, self-contained SVG string.
-   Editor-only chrome (selection boxes, hit targets, context menus, crop cursors) stays in
-   globals.css; `overlay-shape-classes.test.ts` pins which classes have to be here. */
+/* 静的図形はviewerと共有する。選択・操作用クロームはglobals.cssに置く。 */
 
 .overlay-shape {
   position: absolute;
@@ -1545,15 +1436,7 @@ li[data-list-marker-typography]::marker {
   stroke-linejoin: miter;
 }
 
-/*
- * Arrow head content only needs what it cannot state for itself.
- *
- * Fill, stroke, width and joins are presentation attributes written from ARROWHEAD_MARKER_SPECS;
- * author CSS beats presentation attributes, so declaring them here used to hollow out the filled
- * heads (triangle, diamond) on this surface while the exported SVG drew them solid. What a head
- * *cannot* opt out of is inheritance: marker content inherits from the `<svg>` that declares the
- * line, so a dashed line would draw a dashed head.
- */
+/* 矢印headは線のdashだけを継承しない。色と形はmarker自身の属性を使う。 */
 .overlay-vector-svg marker > * {
   stroke-dasharray: none;
 }
@@ -1703,14 +1586,7 @@ li[data-list-marker-typography]::marker {
   height: 100%;
 }
 
-/* --- Body typography ---------------------------------------------------------------------------
-   The body blocks and the header/footer blocks are drawn by one renderer
-   (`text-flow/TextFlowStaticBlock.tsx`) inside `.text-flow-editor`, and `packages/viewer` mounts it
-   through the print surface — so these rules cannot stay in globals.css, which the viewer never
-   loads. The values are the same ones the `.print-*` family carries; that family remains for the
-   print preview's own page body.
-   Editing-only additions (selection highlight, diff/lock decorations, column chrome) stay in
-   globals.css under more specific `.text-flow-editor …` selectors. */
+/* 本文とrunning regionの静的組版。編集専用装飾はglobals.cssに置く。 */
 
 .text-flow-editor {
   min-height: 34px;
@@ -1750,16 +1626,7 @@ li[data-list-marker-typography]::marker {
   margin: 2px 0;
 }
 
-/* --- ブロック下余白 (SigmaDoc の spaceAfterPx) ---------------------------------------------
-   編集中の ProseMirror・静的描画・印刷/PDF・埋め込みビューアが、ブロックのインライン
-   custom property という **同じ 1 つの出典**から読む。
-   padding にしているのは `getBoundingClientRect()` に含まれる = ページ割りと段組フローの実測が
-   そのまま拾うため (margin だと column-layout.ts の `cursorY += height` が取りこぼし、
-   チャンク境界のマージン相殺が applied-gaps.ts の marginTop 読みとずれて非収束が再発する)。
-   枠や背景を持つ引用・コード・囲み枠には付けない — padding は枠の内側に入るので
-   「ブロックの下に余白」ではなく「枠が下に伸びる」になる。
-   ドラッグ中はここを一切動かさない: 追従は編集面だけの平行移動 (globals.css) が受け持つので、
-   寸法が変わらず ResizeObserver → 再ページ割りの連鎖が起きない。 */
+/* spaceAfterPxは共有custom propertyからpaddingとして読み、ページ計測にも含める。 */
 .text-flow-editor :is(p, h1, h2, h3, ul, ol, hr),
 .print-paragraph,
 .print-heading,
@@ -1769,12 +1636,19 @@ li[data-list-marker-typography]::marker {
   padding-bottom: var(--sigma-doc-space-after, 0px);
 }
 
-/* custom property は相続するので、余白を持つリストの項目の中まで降りてしまう。
-   入れ物と中身の間にある li で断ち切る (項目自身は下余白を持たない。
-   自前の値を持つ子ブロックはインライン指定がこの宣言に勝つので影響を受けない)。 */
+/* custom property は相続するので、リスト全体の余白が各項目へ降りないよう li で断ち切る。 */
 .text-flow-editor :is(ul, ol) > li,
 .print-list > li {
   --sigma-doc-space-after: 0px;
+  --sigma-doc-list-item-space-after: 0px;
+}
+
+/* 項目の余白は、最後の所有本文 (先頭行または継続行) の後へ一度だけ描く。入れ子リストは
+   その後ろに残るので、つまみの実測辺と保存後の見た目が一致する。専用変数に分けることで、
+   先頭段落の通常ブロック余白と二重になる経路を構造的に持たない。 */
+.text-flow-editor :is(ul, ol) > li > :not(ul, ol):not(:has(~ :not(ul, ol))),
+.print-list > li > :not(ul, ol):not(:has(~ :not(ul, ol))) {
+  padding-bottom: var(--sigma-doc-list-item-space-after, 0px);
 }
 
 .text-flow-shell {
@@ -1826,16 +1700,7 @@ u:has(.math-preview) .inline-math-node {
   --inline-math-node-margin-x: 0px;
 }
 
-/* ===========================================================================
-   引用ブロック・コードブロック・区切り線。
-
-   3 つとも **本物のブロック** なので、枠は要素 1 つに 1 つ描くだけで済む。段落を積んで
-   隣接セレクタで箱に見せていた頃は、コードの中の行間が「1 行目だけ 8px・行間 4px」と
-   不揃いになり、チャンク境界や改ページウィジェットが間に入ると縦棒も割れていた。
-
-   編集中の ProseMirror・静的描画・印刷/PDF・埋め込みビューアは同じ要素 (`blockquote` /
-   `pre` / `hr`) を出すので、見た目の出典はここ 1 箇所。
-   =========================================================================== */
+/* 引用・コード・区切り線は編集面、印刷、viewerで同じblock要素を描く。 */
 
 .print-quote {
   margin: 6px 0;
@@ -1908,14 +1773,7 @@ u:has(.math-preview) .inline-math-node {
   color: rgba(255, 255, 255, 0.58);
 }
 
-/* ---------------------------------------------------------------------------
-   コードの色分け (highlight.js の class)。
-
-   出典は 1 箇所 — `features/rendering/adapters/code-highlight.ts` が編集中の装飾と
-   静的描画の両方へ同じトークンを配るので、ここに書いた色がそのまま紙面にも出る。
-   highlight.js のテーマ CSS を丸ごと持ってこないのは、埋め込みビューアもこのファイルを
-   読むから: 必要な 10 いくつだけを、紙に刷っても沈まない濃さで置く。
-   --------------------------------------------------------------------------- */
+/* highlight.jsの共有トークン。印刷でも沈まない色だけを定義する。 */
 
 .hljs-comment,
 .hljs-quote {

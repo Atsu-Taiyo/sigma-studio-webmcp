@@ -5,6 +5,7 @@ import {
   MoreHorizontal,
   PanelLeft,
   PlusCircle,
+  RotateCcw,
   Search,
   X,
 } from "lucide-react";
@@ -33,6 +34,8 @@ import {
 } from "@/components/editor/EditorSettings";
 import { ChartSettingsPanel } from "@/components/editor/ChartSettingsPanel";
 import { GraphSettingsPanel } from "@/components/editor/GraphSettingsPanel";
+import { VersionHistoryPanel } from "@/components/editor/VersionHistoryPanel";
+import { WindowCloseSaveDialog } from "@/components/editor/WindowCloseSaveDialog";
 import {
   Graph3DSettingsPanelHost,
   OPEN_OVERLAY_GRAPH3D_SETTINGS_EVENT,
@@ -144,7 +147,11 @@ import {
   insertTopLevelTextFlowBlocks,
   replaceInDocument,
   replaceTopLevelTextFlowBlocks,
+  getLayoutSectionColumns,
+  getLayoutSectionColumnWidths,
+  setLayoutSectionColumns,
   setLayoutSectionColumnCount,
+  setBlockSpaceAfter,
   type TextFlowBlock,
   type TextFlowSelectionBookmark,
   updateInlineMathTexInDocument,
@@ -154,6 +161,7 @@ import {
   TEXT_FLOW_SELECTION_BOOKMARK_EVENT,
 } from "@/components/editor/text-flow/caret-bookmark-events";
 import { deliverCaret, requestCaret } from "@/components/editor/text-flow/caret-router";
+import { moveBlocksByDrag, moveUnitsByStep, type BlockDragMoveRequest } from "@/lib/block-drag-move";
 import { scrollElementIntoCanvasView } from "@/components/editor/text-flow/caret-scroll";
 import type { TextFlowChangeContext, TextFlowReplaceOptions } from "@/components/editor/text-flow/types";
 import { AiEditPanel } from "@/components/editor/AiEditPanel";
@@ -223,6 +231,7 @@ import {
   addRichBlockToProblem,
   collectOutline,
   createBlock,
+  createParagraph,
   deleteBlocksFromDocument,
   duplicateTopLevelBlock,
   ensureBodyBlockAfterProblem,
@@ -312,6 +321,7 @@ import {
 } from "@/lib/editor-command-shortcuts";
 import { APP_READY_EVENT } from "@/components/StartupSplash";
 import {
+  captureDocumentVersion,
   createObservedDocumentWrite,
   createNewDocument,
   createDocumentFromSigmaDocument,
@@ -326,6 +336,7 @@ import {
   type DocumentFileRecord,
   type DocumentMetadata,
 } from "@/lib/storage";
+import type { DocumentVersion } from "@/lib/document-version-history";
 import type { LedgerSchemaFailure } from "@/lib/library-schema";
 import { getAppRouteHref, navigateToAppRoute } from "@/lib/app-navigation";
 import { getDesktopBridge } from "@/lib/desktop-bridge";
@@ -519,6 +530,11 @@ import {
   type SuccessfulDocumentSave,
 } from "@/components/editor/editor-shell/document-state-sync";
 import {
+  isDocumentVersionRestoreContextCurrent,
+  runDocumentVersionRestore,
+  type DocumentVersionRestoreResult,
+} from "@/components/editor/editor-shell/document-version-restore";
+import {
   applyOverlayGraphAxisLabelEdit,
   mergeOverlayGraphDetailWithPending,
   recordPendingOverlayGraphAxisLabelEdit,
@@ -568,12 +584,19 @@ import {
 import {
   clearRequestedFileId,
   createUnsavedEditBackupTitle,
+  getDocumentBoundarySkipReason,
   getRequestedFileId,
   isDesktopStorageChangeEvent,
   updateDegradedWatcherScopes,
+  type DocumentBoundarySkipReason,
   type DegradedWatcherScope,
   uniqueStringIds,
 } from "@/components/editor/editor-shell/workspace-request";
+import {
+  describeWindowCloseSkipReason,
+  resolveWindowCloseOutcome,
+  shouldUsePageVisibilityBoundaryEvents,
+} from "@/components/editor/editor-shell/window-close-save";
 /**
  * コメントの既定の作者。
  *
@@ -1076,6 +1099,26 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     reconcileTextRanges: reconcileAiEditPinnedReferenceTextRanges,
   } = useAiPinnedReferences();
   const [aiSidebarOpen, setAiSidebarOpen] = useState(false);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [versionHistoryPreviewState, setVersionHistoryPreviewState] = useState<{
+    fileId: string;
+    version: DocumentVersion;
+  } | null>(null);
+  const versionHistoryPreview = versionHistoryPreviewState?.fileId === activeFileId
+    ? versionHistoryPreviewState.version
+    : null;
+  const versionHistoryPreviewActive = versionHistoryPreview !== null;
+  const [versionHistoryRestoreError, setVersionHistoryRestoreError] = useState<string | null>(null);
+  const [versionHistoryRestoring, setVersionHistoryRestoring] = useState(false);
+  const [versionHistoryWarnings, setVersionHistoryWarnings] = useState<Record<string, string>>({});
+  const [windowCloseSaveDialog, setWindowCloseSaveDialog] = useState<{
+    error: string;
+    saving: boolean;
+  } | null>(null);
+  const windowCloseAttemptGenerationRef = useRef(0);
+  const windowCloseResolvedRef = useRef(false);
+
+  const versionHistoryWarning = versionHistoryWarnings[activeFileId] ?? null;
   const [aiDisplayMode, setAiDisplayMode] = useState<AiDisplayMode>("inline");
   const [aiInlineOpen, setAiInlineOpen] = useState(false);
   const [aiInlineAnchor, setAiInlineAnchor] = useState<{ left: number; top: number } | null>(null);
@@ -1398,6 +1441,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   const documentStorageChangeProcessorRef = useRef<((event: DocumentStorageChangeEvent) => void) | null>(null);
   const [autosaveRetry, setAutosaveRetry] = useState(0);
   const autosaveRetryTimerRef = useRef<number | null>(null);
+  const cancelPendingAutosaveRef = useRef<() => void>(() => undefined);
 
   const finishMcpPreviewBusy = useCallback(() => {
     mcpPreviewBusyRef.current = false;
@@ -1656,6 +1700,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     setCommentsPanelOpen((current) => {
       const next = !current;
       if (next) {
+        setVersionHistoryOpen(false);
         focusCommentLocation();
       }
       return next;
@@ -1728,7 +1773,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     // 同名IDに誤って解決したり、存在しないブロックを指したまま残ったりする。
     setAiEditReference(null);
     clearAiEditPinnedReferences();
-  }, [clearAiEditPinnedReferences, closeChartSettings, closeGraph3DSettings, closeGraphSettings, documentHistory, clearCommentReplyDrafts, setActiveCommentThreadId, setCommentAnchorCandidate, setHighlightedCommentThreadId, setPendingCommentAnchor, setSelectedId, setSelectedInlineMath]);
+    setVersionHistoryPreviewState(null);
+    setVersionHistoryRestoreError(null);
+  }, [clearAiEditPinnedReferences, closeChartSettings, closeGraph3DSettings, closeGraphSettings, documentHistory, clearCommentReplyDrafts, setActiveCommentThreadId, setCommentAnchorCandidate, setHighlightedCommentThreadId, setPendingCommentAnchor, setSelectedId, setSelectedInlineMath, setVersionHistoryPreviewState, setVersionHistoryRestoreError]);
 
   const rememberLeavingEditorTabViewState = useCallback((leavingFileId: string | null, nextFileId: string) => {
     if (!leavingFileId || leavingFileId === nextFileId) {
@@ -2113,7 +2160,26 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     return !areSigmaDocumentsEquivalent(documentRef.current, lastSavedDocumentRef.current);
   }, []);
 
-  const saveCurrentDocumentRecord = useCallback(async () => {
+  const updateVersionHistoryCaptureStatus = useCallback((fileId: string, result: {
+    ok: boolean;
+    versionCaptureError?: string;
+  }) => {
+    if (result.versionCaptureError) {
+      setVersionHistoryWarnings((current) => ({
+        ...current,
+        [fileId]: t("versionHistory.captureWarning"),
+      }));
+    } else if (result.ok) {
+      setVersionHistoryWarnings((current) => {
+        if (!(fileId in current)) return current;
+        const next = { ...current };
+        delete next[fileId];
+        return next;
+      });
+    }
+  }, [t]);
+
+  const saveCurrentDocumentRecord = useCallback(async (origin: DocumentVersion["origin"] = "user") => {
     // 開けなかった教材には何も書かない。画面上の document は原因表示用の空の
     // 下書きなので、保存すれば元の内容を空で上書きしてしまう。
     if (documentOpenFailureRef.current?.fileId === activeFileIdRef.current) {
@@ -2154,7 +2220,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       observedRevision,
     });
     return trackInFlightSave(inFlightSavePromiseRef, (async () => {
-      const result = await saveDocumentRecord(write);
+      const result = await saveDocumentRecord(write, { origin });
+      updateVersionHistoryCaptureStatus(fileId, result);
       if (result.ok) {
         recordSuccessfulDocumentSave({
           savedByFileId: successfulDocumentSavesRef.current,
@@ -2173,7 +2240,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       }
       return result;
     })());
-  }, []);
+  }, [updateVersionHistoryCaptureStatus]);
 
   const createUnsavedEditBackup = useCallback(async (source: SigmaDocument) => {
     const backup = repairDuplicateTopLevelIds(ensurePageLayout({
@@ -2195,9 +2262,58 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     return createUnsavedEditBackup(documentRef.current);
   }, [createUnsavedEditBackup, isCurrentDocumentDirty]);
 
+  const saveCurrentDocumentBoundary = useCallback(async (
+    origin: Extract<DocumentVersion["origin"], "tab-switch" | "app-close">,
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    code?: "revision-mismatch";
+    skipped?: true;
+    skippedReason?: DocumentBoundarySkipReason;
+  }> => {
+    const boundaryFileId = activeFileIdRef.current;
+    const boundarySkipReason = () => getDocumentBoundarySkipReason({
+      isEmbedded,
+      workspaceReady: workspaceReadyRef.current,
+      activeDocumentOpenFailed: documentOpenFailureRef.current?.fileId === activeFileIdRef.current,
+      externalChangePending: externalChangeFileIdsRef.current.has(activeFileIdRef.current),
+      aiWriteInProgress: mcpPreviewBusyRef.current,
+      observedRevision: documentObservedRevisionRef.current,
+    });
+    const initialSkipReason = boundarySkipReason();
+    if (initialSkipReason) return { ok: true, skipped: true, skippedReason: initialSkipReason };
+    while (inFlightSavePromiseRef.current) {
+      await inFlightSavePromiseRef.current.catch(() => undefined);
+    }
+    const fileId = activeFileIdRef.current;
+    if (fileId !== boundaryFileId) return { ok: true, skipped: true };
+    const skipReasonAfterWait = boundarySkipReason();
+    if (skipReasonAfterWait) return { ok: true, skipped: true, skippedReason: skipReasonAfterWait };
+    const observedRevision = documentObservedRevisionRef.current;
+    if (observedRevision === null) {
+      return { ok: true, skipped: true, skippedReason: "revision-unknown" };
+    }
+    if (isCurrentDocumentDirty()) {
+      return saveCurrentDocumentRecord(origin);
+    }
+    const result = await captureDocumentVersion(createObservedDocumentWrite({
+      fileId,
+      document: documentRef.current,
+      observedRevision,
+    }), origin);
+    if (!result.ok) {
+      setVersionHistoryWarnings((current) => ({
+        ...current,
+        [fileId]: t("versionHistory.captureWarning"),
+      }));
+    }
+    return { ok: true };
+  }, [isCurrentDocumentDirty, isEmbedded, saveCurrentDocumentRecord, t]);
+
   const saveCurrentDocumentBeforeReplacement = useCallback(async (): Promise<boolean> => {
     return saveBeforeDocumentReplacement({
-      save: saveCurrentDocumentRecord,
+      save: () => saveCurrentDocumentBoundary("tab-switch"),
+      isDirtyAfterSave: isCurrentDocumentDirty,
       onFailure: (result) => {
         setSaveState("error");
         if (result.code === "revision-mismatch") {
@@ -2213,7 +2329,116 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         setStatusMessage(result.error ?? tEditor("status.keepOpenSaveFailed"));
       },
     });
-  }, [dispatchDocumentStorageChange, saveCurrentDocumentRecord, setSaveState, setStatusMessage]);
+  }, [dispatchDocumentStorageChange, isCurrentDocumentDirty, saveCurrentDocumentBoundary, setSaveState, setStatusMessage]);
+
+  const attemptBoundarySave = useCallback((origin: "tab-switch" | "app-close") => {
+    return saveCurrentDocumentBoundary(origin);
+  }, [saveCurrentDocumentBoundary]);
+
+  const finishWindowCloseSave = useCallback(async (action: "ready" | "cancel") => {
+    const desktopApp = getDesktopBridge()?.app;
+    windowCloseAttemptGenerationRef.current += 1;
+    windowCloseResolvedRef.current = action === "ready";
+    const request = action === "ready"
+      ? desktopApp?.notifyCloseReady?.()
+      : desktopApp?.cancelCloseRequest?.();
+    try {
+      const succeeded = await request;
+      if (succeeded) {
+        setWindowCloseSaveDialog(null);
+        return;
+      }
+    } catch (error) {
+      console.warn(`Failed to report app-close ${action}.`, error);
+    }
+    setWindowCloseSaveDialog({
+      error: tE("windowCloseSave.responseFailed"),
+      saving: false,
+    });
+  }, [tE]);
+
+  const attemptWindowCloseSave = useCallback(async () => {
+    const attemptGeneration = ++windowCloseAttemptGenerationRef.current;
+    setWindowCloseSaveDialog((current) => current ? { ...current, saving: true } : current);
+    let timeoutId: number | undefined;
+    let timedOut = false;
+    let saveResult: Awaited<ReturnType<typeof attemptBoundarySave>> = { ok: false };
+    try {
+      saveResult = await Promise.race([
+        attemptBoundarySave("app-close"),
+        new Promise<Awaited<ReturnType<typeof attemptBoundarySave>>>((resolve) => {
+          timeoutId = window.setTimeout(() => {
+            timedOut = true;
+            resolve({ ok: false, error: tE("windowCloseSave.timedOut") });
+          }, 15_000);
+        }),
+      ]);
+    } catch (error) {
+      saveResult = {
+        ok: false,
+        error: error instanceof Error ? error.message : tE("windowCloseSave.unknownError"),
+      };
+    } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    }
+    if (attemptGeneration !== windowCloseAttemptGenerationRef.current) return;
+
+    const outcome = resolveWindowCloseOutcome({
+      saveOk: saveResult.ok,
+      saveError: saveResult.error,
+      timedOut,
+      dirty: isCurrentDocumentDirty(),
+      skipped: saveResult.skipped === true,
+      skippedReason: saveResult.skippedReason,
+    });
+    if (outcome === "ready") {
+      await finishWindowCloseSave("ready");
+      return;
+    }
+    const skippedReasonKey = describeWindowCloseSkipReason(saveResult.skippedReason);
+    setWindowCloseSaveDialog({
+      error: saveResult.error
+        ?? (skippedReasonKey ? tE(skippedReasonKey) : tE("windowCloseSave.unknownError")),
+      saving: false,
+    });
+  }, [attemptBoundarySave, finishWindowCloseSave, isCurrentDocumentDirty, tE]);
+
+  const attemptWindowClose = useCallback(() => {
+    const desktopApp = getDesktopBridge()?.app;
+    if (!desktopApp?.notifyCloseReady) return;
+    const acknowledgement = desktopApp.acknowledgeCloseRequest?.();
+    void acknowledgement?.catch((error) => {
+      console.warn("Failed to acknowledge the app-close request.", error);
+    });
+    void attemptWindowCloseSave();
+  }, [attemptWindowCloseSave]);
+
+  useEffect(() => {
+    const desktopApp = getDesktopBridge()?.app;
+    const handleVisibilityChange = () => {
+      if (windowCloseResolvedRef.current) return;
+      if (window.document.visibilityState === "hidden") {
+        void attemptBoundarySave("tab-switch").catch(() => undefined);
+      }
+    };
+    const handlePageHide = () => {
+      if (windowCloseResolvedRef.current) return;
+      void attemptBoundarySave("app-close").catch(() => undefined);
+    };
+    if (shouldUsePageVisibilityBoundaryEvents(Boolean(desktopApp))) {
+      window.document.addEventListener("visibilitychange", handleVisibilityChange);
+      window.addEventListener("pagehide", handlePageHide);
+    }
+
+    const unsubscribeClose = desktopApp?.onCloseRequested?.(() => {
+      void attemptWindowClose();
+    });
+    return () => {
+      window.document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", handlePageHide);
+      unsubscribeClose?.();
+    };
+  }, [attemptBoundarySave, attemptWindowClose]);
 
   const switchAwayFromDeletedFile = useCallback(async (deletedFileId: string) => {
     const backup = await saveUnsavedEditBackup();
@@ -2753,7 +2978,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     const aiLockedTargets = aiLockedTargetsRef.current;
     if (aiDocumentWriteInProgress) {
       setStatusMessage(aiDocumentWriteInProgressMessage());
-      return;
+      return false;
     }
     const current = documentRef.current;
     const proposed = typeof change === "function" ? change(current) : change;
@@ -2766,7 +2991,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
 
     if (next === current) {
       pendingTextHistorySelectionRef.current = undefined;
-      return;
+      return false;
     }
 
     // The single mutation choke point, and therefore the backstop for every
@@ -2776,7 +3001,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     const touchedAiTargets = findAiLockedTargetsTouched(current, next, aiLockedTargets);
     if (hasAiLockedTargetsTouched(touchedAiTargets)) {
       setStatusMessage(describeAiLockedTargets(aiLockedTargets, touchedAiTargets));
-      return;
+      return false;
     }
 
     // `coalesce` folds derived overlay geometry into the preceding user edit.
@@ -2814,7 +3039,43 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       deletionSeqRef.current += 1;
       setPendingDeletion({ revision: deletionSeqRef.current, deletedIds });
     }
+    return true;
   }), [documentHistory, setStatusMessage]);
+
+  const restoreDocumentVersion = async (version: DocumentVersion): Promise<DocumentVersionRestoreResult> => {
+    const fileId = activeFileIdRef.current;
+    const observedRevision = documentObservedRevisionRef.current;
+    const dirtyRevision = documentDirtyRevisionRef.current;
+    const documentAtStart = documentRef.current;
+    if (observedRevision === null) {
+      const result = { ok: false as const, error: t("versionHistory.restoreFailed") };
+      setStatusMessage(result.error);
+      return result;
+    }
+    const result = await runDocumentVersionRestore({
+      captureBackup: () => captureDocumentVersion(createObservedDocumentWrite({
+        fileId,
+        document: documentRef.current,
+        observedRevision,
+      })),
+      isContextCurrent: () => isDocumentVersionRestoreContextCurrent(
+        { fileId, observedRevision, dirtyRevision, document: documentAtStart },
+        {
+          fileId: activeFileIdRef.current,
+          observedRevision: documentObservedRevisionRef.current ?? -1,
+          dirtyRevision: documentDirtyRevisionRef.current,
+          document: documentRef.current,
+        },
+      ),
+      applyVersion: () => commitDocumentChange(structuredClone(version.document)),
+      saveRestoredDocument: saveCurrentDocumentRecord,
+      applyRejectedError: t("versionHistory.restoreApplyRejected"),
+      saveAppliedError: t("versionHistory.restoreAppliedSaveFailed"),
+      fallbackError: t("versionHistory.restoreFailed"),
+    });
+    setStatusMessage(result.ok ? t("versionHistory.restored") : result.error);
+    return result;
+  };
 
   // コメント内 @メンション (@codex/@chatgpt/@ai/@claude/@antigravity/@agy) で起動する AI 実行の状態。
   const aiConnection = useAiConnection();
@@ -3415,9 +3676,16 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           });
       }, 450);
 
-      return () => {
+      const cancelAutosave = () => {
         cancelled = true;
         window.clearTimeout(timeoutId);
+      };
+      cancelPendingAutosaveRef.current = cancelAutosave;
+      return () => {
+        cancelAutosave();
+        if (cancelPendingAutosaveRef.current === cancelAutosave) {
+          cancelPendingAutosaveRef.current = () => undefined;
+        }
       };
     }
 
@@ -3482,6 +3750,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       });
       const saveTask = saveDocumentRecord(write)
         .then(async (result) => {
+          updateVersionHistoryCaptureStatus(activeFileId, result);
           if (result.ok) {
             const savedFileIsActive = recordSuccessfulDocumentSave({
               savedByFileId: successfulDocumentSavesRef.current,
@@ -3512,12 +3781,14 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             if (cancelled) {
               return;
             }
-            setSaveState("saved");
-            setStatusMessage(result.error
-              ? tEditor("status.localAutosavedWith", { reason: result.error })
-              : isDesktopApp
-                ? tEditor("status.localAutosavedThisPc")
-                : tEditor("status.localAutosaved"));
+            setSaveState(result.versionCaptureError ? "warning" : "saved");
+            setStatusMessage(result.versionCaptureError
+              ? t("versionHistory.captureWarning")
+              : result.error
+                ? tEditor("status.localAutosavedWith", { reason: result.error })
+                : isDesktopApp
+                  ? tEditor("status.localAutosavedThisPc")
+                  : tEditor("status.localAutosaved"));
           } else if (result.code === "revision-mismatch") {
             // queued済みの古いpayloadは一切mergeせず破棄する。metadataだけを読み直して
             // revisionを進めると同じstale payloadがCASを通るため、documentRefを外部変更
@@ -3551,10 +3822,17 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       void trackInFlightSave(inFlightSavePromiseRef, saveTask);
     }, 450);
 
-    return () => {
+    const cancelAutosave = () => {
       cancelled = true;
       window.clearTimeout(savingTimeoutId);
       window.clearTimeout(timeoutId);
+    };
+    cancelPendingAutosaveRef.current = cancelAutosave;
+    return () => {
+      cancelAutosave();
+      if (cancelPendingAutosaveRef.current === cancelAutosave) {
+        cancelPendingAutosaveRef.current = () => undefined;
+      }
     };
   }, [
     activeFileId,
@@ -3569,6 +3847,8 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     scheduleAutosaveRetry,
     setSaveState,
     setStatusMessage,
+    t,
+    updateVersionHistoryCaptureStatus,
     workspaceReady,
   ]);
 
@@ -4561,6 +4841,32 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     }
   };
 
+  const resizeLayoutColumns = (sectionId: string, dividerIndex: number, leftWidth: number, rightWidth: number) => {
+    commitDocumentChange((current) => {
+      let shouldUnwrap = false;
+      const updated = updateBlockInDocument(current, sectionId, (block) => {
+        if (block.type !== "layoutSection") return block;
+        const columns = getLayoutSectionColumns(block);
+        const widths = getLayoutSectionColumnWidths(block, columns.length);
+        if (!columns[dividerIndex] || !columns[dividerIndex + 1]) return block;
+        if (leftWidth <= 0 || rightWidth <= 0) {
+          const merged = [...columns[dividerIndex], ...columns[dividerIndex + 1]];
+          const nextColumns = [...columns.slice(0, dividerIndex), merged, ...columns.slice(dividerIndex + 2)];
+          const nextWidths = [...widths.slice(0, dividerIndex), widths[dividerIndex] + widths[dividerIndex + 1], ...widths.slice(dividerIndex + 2)];
+          shouldUnwrap = nextColumns.length === 1;
+          return setLayoutSectionColumns(block, nextColumns, nextWidths);
+        }
+        const pairTotal = widths[dividerIndex] + widths[dividerIndex + 1];
+        const pixelTotal = leftWidth + rightWidth;
+        const nextWidths = [...widths];
+        nextWidths[dividerIndex] = Math.round(pairTotal * leftWidth / pixelTotal);
+        nextWidths[dividerIndex + 1] = pairTotal - nextWidths[dividerIndex];
+        return setLayoutSectionColumns(block, columns, nextWidths);
+      });
+      return shouldUnwrap ? unwrapLayoutSection(updated, sectionId) : updated;
+    });
+  };
+
   const getActiveTextTarget = (): "document" | "overlay" | "comment" => {
     if (typeof window !== "undefined" && window.document.activeElement?.closest(".comment-thread-panel")) {
       return "comment";
@@ -4628,6 +4934,14 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     );
   }, [commitDocumentChange]);
 
+  const updateBlockSpaceAfter = useCallback((blockId: string, spaceAfterPx: number) => {
+    commitDocumentChange((current) => updateBlockInDocument(
+      current,
+      blockId,
+      (block) => setBlockSpaceAfter(block, spaceAfterPx),
+    ));
+  }, [commitDocumentChange]);
+
   /**
    * 本文を空にした削除は、補われた空段落へキャレットを連れて行く。空段落があっても焦点が
    * 無ければ「消したら打っても何も出ない」ままなので、削除の続きにそのまま書ける Word と
@@ -4660,17 +4974,24 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
    * the blocks of a problem area — so the caller does not have to know where a block lives.
    */
   const removeBlocks = (blockIds: string[]) => {
-    const removableIds = blockIds.filter((id) => {
-      const block = findBlock(documentRef.current, id);
-      return !!block && block.type !== "listItem";
-    });
+    const removableIds = blockIds.filter((id) => !!findBlock(documentRef.current, id));
     if (removableIds.length === 0) {
       return;
     }
 
     let fallbackBlockId: string | null = null;
     commitDocumentChange((current) => {
-      const ensured = ensureEditableBody(deleteBlocksFromDocument(current, removableIds));
+      // リストの項目はブロック単位の一括削除が受け付けない (項目はリストの一部)。1 つずつ落とす —
+      // 項目が全部消えたリストは `removeBlockFromDocument` が一緒に落とす。
+      const itemIds = removableIds.filter((id) => findBlock(current, id)?.type === "listItem");
+      const blockOnlyIds = removableIds.filter((id) => !itemIds.includes(id));
+      let next = blockOnlyIds.length > 0 ? deleteBlocksFromDocument(current, blockOnlyIds) : current;
+      for (const itemId of itemIds) {
+        if (findBlock(next, itemId)) {
+          next = removeBlockFromDocument(next, itemId);
+        }
+      }
+      const ensured = ensureEditableBody(next);
       fallbackBlockId = ensured.bodyBlock?.id ?? null;
       return ensured.document;
     });
@@ -4678,6 +4999,51 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     setSelectedId((current) => (current && removableIds.includes(current) ? null : current));
     focusBodyFallback(fallbackBlockId);
     setStatusMessage(removableIds.length > 1 ? tEditor("status.bodyDeleted") : tEditor("status.blockDeleted"));
+  };
+
+  /**
+   * グリップのドラッグで落とした結果を 1 手で書く。動かした先頭のブロックへ焦点を移す
+   * (段組化・リストの分割でも、掴んだブロックの id は変わらない)。
+   */
+  const moveBlocksByDragRequest = (request: BlockDragMoveRequest) => {
+    const before = documentRef.current;
+    commitDocumentChange((current) => moveBlocksByDrag(current, request));
+    if (documentRef.current === before) {
+      return;
+    }
+    const focusBlockId = request.unitIds[0] ?? null;
+    setSelectedInlineMath(null);
+    if (focusBlockId && findBlock(documentRef.current, focusBlockId)) {
+      selectedIdRef.current = focusBlockId;
+      setSelectedId(focusBlockId);
+      scheduleEditorBlockFocus(focusBlockId);
+    }
+    setStatusMessage(tEditor("status.blockMoved"));
+  };
+
+  /** ⌥⇧↑/↓。キャレットは同じブロック・同じ位置に留める (ブロックごと動くので id は同じ)。 */
+  const moveBlocksByStepRequest = (unitIds: string[], direction: "up" | "down") => {
+    const before = documentRef.current;
+    const caret = textSelectionBookmarkRef.current;
+    commitDocumentChange((current) => moveUnitsByStep(current, unitIds, direction));
+    if (documentRef.current === before) {
+      return;
+    }
+    setSelectedInlineMath(null);
+    if (caret && unitIds.includes(caret.anchor.blockId)) {
+      requestCaret(caret);
+      return;
+    }
+    const focusBlockId = unitIds[0] ?? null;
+    if (focusBlockId && findBlock(documentRef.current, focusBlockId)) {
+      const hasFocus = window.document.activeElement instanceof HTMLElement
+        && window.document.activeElement.isContentEditable;
+      if (hasFocus) {
+        selectedIdRef.current = focusBlockId;
+        setSelectedId(focusBlockId);
+        scheduleEditorBlockFocus(focusBlockId);
+      }
+    }
   };
 
   /** Adds an empty paragraph next to `anchorBlockId`, or at the end when it is null. */
@@ -5415,7 +5781,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       // 常に新しいオブジェクトを返すので、素通しすると空の更新履歴と保存が積まれる。
       return;
     }
-    updateBlock(state.sectionId, (block) => setLayoutSectionColumnCount(block, columnCount));
+    updateBlock(state.sectionId, (block) => setLayoutSectionColumnCount(block, columnCount, () => createParagraph("")));
   };
 
   // AI実行中でも図形の新規挿入・整列などは通す。ロック図形そのものへの変更は overlay canvas の
@@ -5614,7 +5980,9 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     || templateGalleryOpen
     || materialAddDialogOpen
     || ribbonBackstageOpen
-    || commandPaletteOpen;
+    || commandPaletteOpen
+    || versionHistoryPreviewActive
+    || windowCloseSaveDialog !== null;
 
   useEffect(() => {
     // ネイティブ undo / redo (右クリックメニュー・3 本指スワイプ・支援技術など) を
@@ -6801,6 +7169,10 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         return;
       }
 
+      if (event.type === "documentVersion") {
+        return;
+      }
+
       // approve/revertだけでなく、正本文書を返さないreject/rebase中にも通知は届き得る。
       // active fileの最新1件を保留し、busy解除後に通常のload/merge経路へ必ず流す。
       // approve/revert自身の通知は、返却済み正本と構造的に同一なら下の比較で自然にno-opになる。
@@ -7028,6 +7400,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       const appliedIds = applyDecision.appliedProposalIds;
       appliedIds.forEach((proposalId) => locallyResolvedProposalIdsRef.current.add(proposalId));
       const approvedFileId = result.file?.fileId ?? requestedFileId;
+      updateVersionHistoryCaptureStatus(approvedFileId, result);
       let approvedDocument = result.document;
       let approvedRevision = result.file?.revision ?? null;
       if (
@@ -7096,12 +7469,18 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
         // 帰属情報を持たない旧提案だけはactive room全体へfallbackする。
         clearAiEditPreview("applied");
       }
-      setSaveState(approvedDocumentStayedDirty ? "saving" : "saved");
+      setSaveState(approvedDocumentStayedDirty
+        ? "saving"
+        : result.versionCaptureError
+          ? "warning"
+          : "saved");
       const approvedFileFeedback = deriveAiProposalApprovedFileFeedback({
         approvedFileId,
         currentFileId: activeFileIdRef.current,
         approvedDocumentTitle,
-        activeDocumentStatusMessage: approvedDocumentWarning ?? applyDecision.statusMessage,
+        activeDocumentStatusMessage: result.versionCaptureError
+          ? t("versionHistory.captureWarning")
+          : approvedDocumentWarning ?? applyDecision.statusMessage,
         t: tAi,
         tEditor,
       });
@@ -7473,6 +7852,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     if (!isDesktopApp) {
       return;
     }
+    setVersionHistoryOpen(false);
     // Reset the anchor unconditionally: a null anchor (⌘K with no selection) must
     // fall back to the CSS default position rather than reuse a stale selection rect.
     setAiInlineAnchor(anchor);
@@ -7482,16 +7862,36 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     // re-showing a prior turn's result) each time it is opened.
     setAiInlineSessionId((current) => current + 1);
     applyAiSurface(openInline());
-  }, [applyAiSurface, isDesktopApp]);
+  }, [applyAiSurface, isDesktopApp, setVersionHistoryOpen]);
 
   const promoteAiToSidebar = useCallback(() => {
     if (!isDesktopApp) {
       return;
     }
+    setVersionHistoryOpen(false);
     setAiInlineRunAnchor(null);
     setAiInlineRunAnchorCanvas(null);
     applyAiSurface(promoteToSidebar());
-  }, [applyAiSurface, isDesktopApp]);
+  }, [applyAiSurface, isDesktopApp, setVersionHistoryOpen]);
+
+  const openVersionHistory = () => {
+    if (versionHistoryRestoring) return;
+    if (versionHistoryOpen) {
+      setVersionHistoryOpen(false);
+      setVersionHistoryPreviewState(null);
+      return;
+    }
+    applyAiSurface({ displayMode: "sidebar", aiSidebarOpen: false, aiInlineOpen: false });
+    setCommentsPanelOpen(false);
+    setVersionHistoryOpen(true);
+  };
+
+  const handleVersionHistoryPreviewChange = useCallback((version: DocumentVersion | null) => {
+    setVersionHistoryRestoreError(null);
+    setVersionHistoryPreviewState(version
+      ? { fileId: activeFileIdRef.current, version }
+      : null);
+  }, [setVersionHistoryRestoreError, setVersionHistoryPreviewState]);
 
   // R2: clicking an in-body AI run-anchor widget for a background room should
   // bring that room's log into view — promote to the docked sidebar (works
@@ -7499,9 +7899,10 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   // AiEditPanel which room to select once it (re)mounts in sidebar mode.
   const [aiFocusRoomRequest, setAiFocusRoomRequest] = useState<{ roomId: string; seq: number } | null>(null);
   const focusAiSession = useCallback((roomId: string) => {
+    setVersionHistoryOpen(false);
     setAiFocusRoomRequest({ roomId, seq: Date.now() });
     applyAiSurface(promoteToSidebar());
-  }, [applyAiSurface]);
+  }, [applyAiSurface, setVersionHistoryOpen]);
 
   const closeAiSurface = useCallback(() => {
     // Closing the inline editor discards a single-shot result, so drop the floating
@@ -8086,6 +8487,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       } else if (next.displayMode === "inline") {
         openAiInline(null);
       } else {
+        setVersionHistoryOpen(false);
         applyAiSurface(next);
       }
     };
@@ -8137,7 +8539,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
   // ページ編集面が実際に描かれる条件。ステータスバーのページ数もこれを見る
   // （描かれていないのに前の教材のページ数を出さないため。onPageCountChange は
   // アンマウントでは呼ばれない）。
-  const pageEditorMounted = workspaceReady && !activeDocumentOpenFailure;
+  const pageEditorMounted = workspaceReady && !activeDocumentOpenFailure && !versionHistoryPreviewActive;
 
   const reloadFailedDocument = useCallback(async () => {
     const failure = documentOpenFailureRef.current;
@@ -8410,7 +8812,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
     "workspace",
     showPageNavigator ? "" : "outline-hidden",
     outlineOpen ? "" : "outline-collapsed",
-    aiSurface.gridHasAiColumn ? "ai-sidebar-open" : "",
+    aiSurface.gridHasAiColumn || versionHistoryOpen ? "ai-sidebar-open" : "",
   ].filter(Boolean).join(" ");
 
   const renderMenuShortcut = (commandId: EditorCommandId) => {
@@ -8764,6 +9166,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       // `saveState` / `statusMessage` は渡さない。打鍵のたびに動く値なので、
       // 購読は葉 (`SaveStatusIndicators`) に閉じ込めてある。
       setStatusMessage, shapeGallerySections, lineToolItems, t, toggleMenu,
+      versionHistoryPreviewActive,
     },
     editing: {
       setMaterialLibraryOpen,
@@ -8828,7 +9231,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace,
       openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openOtherImportDialog,
       openPrintPreview, openTextImportDialog, otherImportInputRef,
-      openWorkspaceScreen, promoteAiToSidebar, reportIssue, requestOverlayImages,
+      openVersionHistory, openWorkspaceScreen, promoteAiToSidebar, reportIssue, requestOverlayImages,
       resolvedDocumentTitle, scheduleCloseNewDocMenu,
       setAiSettingsOpen, setDesktopSettingsOpen: openDesktopSettingsFromChrome, setExportMenuOpen, setNewDocMenuOpen,
       setOutlineDialogOpen, setOverlayEditing, setPageSettingsOpen, setTemplateGalleryOpen,
@@ -8836,7 +9239,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
       settingsMenuButtonRef, showRichTitle,
       showTitleUpdateButton, titleInputValue, titleRichNodes,
       titleUpdateButtonDisabled, toggleCommentsPanel, uiLayoutPreference, updateMetadata,
-      updateUiLayoutPreference,
+      updateUiLayoutPreference, versionHistoryOpen,
     },
     ribbon: {
       applyColumnCommand,
@@ -9001,6 +9404,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           data-whiteboard={isWhiteboardDocument ? "true" : undefined}
           ref={editorCanvasRef}
           onClick={(event) => {
+            if (versionHistoryPreviewActive) return;
             const target = event.target instanceof Element ? event.target : null;
             if (target?.closest("[data-sigma-doc-id], [data-overlay-shape-id], .overlay-canvas-bleed-surface, .overlay-canvas-editor, .page-overlay-preview, [data-problem-area]")) {
               return;
@@ -9014,7 +9418,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
           {/* 「AIが今何をやっているか」を常時確認できるcockpitの入口。折りたたみ時は
               canvas左上のアイコン1つだけ (バッジで実行中/要対応を示す)。開閉はUIローカル
               stateなので、旧: メニューの開閉トグルは廃止した (redundant)。 */}
-          {(isDesktopApp || webMcpEnabled) && workspaceReady && !activeDocumentOpenFailure && (
+          {!versionHistoryPreviewActive && (isDesktopApp || webMcpEnabled) && workspaceReady && !activeDocumentOpenFailure && (
             <AiTaskDock
               documentIdentityKey={isDesktopApp ? activeFileId : document.docId}
               document={document}
@@ -9034,7 +9438,7 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
               webMcpHistory={webMcpEnabled ? webMcpHistory : undefined}
             />
           )}
-          {workspaceReady && isWhiteboardDocument && (
+          {!versionHistoryPreviewActive && workspaceReady && isWhiteboardDocument && (
             <CommentDock
               document={document}
               open={commentsPanelOpen}
@@ -9096,11 +9500,15 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             onDelete={removeBlock}
             onDeleteBlocks={removeBlocks}
             onInsertBodyBlock={insertBodyBlockAt}
+            onMoveBlocks={moveBlocksByDragRequest}
+            onMoveBlocksByStep={moveBlocksByStepRequest}
             onCopyBlock={copyBlockToClipboard}
             onPasteBlock={pasteBlockFromClipboard}
             canPasteProblem={canPasteProblem}
             onWrapBlockInColumns={wrapBlockInColumns}
             onUnwrapColumns={unwrapColumns}
+            onResizeLayoutColumns={resizeLayoutColumns}
+            onBlockSpaceAfterChange={updateBlockSpaceAfter}
             onDuplicate={handleDuplicateBlock}
             onMove={handleMoveBlock}
             onAddProblemBlock={handleAddProblemBlock}
@@ -9144,10 +9552,78 @@ function EditorShellBody({ embeddedHost, editorStore }: EditorShellProps & { edi
             documentWorkspaceId={activeDocumentMetadata?.workspaceId ?? null}
             onFocusAiSession={focusAiSession}
           />}
+          {versionHistoryPreview && (
+            <div className="version-history-preview" data-version-history-preview="true">
+              <div className="version-history-preview-banner" role="status">
+                <strong>{t("versionHistory.viewingVersion", {
+                  date: new Intl.DateTimeFormat(getAppLocale(), {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }).format(new Date(versionHistoryPreview.capturedAt)),
+                })}</strong>
+                <div className="version-history-preview-actions">
+                  <button
+                    type="button"
+                    className="button primary"
+                    disabled={versionHistoryRestoring}
+                    onClick={() => {
+                      setVersionHistoryRestoring(true);
+                      setVersionHistoryRestoreError(null);
+                      void restoreDocumentVersion(versionHistoryPreview)
+                        .then((result) => {
+                          if (result.ok) setVersionHistoryPreviewState(null);
+                          else setVersionHistoryRestoreError(result.error);
+                        })
+                        .catch(() => setVersionHistoryRestoreError(t("versionHistory.restoreFailed")))
+                        .finally(() => setVersionHistoryRestoring(false));
+                    }}
+                  >
+                    {versionHistoryRestoring ? <Loader2 className="save-state-spinner" size={14} aria-hidden="true" /> : <RotateCcw size={14} aria-hidden="true" />}
+                    {t("versionHistory.restore")}
+                  </button>
+                  <button type="button" className="button" disabled={versionHistoryRestoring} onClick={() => handleVersionHistoryPreviewChange(null)}>
+                    {t("versionHistory.returnToCurrent")}
+                  </button>
+                </div>
+              </div>
+              {versionHistoryRestoreError && <p className="version-history-preview-error" role="alert">{versionHistoryRestoreError}</p>}
+              <div className="version-history-preview-scroll">
+                <PagedRenderSurface document={versionHistoryPreview.document} profile="teacher" />
+              </div>
+            </div>
+          )}
         </section>
 
         {renderAiHost()}
+        {versionHistoryOpen && (
+          <VersionHistoryPanel
+            key={activeFileId}
+            busy={versionHistoryRestoring}
+            fileId={activeFileId}
+            historyWarning={versionHistoryWarning}
+            onClose={() => {
+              setVersionHistoryOpen(false);
+              setVersionHistoryPreviewState(null);
+              setVersionHistoryRestoreError(null);
+            }}
+            onPreviewChange={handleVersionHistoryPreviewChange}
+            selectedVersionId={versionHistoryPreview?.versionId ?? null}
+          />
+        )}
       </main>
+
+      {windowCloseSaveDialog && (
+        <WindowCloseSaveDialog
+          error={windowCloseSaveDialog.error}
+          saving={windowCloseSaveDialog.saving}
+          onRetry={() => void attemptWindowCloseSave()}
+          onCloseWithoutSaving={() => void finishWindowCloseSave("ready")}
+          onCancel={() => void finishWindowCloseSave("cancel")}
+        />
+      )}
 
       {overlayGraphSettingsDialog}
       {overlayChartSettingsDialog}

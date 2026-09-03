@@ -34,7 +34,7 @@ import type { Translate } from "@/lib/i18n";
 import { SUPPORTED_OVERLAY_IMAGE_MIME_TYPES } from "@/lib/overlay-image-files";
 import { STUDYAID_IMPORT_ACCEPT, STUDYAID_IMPORT_AVAILABLE } from "@/lib/studyaid-prt-import";
 import { POWERPOINT_IMPORT_ACCEPT } from "@/lib/powerpoint-import";
-import { AlertTriangle, AppWindow, ArrowDownRight, ArrowLeft, Bold, Braces, BringToFront, Building2, ChartSpline, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardCopy, ClipboardPaste, Code, Columns3, Copy, Cuboid, Download, FileCog, FilePlus, FileQuestion, FileText, FolderOpen, Highlighter, ImageIcon, Italic, Keyboard, LayoutTemplate, Library, List, ListChevronsUpDown, ListOrdered, ListPlus, ListTree, Loader2, MessageSquare, Minus, MinusCircle, MoreHorizontal, MoveDown, MoveUp, PaintBucket, PenLine, Plus, PlusCircle, Quote, Redo2, Replace, Rows3, Search, SendToBack, SeparatorHorizontal, Sigma, SlidersHorizontal, Sparkles, Square, SquareFunction, Trash2, Type, Underline, Undo2, X } from "lucide-react";
+import { AlertTriangle, AppWindow, ArrowDownRight, ArrowLeft, Bold, Braces, BringToFront, Building2, ChartSpline, Check, ChevronDown, ChevronRight, ChevronUp, ClipboardCopy, ClipboardPaste, Clock3, Code, Columns3, Copy, Cuboid, Download, FileCog, FilePlus, FileQuestion, FileText, FolderOpen, Highlighter, ImageIcon, Italic, Keyboard, LayoutTemplate, Library, List, ListChevronsUpDown, ListOrdered, ListPlus, ListTree, Loader2, MessageSquare, Minus, MinusCircle, MoreHorizontal, MoveDown, MoveUp, PaintBucket, PenLine, Plus, PlusCircle, Quote, Redo2, Replace, Rows3, Search, SendToBack, SeparatorHorizontal, Sigma, SlidersHorizontal, Sparkles, Square, SquareFunction, Trash2, Type, Underline, Undo2, X } from "lucide-react";
 import { Fragment } from "react";
 import type { ReactNode } from "react";
 import type { DesktopUpdateState } from "@/types/desktop";
@@ -67,14 +67,14 @@ interface RibbonGroupDefinition {
 }
 
 export function renderEditorChrome(chrome: EditorChromeValue) {
-  const { activeDocumentOpenFailure, activeFileId, addBlock, aiMenuButtonRef, appUpdateState, closeDocumentTab, commentsPanelOpen, copyDocumentText, createDocumentTab, createWhiteboardDocumentTab, degradedWatcherScopes, deleteActiveDocument, documentMetadatas, documentTitle, duplicateActiveDocument, exportJson, exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction, importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId, newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace, openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openOtherImportDialog, openPrintPreview, openTextImportDialog, openWorkspaceScreen, otherImportInputRef, promoteAiToSidebar, reportIssue, requestOverlayImages, resolvedDocumentTitle, scheduleCloseNewDocMenu, setAiSettingsOpen, setDesktopSettingsOpen, setExportMenuOpen, setNewDocMenuOpen, setOutlineDialogOpen, setOverlayEditing, setPageSettingsOpen, setTemplateGalleryOpen, setTexCommandReferenceOpen, setTexEnvironmentSettingsOpen, setTitleInputFocused, settingsMenuButtonRef, showRichTitle, showTitleUpdateButton, titleInputValue, titleRichNodes, titleUpdateButtonDisabled, toggleCommentsPanel, uiLayoutPreference, updateMetadata } = chrome.appMenu;
+  const { activeDocumentOpenFailure, activeFileId, addBlock, aiMenuButtonRef, appUpdateState, closeDocumentTab, commentsPanelOpen, copyDocumentText, createDocumentTab, createWhiteboardDocumentTab, degradedWatcherScopes, deleteActiveDocument, documentMetadatas, documentTitle, duplicateActiveDocument, exportJson, exportMenuOpen, fileMenuButtonRef, handleTitleUpdateAction, importDocumentFile, importInputRef, insertMenuButtonRef, loadingFileId, newDocButtonRef, newDocMenuOpen, openCommandSettings, openDocumentInWorkspace, openDocumentListDialog, openDocumentTabs, openImportDialog, openNewDocMenu, openOtherImportDialog, openPrintPreview, openTextImportDialog, openVersionHistory, openWorkspaceScreen, otherImportInputRef, promoteAiToSidebar, reportIssue, requestOverlayImages, resolvedDocumentTitle, scheduleCloseNewDocMenu, setAiSettingsOpen, setDesktopSettingsOpen, setExportMenuOpen, setNewDocMenuOpen, setOutlineDialogOpen, setOverlayEditing, setPageSettingsOpen, setTemplateGalleryOpen, setTexCommandReferenceOpen, setTexEnvironmentSettingsOpen, setTitleInputFocused, settingsMenuButtonRef, showRichTitle, showTitleUpdateButton, titleInputValue, titleRichNodes, titleUpdateButtonDisabled, toggleCommentsPanel, uiLayoutPreference, updateMetadata, versionHistoryOpen } = chrome.appMenu;
   const { commandTooltip, renderMenuShortcut } = chrome.commands;
   const { setMaterialLibraryOpen } = chrome.editing;
   const { ActiveTextAlignIcon, activeFontFamilyLabel, activeTextAlignOption, activeTextFontSize, applyBlockStructure, applyBoxedTextPaddingY, applyInlineFormat, applyLineHeight, applyTextAlign, applyTextStyle, blockStyleState, boldActive, boxedTextActive, boxedTextButtonRef, boxedTextMenuOpen, boxedTextPaddingY, boxedTextVariant, canUseBlockStructure, canUseLineHeight, canUseTextAlign, canUseTextBlockStyle, canUseTextToolbar, fontFamily, fontFamilyButtonRef, fontFamilyIsKnownOption, fontFamilyIsMixed, fontFamilyMenuOpen, fontFamilyQuery, handleLineHeightStepClick, italicActive, lineHeight, lineHeightButtonRef, lineHeightCustomOpen, lineHeightInput, lineHeightInputError, lineHeightMenuOpen, moreBlocksMenuButtonRef, moreBlocksMenuOpen, orderedListMenuButtonRef, orderedListMenuOpen, setMoreBlocksMenuOpen, setOrderedListMenuOpen, saveEditorFontFamilyPreference, selectBoxedTextVariant, selectedTextAlign, selectedTextStyle, setFontFamily, setFontFamilyQuery, setLineHeightCustomOpen, setLineHeightInput, setLineHeightInputError, setTextBackgroundColor, setTextColor, setTextFontSize, startLineHeightStepping, stopLineHeightStepping, textAlignButtonRef, textAlignMenuOpen, textBackgroundColor, textBackgroundColorButtonRef, textColor, textColorButtonRef, toggleBoxedText, underlineActive, visibleCustomFontOptions, visibleFontFamilyGroups, blockStyleButtonRef, blockStyleMenuOpen, fontSizeButtonRef, fontSizeMenuOpen } = chrome.format;
   const { ActiveLineToolIcon, activeLineToolItem, activeOverlayTool, bodyToolbarLockedByAi, cancelInlineMathMenuClose, inlineMathButtonRef, inlineMathMenuOpen, lineToolMenuButtonRef, lineToolMenuOpen, openInlineMathMenu, scheduleInlineMathMenuClose, selectedInlineMath, selectedInlineMathDetails, setInlineMathMenuOpen, shapeMenuButtonRef, shapeMenuOpen, startInlineMathFromToolbar } = chrome.insert;
   const { findNext, findPrevious, overlayEditing, replaceAll, replaceNext, replaceOpen, replaceText, searchButtonRef, searchMatchCount, searchOpen, searchQuery, setReplaceOpen, setReplaceText, setSearchOpen, setSearchQuery } = chrome.search;
   const { applyOverlayStyle, arrangeOverlayShapes, canArrangeOverlayShapes, canUseFillStyleControls, canUseLineEndpointControls, canUseLineStyleControls, canUseStrokeStyleControls, effectiveLineDashMenuOpen, effectiveLineEndpointMenu, effectiveLineWidthMenuOpen, fillColorButtonRef, fillColorPatch, lineDashButtonRef, lineWidthButtonRef, overlaySelection, selectedOverlayLineDash, selectedOverlayLineSize, selectionFill, selectionFillColor, selectionFillOpacity, setStrokeColor, strokeColor, strokeColorButtonRef } = chrome.shapeStyle;
-  const { activeMenu, aiDocumentWriteInProgress, colorStylePanel, document, getActiveTextTarget, imageInputRef, insertInlineMath, isDesktopApp, isEmbedded, runEditCommand, runOverlayCommand, setStatusMessage, shapeGallerySections, lineToolItems, t, toggleMenu } = chrome.shared;
+  const { activeMenu, aiDocumentWriteInProgress, colorStylePanel, document, getActiveTextTarget, imageInputRef, insertInlineMath, isDesktopApp, isEmbedded, runEditCommand, runOverlayCommand, setStatusMessage, shapeGallerySections, lineToolItems, t, toggleMenu, versionHistoryPreviewActive } = chrome.shared;
   const { setActiveMenu, setBoxedTextMenuOpen, setColorStylePanel, setFontFamilyMenuOpen, setBlockStyleMenuOpen, setFontSizeMenuOpen, setLineDashMenuOpen, setLineEndpointMenu, setLineHeightMenuOpen, setLineToolMenuOpen, setLineWidthMenuOpen, setShapeMenuOpen, setTextAlignMenuOpen } = chrome.toolbarMenus;
   const { activePageNumber, applyZoom, pageCount, zoom, zoomOptions } = chrome.view;
   const { applyColumnCommand, backstage, closeBackstage, columnCommand, contextualTabVisible, ribbonCollapse, ribbonIdPrefix, ribbonTabState, selectBackstageSection, selectRibbonTab, toggleBackstage, toggleRibbonCollapse } = chrome.ribbon;
@@ -93,7 +93,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
   );
 
   const documentTitleRow = (
-    <div className="document-title-row">
+    <div className="document-title-row" inert={versionHistoryPreviewActive || undefined}>
       {/* 入力欄は常時マウントしたまま、非フォーカス時だけリッチ表示を重ねる。
           フォーカスの有無で要素を差し替えると getByLabel("教材タイトル") を使う
           既存の操作 (値の検証・フォーカス・入力) と IME 変換が一斉に壊れる。 */}
@@ -453,6 +453,20 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
     </button>
   );
 
+  const versionHistoryButton = isEmbedded ? null : (
+    <button
+      type="button"
+      className="version-history-button"
+      title={t("versionHistory.title")}
+      aria-label={t("versionHistory.title")}
+      aria-pressed={versionHistoryOpen}
+      onClick={openVersionHistory}
+    >
+      <Clock3 size={15} aria-hidden="true" />
+      <span>{t("versionHistory.title")}</span>
+    </button>
+  );
+
   const menubarRightActions = (
     <div className="menubar-right-actions">
       {!isEmbedded && (
@@ -588,7 +602,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
     // 保存状態バッジは docs と同じ .save-state-wrap をそのまま入れ子にしている。
     // 入れ子にすると .menubar-row の grid item ではなくなり grid-column:4 が失効し
     // flex: 0 1 260px だけが残るので、ribbon-chrome.css 側で打ち消している。
-    <div className="ribbon-qat">
+    <div className="ribbon-qat" inert={versionHistoryPreviewActive || undefined}>
       {saveStateBadge}
       {undoButton}
       {redoButton}
@@ -599,6 +613,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
     // docs ではタイトル行に常設だったワークスペース導線をここへ戻す。
     // 出し分けは docs 側 menubarRightActions と同じ !isEmbedded。
     <div className="ribbon-titlebar-actions">
+      {versionHistoryButton}
       {!isEmbedded && (
         <button
           type="button"
@@ -2823,7 +2838,11 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
   // Backstage 表示中は描かない (見えていない本文へズームが効かないように)。
   // ---------------------------------------------------------------------------
   const ribbonStatusBar = uiLayoutPreference.mode !== "word" || backstageOpen ? null : (
-    <footer className="ribbon-statusbar" aria-label={t("statusBar.aria")}>
+    <footer
+      className="ribbon-statusbar"
+      aria-label={t("statusBar.aria")}
+      inert={versionHistoryPreviewActive || undefined}
+    >
       {/* activePageNumber はスクロールでしか更新されない。AI 編集などでページが
           «スクロールせずに» 減ると N > M の一瞬が出るので、表示側で丸める。 */}
       <div className="ribbon-statusbar-pages">{t("statusBar.pages", { current: Math.min(activePageNumber, pageCount), total: pageCount })}</div>
@@ -2844,6 +2863,7 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
     settingsMenu,
     documentTabsRow,
     saveStateBadge,
+    versionHistoryButton,
     reportIssueButton,
     menubarRightActions,
     editingGroup,
@@ -2861,6 +2881,8 @@ export function renderEditorChrome(chrome: EditorChromeValue) {
     ribbonQat,
     ribbonTitlebarActions,
     ribbonStatusBar,
+    appMenuInert: chrome.shared.versionHistoryPreviewActive,
+    editingSurfaceInert: chrome.shared.versionHistoryPreviewActive,
   };
 
   return uiLayoutPreference.mode === "word"

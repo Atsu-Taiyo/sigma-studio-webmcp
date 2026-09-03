@@ -231,6 +231,30 @@ describe("large text paste", () => {
     plannedEditor.destroy();
   });
 
+  it("keeps a large paste behind a manual break at the owner block start", () => {
+    const blocks: TextFlowBlock[] = [
+      paragraph("before", "前"),
+      { ...paragraph("after", "後"), pagination: { break: true } },
+    ];
+    const editor = createEditor(blocks);
+    const position = textPosition(editor, "after", 0);
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.state.doc, position)));
+
+    const plan = buildLargeTextPastePlan({
+      state: editor.state,
+      previousBlocks: blocks,
+      pastedBlocks: [paragraph("paste", "貼付")],
+      scopeId: "document",
+      unitId: "document",
+    });
+
+    expect(plan?.nextBlocks.map((block) => [block.id, block.pagination?.break, ...blockTexts([block])])).toEqual([
+      ["before", undefined, "前"],
+      ["after", true, "貼付後"],
+    ]);
+    editor.destroy();
+  });
+
   it("commits a literal large paste as one undoable plan", () => {
     const history = new DocumentHistoryController<{ blocks: TextFlowBlock[] }, null>(10);
     const before = { blocks: INITIAL_BLOCKS };

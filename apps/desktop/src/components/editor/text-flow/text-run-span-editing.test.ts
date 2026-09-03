@@ -17,6 +17,7 @@ import {
   createTextFlowClipboardPayload,
 } from "@/lib/editor-clipboard";
 import type { TextFlowBlock } from "@/features/text-editing";
+import { replaceTopLevelTextFlowBlocks } from "@/features/text-editing";
 
 import {
   applyTextRunSpanFormat,
@@ -44,10 +45,14 @@ interface TestUnit {
   unregister: () => void;
 }
 
-function paragraphNode(id: string, text: string) {
+function paragraphNode(id: string, text: string, breakBefore = false) {
   return {
     type: "paragraph",
-    attrs: { sigmaDocId: id, sigmaDocType: "paragraph" },
+    attrs: {
+      sigmaDocId: id,
+      sigmaDocType: "paragraph",
+      ...(breakBefore ? { pagination: { break: true } } : {}),
+    },
     content: text ? [{ type: "text", text }] : [],
   };
 }
@@ -55,7 +60,7 @@ function paragraphNode(id: string, text: string) {
 function createUnit(
   unitId: string,
   order: number,
-  paragraphs: Array<{ id: string; text: string }>,
+  paragraphs: Array<{ breakBefore?: boolean; id: string; text: string }>,
 ): TestUnit {
   const editor = new Editor({
     element: document.createElement("div"),
@@ -69,13 +74,18 @@ function createUnit(
     }),
     content: {
       type: "doc",
-      content: paragraphs.map((paragraph) => paragraphNode(paragraph.id, paragraph.text)),
+      content: paragraphs.map((paragraph) => paragraphNode(
+        paragraph.id,
+        paragraph.text,
+        paragraph.breakBefore,
+      )),
     },
   });
   const blocks: TextFlowBlock[] = paragraphs.map((paragraph) => ({
     type: "paragraph",
     id: paragraph.id,
     children: paragraph.text ? [{ type: "text", text: paragraph.text }] : [],
+    ...(paragraph.breakBefore ? { pagination: { break: true } } : {}),
   }));
   const onChange = vi.fn();
   const markCrossEditorSync = vi.fn();
@@ -182,6 +192,90 @@ describe("handleTextRunSpanTextInput", () => {
     const { first } = createSpanPair();
     expect(handleTextRunSpanTextInput(first.editor.view.dom, "")).toBe(true);
     expect(getActiveTextRunSpan()).not.toBeNull();
+  });
+
+  it("手動改ページを跨ぐ Backspace は各ユニットを独立更新し owner id を複製しない", () => {
+    const first = createUnit("unit-a", 0, [
+      { id: "p_before", text: "前の段落テキストです。" },
+    ]);
+    const second = createUnit("unit-b", 1, [
+      { id: "p_break", text: "改ページ後の段落テキストです。", breakBefore: true },
+      { id: "p_after", text: "後ろの段落テキストです。" },
+    ]);
+    cleanups.push(() => {
+      first.unregister();
+      second.unregister();
+      first.editor.destroy();
+      second.editor.destroy();
+    });
+
+    first.editor.commands.setTextSelection({
+      from: 1 + "前の".length,
+      to: first.editor.state.doc.content.size - 1,
+    });
+    const shiftRight = () => handleTextRunSpanKeyDown(
+      new KeyboardEvent("keydown", { key: "ArrowRight", shiftKey: true }),
+      first.editor.view.dom,
+    );
+    expect(shiftRight()).toBe(true);
+    expect(shiftRight()).toBe(true);
+    expect(shiftRight()).toBe(true);
+    expect(getActiveTextRunSpan()).not.toBeNull();
+
+    expect(handleTextRunSpanKeyDown(
+      new KeyboardEvent("keydown", { key: "Backspace" }),
+      first.editor.view.dom,
+    )).toBe(true);
+
+    expect(first.onChange).toHaveBeenCalledTimes(1);
+    expect(second.onChange).toHaveBeenCalledTimes(1);
+    const [firstPreviousIds, firstNextBlocks] = first.onChange.mock.calls[0];
+    const [secondPreviousIds, secondNextBlocks] = second.onChange.mock.calls[0];
+    expect(firstPreviousIds).toEqual(["p_before"]);
+    expect(firstNextBlocks).toMatchObject([{
+      id: "p_before",
+      children: [{ type: "text", text: "前の" }],
+    }]);
+    expect(secondPreviousIds).toEqual(["p_break", "p_after"]);
+    expect(secondNextBlocks[0]).toMatchObject({
+      id: "p_break",
+      children: [{ type: "text", text: "ージ後の段落テキストです。" }],
+      pagination: { break: true },
+    });
+    expect(secondNextBlocks[1]).toMatchObject({
+      id: "p_after",
+      children: [{ type: "text", text: "後ろの段落テキストです。" }],
+    });
+    expect(secondNextBlocks.map((block: TextFlowBlock) => block.id)).toEqual(["p_break", "p_after"]);
+    expect(new Set([
+      ...firstNextBlocks.map((block: TextFlowBlock) => block.id),
+      ...secondNextBlocks.map((block: TextFlowBlock) => block.id),
+    ]).size).toBe(3);
+
+    let savedBlocks: TextFlowBlock[] = [
+      { type: "paragraph", id: "p_before", children: [{ type: "text", text: "前の段落テキストです。" }] },
+      {
+        type: "paragraph",
+        id: "p_break",
+        children: [{ type: "text", text: "改ページ後の段落テキストです。" }],
+        pagination: { break: true },
+      },
+      { type: "paragraph", id: "p_after", children: [{ type: "text", text: "後ろの段落テキストです。" }] },
+    ];
+    for (const unit of [first, second]) {
+      for (const [previousIds, nextBlocks] of unit.onChange.mock.calls) {
+        savedBlocks = replaceTopLevelTextFlowBlocks(savedBlocks, previousIds, nextBlocks) as TextFlowBlock[];
+      }
+    }
+    expect(savedBlocks).toMatchObject([
+      { id: "p_before", children: [{ type: "text", text: "前の" }] },
+      {
+        id: "p_break",
+        children: [{ type: "text", text: "ージ後の段落テキストです。" }],
+        pagination: { break: true },
+      },
+      { id: "p_after", children: [{ type: "text", text: "後ろの段落テキストです。" }] },
+    ]);
   });
 
   it("選択範囲のインラインマークを引き継いで置換する (単一エディタの marksAcross と同じ規則)", () => {

@@ -9,8 +9,10 @@ import {
   createLayoutSection,
   createParagraph,
   deleteBlocksFromDocument,
+  duplicateTopLevelBlock,
   ensureBodyBlockAfterProblem,
   ensureEditableBody,
+  findBlock,
   findContainingBoxBlock,
   findContainingLayoutSection,
   findContainingProblem,
@@ -20,6 +22,7 @@ import {
   insertTopLevelBlockReplacingEmptySelection,
   isOverlayShapeId,
   moveBlocksInDocument,
+  removeBlockFromDocument,
   resolveTextFlowBlockRangeIds,
   unwrapLayoutSection,
   updateBlockInDocument,
@@ -29,6 +32,7 @@ import {
 import { createGraphShapeProps } from "@/components/editor/overlay-canvas/shapes/graph";
 import { ensurePageLayout } from "@/lib/page-layout";
 import { getDefaultPageLayout, type OverlayShape, type OverlayTableShape, type OverlayTextShape } from "@/features/document";
+import { getLayoutSectionColumns } from "@/features/text-editing";
 import type { ListNode, SigmaDocument, ParagraphNode, ProblemNode } from "@/types/sigma-doc";
 
 const paragraph = (id: string, text: string): ParagraphNode => ({
@@ -245,8 +249,11 @@ describe("document tree", () => {
     expect(section).toMatchObject({
       type: "layoutSection",
       layout: { columnCount: 3 },
-      children: [{ id: "target" }],
     });
+    if (section.type === "layoutSection") {
+      expect(section.children).toHaveLength(3);
+      expect(section.layout.columnStartIds).toEqual(section.children.map((child) => child.id));
+    }
     expect(findContainingLayoutSection(wrapped, "target")?.id).toBe(section.id);
 
     const unwrapped = unwrapLayoutSection(wrapped, section.id);
@@ -328,8 +335,11 @@ describe("document tree", () => {
     expect(section).toMatchObject({
       type: "layoutSection",
       layout: { columnCount: 3 },
-      children: [{ id: "solution_first" }, { id: "solution_second" }],
     });
+    if (section.type === "layoutSection") {
+      expect(section.children).toHaveLength(3);
+      expect(section.children.slice(0, 2).map((child) => child.id)).toEqual(["solution_first", "solution_second"]);
+    }
     expect(findContainingLayoutSection(wrapped, "solution_first")?.id).toBe(section.id);
 
     const unwrapped = unwrapLayoutSection(wrapped, section.id);
@@ -393,8 +403,8 @@ describe("document tree", () => {
     expect(section).toMatchObject({
       type: "layoutSection",
       layout: { columnCount: 2 },
-      children: [{ id: "target" }],
     });
+    if (section.type === "layoutSection") expect(section.children).toHaveLength(2);
     expect(findContainingLayoutSection(wrapped, "target")?.id).toBe(section.id);
     expect(findContainingBoxBlock(wrapped, "target")?.id).toBe("box");
     expect(findContainingBoxBlock(wrapped, section.id)?.id).toBe("box");
@@ -453,6 +463,224 @@ describe("deleteBlocksFromDocument", () => {
     const document = { ...baseDocument, content: [list] };
 
     expect(() => deleteBlocksFromDocument(document, ["item_1"])).toThrow();
+  });
+
+  it("transfers a deleted block's manual break to its next sibling", () => {
+    const document = {
+      ...baseDocument,
+      content: [
+        paragraph("before", "前"),
+        { ...paragraph("deleted", "削除"), pagination: { break: true as const } },
+        paragraph("after", "後"),
+      ],
+    };
+
+    const next = deleteBlocksFromDocument(document, ["deleted"]);
+
+    expect(next.content.map((block) => [block.id, block.pagination?.break])).toEqual([
+      ["before", undefined],
+      ["after", true],
+    ]);
+  });
+
+  it("keeps surviving blocks in their pre-delete layout columns when a column start is removed", () => {
+    const document: SigmaDocument = {
+      ...baseDocument,
+      content: [{
+        type: "layoutSection",
+        id: "columns",
+        layout: {
+          columnCount: 2,
+          columnStartIds: ["a", "c"],
+          columnWidths: [6000, 4000],
+        },
+        children: [
+          paragraph("a", "a"),
+          paragraph("b", "b"),
+          paragraph("c", "c"),
+          paragraph("d", "d"),
+          paragraph("e", "e"),
+        ],
+      }],
+    };
+
+    const next = deleteBlocksFromDocument(document, ["c"]);
+    const section = next.content[0];
+    expect(section.type).toBe("layoutSection");
+    if (section.type !== "layoutSection") return;
+    expect(section.layout.columnStartIds).toEqual(["a", "d"]);
+    expect(section.layout.columnWidths).toEqual([6000, 4000]);
+    expect(getLayoutSectionColumns(section).map((column) => column.map((block) => block.id)))
+      .toEqual([["a", "b"], ["d", "e"]]);
+  });
+
+  it("keeps an empty owner in a column emptied by direct removal", () => {
+    const document: SigmaDocument = {
+      ...baseDocument,
+      content: [{
+        type: "layoutSection",
+        id: "columns",
+        layout: {
+          columnCount: 2,
+          columnStartIds: ["left", "right"],
+          columnWidths: [5000, 5000],
+        },
+        children: [paragraph("left", "left"), paragraph("right", "right")],
+      }],
+    };
+
+    const next = removeBlockFromDocument(document, "right");
+    const section = next.content[0];
+    expect(section.type).toBe("layoutSection");
+    if (section.type !== "layoutSection") return;
+    const columns = getLayoutSectionColumns(section);
+    expect(columns).toHaveLength(2);
+    expect(columns[0].map((block) => block.id)).toEqual(["left"]);
+    expect(columns[1]).toHaveLength(1);
+    expect(columns[1][0]).toMatchObject({ type: "paragraph", children: [{ type: "text", text: "" }] });
+  });
+
+  it("leaves an unrelated sparse three-column section untouched", () => {
+    const sparseSection = {
+      type: "layoutSection" as const,
+      id: "sparse-columns",
+      layout: {
+        columnCount: 3,
+        columnStartIds: ["left", "right", "missing-third-owner"],
+        columnWidths: [2000, 3000, 5000],
+      },
+      children: [paragraph("left", "left"), paragraph("right", "right")],
+    };
+    const document: SigmaDocument = {
+      ...baseDocument,
+      content: [sparseSection, paragraph("outside", "outside")],
+    };
+
+    const next = deleteBlocksFromDocument(document, ["outside"]);
+
+    expect(next.content[0]).toBe(sparseSection);
+    expect(next.content[0]).toMatchObject({
+      layout: {
+        columnCount: 3,
+        columnStartIds: ["left", "right", "missing-third-owner"],
+        columnWidths: [2000, 3000, 5000],
+      },
+    });
+  });
+
+  it("preserves three columns and their widths when deletion empties one column", () => {
+    const document: SigmaDocument = {
+      ...baseDocument,
+      content: [{
+        type: "layoutSection",
+        id: "columns",
+        layout: {
+          columnCount: 3,
+          columnStartIds: ["left", "middle", "right"],
+          columnWidths: [2000, 3000, 5000],
+        },
+        children: [
+          paragraph("left", "left"),
+          paragraph("middle", "middle"),
+          paragraph("right", "right"),
+        ],
+      }],
+    };
+
+    const next = deleteBlocksFromDocument(document, ["middle"]);
+    const section = next.content[0];
+    expect(section.type).toBe("layoutSection");
+    if (section.type !== "layoutSection") return;
+    const columns = getLayoutSectionColumns(section);
+    expect(section.layout.columnCount).toBe(3);
+    expect(section.layout.columnWidths).toEqual([2000, 3000, 5000]);
+    expect(columns).toHaveLength(3);
+    expect(columns[0].map((block) => block.id)).toEqual(["left"]);
+    expect(columns[1]).toHaveLength(1);
+    expect(columns[1][0]).toMatchObject({ type: "paragraph", children: [{ type: "text", text: "" }] });
+    expect(columns[2].map((block) => block.id)).toEqual(["right"]);
+  });
+
+  it("reuses unrelated layout sections inside a problem area and a box", () => {
+    const problemSection = {
+      type: "layoutSection" as const,
+      id: "problem-columns",
+      layout: {
+        columnCount: 3,
+        columnStartIds: ["problem-left", "problem-right", "problem-missing"],
+        columnWidths: [2000, 3000, 5000],
+      },
+      children: [paragraph("problem-left", "left"), paragraph("problem-right", "right")],
+    };
+    const boxSection = {
+      type: "layoutSection" as const,
+      id: "box-columns",
+      layout: {
+        columnCount: 3,
+        columnStartIds: ["box-left", "box-right", "box-missing"],
+        columnWidths: [2500, 2500, 5000],
+      },
+      children: [paragraph("box-left", "left"), paragraph("box-right", "right")],
+    };
+    const document: SigmaDocument = {
+      ...baseDocument,
+      content: [{
+        type: "problem",
+        id: "problem",
+        tags: [],
+        lead: [],
+        prompt: [problemSection, paragraph("problem-sibling", "delete")],
+        solution: [],
+        hints: [],
+      }, {
+        type: "boxBlock",
+        id: "box",
+        styleId: "plain",
+        blocks: [boxSection, paragraph("box-sibling", "delete")],
+      }],
+    };
+
+    const next = deleteBlocksFromDocument(document, ["problem-sibling", "box-sibling"]);
+    const problem = next.content[0];
+    const box = next.content[1];
+    expect(problem.type).toBe("problem");
+    expect(box.type).toBe("boxBlock");
+    if (problem.type !== "problem" || box.type !== "boxBlock") return;
+    expect(problem.prompt[0]).toBe(problemSection);
+    expect(box.blocks[0]).toBe(boxSection);
+    expect(problemSection.layout.columnCount).toBe(3);
+    expect(boxSection.layout.columnCount).toBe(3);
+  });
+});
+
+describe("duplicateTopLevelBlock", () => {
+  it("rewrites layout column starts to the duplicated child ids", () => {
+    const document: SigmaDocument = {
+      ...baseDocument,
+      content: [{
+        type: "layoutSection",
+        id: "columns",
+        layout: {
+          columnCount: 2,
+          columnStartIds: ["left", "right"],
+          columnWidths: [6000, 4000],
+        },
+        children: [
+          paragraph("left", "left"),
+          paragraph("left-tail", "left tail"),
+          paragraph("right", "right"),
+          paragraph("right-tail", "right tail"),
+        ],
+      }],
+    };
+
+    const next = duplicateTopLevelBlock(document, "columns");
+    const copy = next.content[1];
+    expect(copy.type).toBe("layoutSection");
+    if (copy.type !== "layoutSection") return;
+    expect(copy.layout.columnStartIds).toEqual([copy.children[0].id, copy.children[2].id]);
+    expect(getLayoutSectionColumns(copy).map((column) => column.length)).toEqual([2, 2]);
+    expect(copy.layout.columnWidths).toEqual([6000, 4000]);
   });
 });
 
@@ -514,6 +742,43 @@ describe("ensureEditableBody", () => {
 });
 
 describe("moveBlocksInDocument", () => {
+  it.each([
+    { name: "後方", targetId: "d", position: "after" as const, expectedIds: ["a", "c", "d", "b"] },
+    { name: "前方", targetId: "a", position: "before" as const, expectedIds: ["b", "a", "c", "d"] },
+  ])("moves a break-owning block $name without duplicating its break", ({ targetId, position, expectedIds }) => {
+    const document = {
+      ...baseDocument,
+      content: [
+        paragraph("a", "a"),
+        { ...paragraph("b", "b"), pagination: { break: true as const } },
+        paragraph("c", "c"),
+        paragraph("d", "d"),
+      ],
+    };
+
+    const next = moveBlocksInDocument(document, ["b"], targetId, position);
+
+    expect(next.content.map((block) => block.id)).toEqual(expectedIds);
+    expect(next.content.filter((block) => block.pagination?.break === true).map((block) => block.id))
+      .toEqual(["b"]);
+  });
+
+  it("drops a moved block's break when its destination cannot own one", () => {
+    const box = createBoxBlock("fancybox", "", { id: "box", bodyId: "box_body", bodyText: "inside" });
+    const document = {
+      ...baseDocument,
+      content: [
+        { ...paragraph("moving", "moving"), pagination: { break: true as const } },
+        box,
+      ],
+    };
+
+    const next = moveBlocksInDocument(document, ["moving"], "box_body", "after");
+    const moved = findBlock(next, "moving");
+
+    expect(moved && moved.type !== "listItem" ? moved.pagination?.break : undefined).toBeUndefined();
+  });
+
   it("moves a top-level block before another top-level block", () => {
     const document = {
       ...baseDocument,
@@ -567,7 +832,40 @@ describe("moveBlocksInDocument", () => {
     if (nextSection.type !== "layoutSection") {
       return;
     }
-    expect(nextSection.children.map((block) => block.id)).toEqual(["in_section", "outside"]);
+    expect(nextSection.children.slice(0, 2).map((block) => block.id)).toEqual(["in_section", "outside"]);
+    expect(nextSection.children).toHaveLength(3);
+  });
+
+  it("keeps surviving blocks in their source columns when moving a column start out", () => {
+    const document: SigmaDocument = {
+      ...baseDocument,
+      content: [{
+        type: "layoutSection",
+        id: "columns",
+        layout: {
+          columnCount: 2,
+          columnStartIds: ["a", "c"],
+          columnWidths: [6000, 4000],
+        },
+        children: [
+          paragraph("a", "a"),
+          paragraph("b", "b"),
+          paragraph("c", "c"),
+          paragraph("d", "d"),
+          paragraph("e", "e"),
+        ],
+      }, paragraph("outside", "outside")],
+    };
+
+    const next = moveBlocksInDocument(document, ["c"], "outside", "after");
+    const section = next.content[0];
+    expect(section.type).toBe("layoutSection");
+    if (section.type !== "layoutSection") return;
+    expect(section.layout.columnStartIds).toEqual(["a", "d"]);
+    expect(section.layout.columnWidths).toEqual([6000, 4000]);
+    expect(getLayoutSectionColumns(section).map((column) => column.map((block) => block.id)))
+      .toEqual([["a", "b"], ["d", "e"]]);
+    expect(next.content.map((block) => block.id)).toEqual(["columns", "outside", "c"]);
   });
 
   it("throws when the target is one of the moved blocks", () => {

@@ -8,6 +8,7 @@ import type { LedgerSchemaFailure } from "@/lib/library-schema";
 import type { SigmaDocumentRecoveryIssue, SigmaDocumentSchemaFailure } from "@/lib/sigma-doc-schema";
 import type { MaterialContent, MaterialItem } from "@/types/material";
 import type { TemplateItem } from "@/types/template";
+import type { DocumentVersion, DocumentVersionMetadata, DocumentVersionOrigin } from "@/lib/document-version-history";
 
 export interface DesktopAiEditChatAttachmentSummary {
   id: string;
@@ -400,6 +401,10 @@ export interface DesktopAppAPI {
   openLatestReleasePage(): Promise<{ ok: boolean; error?: string }>;
   getEditorPreferences?(): Promise<DesktopEditorPreferences>;
   saveEditorPreferences?(preferences: { fontFamily?: string | null }): Promise<DesktopEditorPreferencesSaveResult>;
+  onCloseRequested?(handler: () => void): () => void;
+  acknowledgeCloseRequest?(): Promise<boolean>;
+  notifyCloseReady?(): Promise<boolean>;
+  cancelCloseRequest?(): Promise<boolean>;
 }
 
 export type DesktopUpdatePhase =
@@ -477,9 +482,21 @@ export interface DesktopStorageResult {
   currentRevision?: number;
   /** saveDocument 成功時のみ: 保存直後のファイル revision。 */
   revision?: number;
+  /** 通常保存に伴うバージョン履歴の記録有無。 */
+  versionCaptured?: boolean;
+  /** 正本保存は成功したが、履歴サイドカー記録だけが失敗した場合の詳細。 */
+  versionCaptureError?: string;
+  /** 正本削除は成功したが、履歴サイドカー掃除だけが失敗した場合の詳細。 */
+  versionCleanupError?: string;
 }
 
 export type DesktopStorageChangeEvent =
+  | {
+      type: "documentVersion";
+      fileId: string;
+      change: "captured" | "pruned";
+      timestamp: number;
+    }
   | {
       type: "document";
       fileId: string;
@@ -680,6 +697,8 @@ export type DesktopMcpEditProposalsActionResult =
       ok: true;
       file?: DesktopDocumentMetadata;
       document?: SigmaDocument;
+      versionCaptured?: boolean;
+      versionCaptureError?: string;
       /** Proposals that failed to (re-)apply during a batch approve and were left pending. */
       failed?: {
         proposalId: string;
@@ -751,8 +770,15 @@ export interface DesktopStorageAPI {
   saveDocument(
     fileId: string,
     document: SigmaDocument,
-    options: { expectedRevision: number },
+    options: { expectedRevision: number; origin?: DocumentVersionOrigin },
   ): Promise<DesktopStorageResult>;
+  listDocumentVersions(fileId: string): Promise<DocumentVersionMetadata[]>;
+  getDocumentVersion(fileId: string, versionId: string): Promise<DocumentVersion | null>;
+  captureDocumentVersion(
+    fileId: string,
+    document: SigmaDocument,
+    options: { expectedRevision: number; origin: DocumentVersionOrigin },
+  ): Promise<{ ok: boolean; version?: DocumentVersionMetadata; error?: string }>;
   createDocument(payload?: {
     title?: string;
     workspaceId?: string | null;

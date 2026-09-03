@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildPrintContent,
+  estimatePrintContentUnitHeight,
   paginateMeasuredPrintBlocks,
   PrintPreview,
   PrintPreviewPageNavigator,
@@ -9,9 +11,12 @@ import {
   translateNestedMeasuredBlock,
   type PrintContentUnit,
 } from "@/components/print/PrintPreview";
+import { PrintLayoutSectionFragment } from "@/components/print/print-static-blocks";
 import { renderMathHtml } from "@/features/rendering/adapters";
+import { MM_TO_PX } from "@/features/document";
 import { createBoxBlock } from "@/lib/box-blocks";
 import { createMathRenderEnvironment } from "@/lib/math-environment";
+import { getPrintProblemFrameFragmentChromeHeightMm } from "@/lib/problem-frame";
 import type { SigmaBlock, SigmaDocument } from "@/types/sigma-doc";
 
 const document: SigmaDocument = {
@@ -461,6 +466,171 @@ describe("PrintPreviewPageNavigator", () => {
 });
 
 describe("PrintPreview print pagination", () => {
+  it("places each exact 90mm problem area independently without overflowing its page", () => {
+    // エリア単位 keep-together：問題全体をまとめて動かす規則は 3 エンジン統一で撤去済み。
+    // 各エリアは自分の予約込みで残りに収まるページに置かれる。
+    const regressionDocument: SigmaDocument = {
+      version: "2.0",
+      docId: "doc_print_problem_pagination",
+      metadata: { title: "問題と解答の改ページ確認" },
+      content: [
+        {
+          type: "paragraph",
+          id: "before_problem",
+          children: [{ type: "text", text: "問題の前にある本文" }],
+        },
+        {
+          type: "problem",
+          id: "kept_problem",
+          tags: [],
+          numbering: { enabled: false },
+          lead: [],
+          prompt: [{
+            type: "paragraph",
+            id: "kept_prompt",
+            children: [{ type: "text", text: "問題文" }],
+          }],
+          solution: [{
+            type: "paragraph",
+            id: "kept_solution",
+            children: [{ type: "text", text: "解答" }],
+          }],
+          hints: [],
+          frame: { enabled: true },
+          areaLayout: {
+            prompt: { minHeightMm: 32 },
+            solution: { minHeightMm: 32 },
+          },
+        },
+      ],
+      outputProfiles: {
+        student: { showSolutions: false },
+        teacher: { showSolutions: true },
+        answerBook: { onlySolutions: true, showSolutions: true },
+      },
+      pageLayout: {
+        preset: "custom",
+        orientation: "portrait",
+        pageSize: { widthMm: 80, heightMm: 90 },
+        marginsMm: { top: 10, right: 10, bottom: 10, left: 10 },
+        flow: { type: "columns", columnCount: 1, columnGapMm: 0 },
+      },
+    };
+    const contentHeightPx = 70 * (96 / 25.4);
+    const units = buildPrintContent(regressionDocument.content);
+    // DOM 実測の本文・問題枠間の占有高は static 見積りと異なるため、
+    // 実機と同じ prompt=1 ページ目、solution=2 ページ目になる入力高に較正する。
+    const heights = units.map((unit, index) => (
+      index === 0 ? 100 : estimatePrintContentUnitHeight(unit, contentHeightPx)
+    ));
+    const flowHeights = [...heights];
+    const pages = paginateMeasuredPrintBlocks(
+      units,
+      heights,
+      flowHeights,
+      1,
+      contentHeightPx,
+      0,
+      new Map(),
+      0,
+    );
+    const areaPage = (area: "prompt" | "solution") => pages.findIndex((page) => (
+      page.columns[0].blocks.some((unit) => (
+        (unit.type === "problemArea" || unit.type === "problemAreaFragment") && unit.area === area
+      ))
+    ));
+    const placedHeight = (pageIndex: number) => pages[pageIndex].columns[0].blocks.reduce((height, unit) => {
+      const sourceIndex = units.findIndex((source) => source.id === unit.id);
+      return height + (sourceIndex >= 0 ? heights[sourceIndex] : 0);
+    }, 0);
+
+    expect(areaPage("prompt")).toBe(0);
+    expect(areaPage("solution")).toBe(1);
+    expect(pages).toHaveLength(2);
+    expect(placedHeight(0)).toBeLessThanOrEqual(contentHeightPx + 0.5);
+    expect(placedHeight(1)).toBeLessThanOrEqual(contentHeightPx + 0.5);
+    expect(units.filter((unit) => unit.type === "problemArea").map((unit) => (
+      estimatePrintContentUnitHeight(unit, contentHeightPx)
+    ))).toEqual(expect.arrayContaining([
+      expect.closeTo(32 * (96 / 25.4), 5),
+      expect.closeTo(32 * (96 / 25.4), 5),
+    ]));
+  });
+
+  it("places the exact 110mm prompt on page one and solution on page two", () => {
+    // エリア単位 keep-together：問題全体をまとめて動かす規則は 3 エンジン統一で撤去済み。
+    // 各エリアは自分の予約込みで残りに収まるページに置かれる。
+    const regressionDocument: SigmaDocument = {
+      version: "2.0",
+      docId: "doc_reserved_area_keep_together",
+      metadata: { title: "解答欄の確保とページ送り" },
+      content: [
+        ...Array.from({ length: 6 }, (_, index) => ({
+          type: "paragraph" as const,
+          id: `filler_${index + 1}`,
+          children: [{ type: "text" as const, text: `本文 ${index + 1} 行目のサンプルです` }],
+        })),
+        {
+          type: "problem",
+          id: "reserved_problem",
+          tags: [],
+          numbering: { enabled: false },
+          lead: [],
+          prompt: [{ type: "paragraph", id: "reserved_prompt", children: [{ type: "text", text: "問題文" }] }],
+          solution: [{ type: "paragraph", id: "reserved_solution", children: [{ type: "text", text: "解答" }] }],
+          hints: [],
+          frame: { enabled: true },
+          areaLayout: {
+            prompt: { minHeightMm: 22 },
+            solution: { minHeightMm: 22 },
+          },
+        },
+      ],
+      outputProfiles: {
+        student: { showSolutions: false },
+        teacher: { showSolutions: true },
+        answerBook: { onlySolutions: true, showSolutions: true },
+      },
+      pageLayout: {
+        preset: "custom",
+        orientation: "portrait",
+        pageSize: { widthMm: 90, heightMm: 110 },
+        marginsMm: { top: 10, right: 10, bottom: 10, left: 10 },
+        flow: { type: "columns", columnCount: 1, columnGapMm: 0 },
+      },
+    };
+    const contentHeightPx = 90 * (96 / 25.4);
+    const units = buildPrintContent(regressionDocument.content);
+    // DOM 実測と static 見積りの差をテスト入力側で吸収し、6 段落 + prompt が
+    // 1 ページ目に収まり、solution だけが 2 ページ目に送られる実機配置を再現する。
+    const heights = units.map((unit, index) => (
+      index < 6 ? 40 : estimatePrintContentUnitHeight(unit, contentHeightPx)
+    ));
+    const flowHeights = [...heights];
+    const pages = paginateMeasuredPrintBlocks(units, heights, flowHeights, 1, contentHeightPx, 0, new Map(), 0);
+    const areaPage = (area: "prompt" | "solution") => pages.findIndex((page) => (
+      page.columns[0].blocks.some((unit) => (
+        (unit.type === "problemArea" || unit.type === "problemAreaFragment") && unit.area === area
+      ))
+    ));
+    const placedHeight = (pageIndex: number) => pages[pageIndex].columns[0].blocks.reduce((height, unit) => {
+      const sourceIndex = units.findIndex((source) => source.id === unit.id);
+      return height + (sourceIndex >= 0 ? heights[sourceIndex] : 0);
+    }, 0);
+
+    expect(areaPage("prompt")).toBe(0);
+    expect(areaPage("solution")).toBe(1);
+    expect(pages).toHaveLength(2);
+    expect(placedHeight(0)).toBeLessThanOrEqual(contentHeightPx + 0.5);
+    expect(placedHeight(1)).toBeLessThanOrEqual(contentHeightPx + 0.5);
+    expect(units.filter((unit) => unit.type === "problemArea").map((unit) => (
+      estimatePrintContentUnitHeight(unit, contentHeightPx)
+    ))).toEqual(expect.arrayContaining([
+      expect.closeTo(22 * (96 / 25.4), 5),
+      expect.closeTo(22 * (96 / 25.4), 5),
+    ]));
+  });
+
   it("moves an explicit break to the next column before starting a physical page", () => {
     const html = renderToStaticMarkup(
       <PrintPreview
@@ -561,7 +731,7 @@ describe("PrintPreview print pagination", () => {
     expect(html).toContain('data-problem-area-fragment="last"');
   });
 
-  it("keeps a framed problem prompt and solution together when both fit on the next page", () => {
+  it("keeps independently fitting prompt and solution areas on the current page", () => {
     const html = renderToStaticMarkup(
       <PrintPreview
         document={documentWithColumns(1, [
@@ -593,12 +763,12 @@ describe("PrintPreview print pagination", () => {
     );
 
     expect(renderedPageColumns(html)).toEqual([
-      [["p_before_problem"]],
-      [["problem_kept_with_solution", "kept_prompt", "kept_solution"]],
+      [["p_before_problem", "problem_kept_with_solution", "kept_prompt", "kept_solution"]],
+      [[]],
     ]);
   });
 
-  it("still splits a framed problem whose prompt and solution cannot fit on one page", () => {
+  it("splits an oversized solution area while keeping the framed prompt area atomic", () => {
     const html = renderToStaticMarkup(
       <PrintPreview
         document={documentWithColumns(1, [
@@ -763,6 +933,83 @@ describe("PrintPreview print pagination", () => {
     expect(previewHtml).toContain('data-problem-area-fragment="middle"');
     expect(previewHtml).toContain('data-problem-area-fragment="last"');
     expect(previewHtml).toContain('data-sigma-doc-id="problem_layout_section"');
+  });
+
+  it("splits an oversized problem-internal layout section across print columns", () => {
+    const html = renderToStaticMarkup(
+      <PrintPreview
+        document={documentWithColumns(2, [
+          {
+            type: "problem",
+            id: "problem_split_layout_section",
+            tags: [],
+            numbering: { enabled: false },
+            lead: [],
+            prompt: [],
+            solution: [{
+              type: "layoutSection",
+              id: "split_problem_layout_section",
+              layout: { columnCount: 2, columnGapMm: 6 },
+              children: Array.from({ length: 12 }, (_, index) => (
+                richParagraph(`split_problem_layout_child_${index + 1}`, `内部段 ${index + 1}`)
+              )),
+            }],
+            hints: [],
+          },
+        ], shortTwoColumnPageLayout())}
+        profile="teacher"
+      />,
+    );
+    const previewHtml = renderedPreviewHtml(html);
+
+    expect(previewHtml).toContain('data-layout-section-fragment="first"');
+    expect(previewHtml).toContain('data-layout-section-fragment="last"');
+    const outerColumns = renderedPageColumns(html).flat();
+    expect(outerColumns.findIndex((ids) => ids.includes("split_problem_layout_child_1")))
+      .toBeLessThan(outerColumns.findIndex((ids) => ids.includes("split_problem_layout_child_12")));
+    for (let index = 1; index <= 12; index += 1) {
+      expect(previewHtml).toContain(`data-sigma-doc-id="split_problem_layout_child_${index}"`);
+    }
+  });
+
+  it("honors a manual break inside a fitting problem-internal layout section", () => {
+    const html = renderToStaticMarkup(
+      <PrintPreview
+        document={documentWithColumns(2, [{
+          type: "problem",
+          id: "problem_manual_layout_section",
+          tags: [],
+          numbering: { enabled: false },
+          lead: [],
+          prompt: [],
+          solution: [{
+            type: "layoutSection",
+            id: "manual_problem_layout_section",
+            layout: { columnCount: 2, columnGapMm: 6 },
+            children: [
+              richParagraph("manual_problem_layout_before", "改段前"),
+              {
+                ...richParagraph("manual_problem_layout_after", "改段後"),
+                pagination: { break: true as const },
+              },
+            ],
+          }],
+          hints: [],
+        }])}
+        profile="teacher"
+      />,
+    );
+    const previewHtml = renderedPreviewHtml(html);
+    const sectionHtml = previewHtml.slice(previewHtml.indexOf('data-layout-section-source-id="manual_problem_layout_section"'));
+    const innerColumns = sectionHtml
+      .split('<div class="print-layout-section-column"')
+      .slice(1, 3)
+      .map((columnHtml) => [...columnHtml.matchAll(/data-sigma-doc-id="([^"]+)"/g)].map((match) => match[1]));
+
+    expect(previewHtml).toContain('data-layout-section-fragment="single"');
+    expect(innerColumns[0]).toContain("manual_problem_layout_before");
+    expect(innerColumns[0]).not.toContain("manual_problem_layout_after");
+    expect(innerColumns[1]).toContain("manual_problem_layout_after");
   });
 
   it("flows numbered unframed problem blocks through both columns with one anchor and number", () => {
@@ -997,7 +1244,7 @@ describe("PrintPreview print pagination", () => {
     expect(fullSpanBlockCount).toBeGreaterThanOrEqual(2);
   });
 
-  it("does not apply min-height CSS to split problem-area fragments", () => {
+  it("carries a split problem area's remaining min-height on its final fragments and counts trailing pages", () => {
     const html = renderToStaticMarkup(
       <PrintPreview
         document={documentWithColumns(2, [
@@ -1012,7 +1259,7 @@ describe("PrintPreview print pagination", () => {
               richParagraph(`split_min_height_${index + 1}`, `解答欄 ${index + 1}`)
             )),
             hints: [],
-            areaLayout: { solution: { minHeightMm: 80 } },
+            areaLayout: { solution: { minHeightMm: 180 } },
           },
         ], shortTwoColumnPageLayout())}
         profile="teacher"
@@ -1022,8 +1269,38 @@ describe("PrintPreview print pagination", () => {
 
     expect(previewHtml).toContain('data-problem-area-fragment="first"');
     expect(previewHtml).toContain('data-problem-area-fragment="last"');
-    expect(previewHtml).not.toContain("min-height:80mm");
-    expect(html).toContain("min-height:80mm");
+    expect(sectionTagContaining(previewHtml, 'data-problem-area-fragment="first"')).not.toContain("min-height");
+    expect(sectionTagContaining(previewHtml, 'data-problem-area-fragment="last"')).toContain("min-height");
+    expect(renderedPageColumns(html).length).toBeGreaterThan(1);
+  });
+
+  it("renders an empty problem-area reservation as page-spanning fragments", () => {
+    const html = renderToStaticMarkup(
+      <PrintPreview
+        document={documentWithColumns(1, [{
+          type: "problem",
+          id: "empty_page_spanning_reservation",
+          tags: [],
+          numbering: { enabled: false },
+          lead: [],
+          prompt: [],
+          solution: [],
+          hints: [],
+          areaLayout: { solution: { minHeightMm: 180 } },
+        }], {
+          ...shortTwoColumnPageLayout(),
+          flow: { type: "columns", columnCount: 1, columnGapMm: 0 },
+        })}
+        profile="teacher"
+      />,
+    );
+    const previewHtml = renderedPreviewHtml(html);
+
+    expect(previewHtml).toContain('data-print-preview-page-count="3"');
+    expect(previewHtml).toContain('data-problem-area-fragment="first"');
+    expect(previewHtml).toContain('data-problem-area-fragment="middle"');
+    expect(previewHtml).toContain('data-problem-area-fragment="last"');
+    expect(previewHtml).toContain("print-problem-area-reservation-only");
   });
 
   it("flows a tall unframed problem area across one-column page boundaries", () => {
@@ -1571,5 +1848,670 @@ describe("paginateMeasuredPrintBlocks keeps a block whose only overflow is its s
     const pages = paginate([unit("a"), unit("b"), unit("c")], [900, 150, 100]);
 
     expect(pages.map((page) => page.blocks.map((block) => block.id))).toEqual([["a"], ["b", "c"]]);
+  });
+
+  it("excludes the following block's trailing space from keep-with-next fitting", () => {
+    const heading = unit("heading");
+    heading.pagination = { keepWithNext: true };
+    const units = [unit("filler"), heading, unit("body", 20)];
+    const run = () => paginate(units, [70, 20, 30]);
+
+    const first = run();
+    expect(first.map((page) => page.blocks.map((block) => block.id))).toEqual([["filler", "heading", "body"]]);
+    expect(run()).toEqual(first);
+  });
+});
+
+describe("paginateMeasuredPrintBlocks problem-area reservations and nested sections", () => {
+  function problemArea(
+    id: string,
+    area: "lead" | "prompt" | "solution",
+    blocks: Extract<PrintContentUnit, { type: "problemArea" }>["blocks"],
+    options: { hasFrame?: boolean; minHeightMm?: number; columnSpan?: "column" | "full" } = {},
+  ): Extract<PrintContentUnit, { type: "problemArea" }> {
+    return {
+      type: "problemArea",
+      id,
+      problemId: `${id}:problem`,
+      area,
+      blocks,
+      minHeightMm: options.minHeightMm,
+      numberFontSize: 12,
+      hasFrame: options.hasFrame ?? false,
+      columnSpan: options.columnSpan,
+      isFirstProblemArea: true,
+      isLastProblemArea: true,
+      isFirstProblemFrameArea: options.hasFrame ?? false,
+      isLastProblemFrameArea: options.hasFrame ?? false,
+    };
+  }
+
+  function measured(entries: Record<string, number>): Map<string, number> {
+    return new Map(Object.entries(entries));
+  }
+
+  function paginateTwice(
+    units: PrintContentUnit[],
+    heights: number[],
+    descendantHeights: Map<string, number>,
+    columnCount = 1,
+  ) {
+    const run = () => paginateMeasuredPrintBlocks(
+      units,
+      heights,
+      heights,
+      columnCount,
+      100,
+      0,
+      descendantHeights,
+      8,
+    );
+    const first = run();
+    expect(run()).toEqual(first);
+    return first;
+  }
+
+  it("keeps a problem lead with the following framed prompt on the same page", () => {
+    const lead = problemArea("lead_keep_lead", "lead", [richParagraph("lead_keep_number", "1")]);
+    const prompt = problemArea(
+      "lead_keep_prompt",
+      "prompt",
+      [richParagraph("lead_keep_prompt_block", "prompt")],
+      { hasFrame: true },
+    );
+    lead.problemId = "lead_keep_problem";
+    prompt.problemId = "lead_keep_problem";
+    prompt.isFirstProblemArea = false;
+
+    const pages = paginateTwice(
+      [
+        { type: "block", id: "lead_keep_filler", block: richParagraph("lead_keep_filler", "filler") },
+        lead,
+        prompt,
+      ],
+      [70, 20, 40],
+      measured({ lead_keep_number: 20, lead_keep_prompt_block: 40 }),
+    );
+
+    expect(pages.map((page) => page.blocks.map((block) => block.id))).toEqual([
+      ["lead_keep_filler"],
+      ["lead_keep_lead:area-fragment:0", "lead_keep_prompt"],
+    ]);
+  });
+
+  it("keeps a problem lead on the page where its full-span prompt starts", () => {
+    const lead = problemArea("full_lead_keep_lead", "lead", [richParagraph("full_lead_number", "1")]);
+    const prompt = problemArea(
+      "full_lead_keep_prompt",
+      "prompt",
+      [richParagraph("full_lead_prompt_block", "prompt")],
+      { columnSpan: "full" },
+    );
+    lead.problemId = "full_lead_keep_problem";
+    prompt.problemId = "full_lead_keep_problem";
+    prompt.isFirstProblemArea = false;
+
+    const pages = paginateTwice(
+      [
+        { type: "block", id: "full_lead_filler", block: richParagraph("full_lead_filler", "filler") },
+        lead,
+        prompt,
+      ],
+      [70, 20, 40],
+      measured({ full_lead_number: 20, full_lead_prompt_block: 40 }),
+    );
+
+    expect(pages.map((page) => page.blocks.map((block) => block.id))).toEqual([
+      ["full_lead_filler"],
+      ["full_lead_keep_lead:area-fragment:0", "full_lead_keep_prompt"],
+    ]);
+  });
+
+  it("automatically fragments a framed area taller than one page", () => {
+    const blocks = [
+      richParagraph("auto_frame_1", "first"),
+      richParagraph("auto_frame_2", "second"),
+      richParagraph("auto_frame_3", "third"),
+    ];
+    const pages = paginateTwice(
+      [problemArea("auto_frame", "prompt", blocks, { hasFrame: true })],
+      [120],
+      measured({ auto_frame_1: 40, auto_frame_2: 40, auto_frame_3: 40 }),
+    );
+    const fragments = pages.flatMap((page) => page.columns.flatMap((column) => column.blocks))
+      .filter((unit): unit is Extract<PrintContentUnit, { type: "problemAreaFragment" }> => (
+        unit.type === "problemAreaFragment"
+      ));
+
+    expect(fragments.length).toBeGreaterThanOrEqual(2);
+    expect(fragments[0].fragmentRole).toBe("first");
+    expect(fragments.at(-1)?.fragmentRole).toBe("last");
+    for (const fragment of fragments) {
+      const contentHeight = fragment.blocks.reduce(
+        (height, block) => height + (block.id.startsWith("auto_frame_") ? 40 : 0),
+        0,
+      );
+      expect(fragment.estimatedHeightPx - contentHeight).toBeCloseTo(
+        getPrintProblemFrameFragmentChromeHeightMm(undefined, fragment.fragmentRole) * MM_TO_PX,
+        5,
+      );
+    }
+  });
+
+  it("keeps every slice of one over-tall framed child inside framed area fragments", () => {
+    const child = richParagraph("single_tall_framed_child", "one long paragraph");
+    const breakOffsets = new Map([[child.id, [40, 80, 120, 160, 200]]]);
+    const run = () => paginateMeasuredPrintBlocks(
+      [problemArea("single_tall_framed_area", "prompt", [child], { hasFrame: true })],
+      [240],
+      [240],
+      1,
+      100,
+      0,
+      measured({ [child.id]: 240 }),
+      8,
+      breakOffsets,
+    );
+
+    const pages = run();
+    expect(run()).toEqual(pages);
+    const fragments = pages.flatMap((page) => page.columns.flatMap((column) => column.blocks))
+      .filter((unit): unit is Extract<PrintContentUnit, { type: "problemAreaFragment" }> => (
+        unit.type === "problemAreaFragment"
+      ));
+
+    expect(fragments.length).toBeGreaterThanOrEqual(3);
+    expect(fragments.every((fragment) => fragment.hasFrame && fragment.blockSlice !== undefined)).toBe(true);
+    expect(fragments.map((fragment) => fragment.fragmentRole)).toEqual([
+      "first",
+      ...Array.from({ length: fragments.length - 2 }, () => "middle" as const),
+      "last",
+    ]);
+    expect(fragments.every((fragment) => fragment.estimatedHeightPx <= 100.5)).toBe(true);
+    expect(fragments.slice(1).every((fragment) => breakOffsets.get(child.id)?.includes(
+      fragment.blockSlice?.sliceTop ?? -1,
+    ))).toBe(true);
+  });
+
+  it("fragments when frame chrome alone pushes a fitting child over page capacity", () => {
+    const child = richParagraph("chrome_boundary_child", "frame boundary");
+    const pages = paginateMeasuredPrintBlocks(
+      [problemArea("chrome_boundary_area", "prompt", [child], { hasFrame: true })],
+      [110],
+      [110],
+      1,
+      100,
+      0,
+      measured({ [child.id]: 95 }),
+      8,
+      new Map([[child.id, [50]]]),
+    );
+    const fragments = pages.flatMap((page) => page.columns.flatMap((column) => column.blocks))
+      .filter((unit): unit is Extract<PrintContentUnit, { type: "problemAreaFragment" }> => (
+        unit.type === "problemAreaFragment"
+      ));
+
+    expect(fragments).toHaveLength(2);
+    expect(fragments.every((fragment) => fragment.estimatedHeightPx <= 100.5)).toBe(true);
+    expect(fragments.reduce((height, fragment) => height + (fragment.blockSlice?.sliceHeight ?? 0), 0)).toBe(95);
+  });
+
+  it("uses fixed page and slice budgets for malicious measured heights", () => {
+    const child = richParagraph("budgeted_tall_child", "bounded remainder");
+    const pages = paginateMeasuredPrintBlocks(
+      [problemArea("budgeted_tall_area", "prompt", [child], { hasFrame: true })],
+      [1_000_010],
+      [1_000_010],
+      1,
+      100,
+      0,
+      measured({ [child.id]: 1_000_000 }),
+      8,
+    );
+    const slices = pages.flatMap((page) => page.columns.flatMap((column) => column.blocks))
+      .flatMap((unit) => unit.type === "problemAreaFragment" && unit.blockSlice ? [unit.blockSlice] : []);
+
+    expect(pages.length).toBeLessThanOrEqual(1_000);
+    expect(slices).toHaveLength(1_000);
+    expect(slices.reduce((height, slice) => height + slice.sliceHeight, 0)).toBe(1_000_000);
+    expect(slices.at(-1)?.sliceHeight).toBeGreaterThan(100);
+  });
+
+  it("keeps a fitting framed area atomic and moves it whole", () => {
+    const filler = paragraph("before_fitting_frame", "before");
+    const framed = problemArea(
+      "fitting_frame",
+      "prompt",
+      [richParagraph("fitting_frame_block", "prompt")],
+      { hasFrame: true },
+    );
+    const pages = paginateTwice(
+      [{ type: "block", id: filler.id, block: filler }, framed],
+      [30, 90],
+      measured({ before_fitting_frame: 30, fitting_frame_block: 70 }),
+    );
+
+    expect(pages[0].columns[0].blocks.map((unit) => unit.id)).toEqual([filler.id]);
+    expect(pages[1].columns[0].blocks).toEqual([framed]);
+  });
+
+  it("automatically fragments a full-span area taller than one page", () => {
+    const blocks = [
+      richParagraph("auto_full_1", "first"),
+      richParagraph("auto_full_2", "second"),
+    ];
+    const pages = paginateTwice(
+      [problemArea("auto_full", "prompt", blocks, { columnSpan: "full" })],
+      [120],
+      measured({ auto_full_1: 60, auto_full_2: 60 }),
+      2,
+    );
+    const fragments = pages.flatMap((page) => page.columns[0].blocks)
+      .filter((unit): unit is Extract<PrintContentUnit, { type: "problemAreaFragment" }> => (
+        unit.type === "problemAreaFragment"
+      ));
+
+    expect(fragments).toHaveLength(2);
+    expect(fragments.map((fragment) => fragment.fragmentRole)).toEqual(["first", "last"]);
+    expect(pages).toHaveLength(2);
+  });
+
+  it("uses the starting column remainder for the first nested-section fragment", () => {
+    const children = Array.from({ length: 8 }, (_, index) => richParagraph(`nested_remainder_${index + 1}`, "段内"));
+    const section = {
+      type: "layoutSection" as const,
+      id: "nested_remainder_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children,
+    };
+    const filler = paragraph("nested_remainder_filler", "前置き");
+    const units: PrintContentUnit[] = [
+      { type: "block", id: filler.id, block: filler },
+      problemArea("nested_remainder_area", "solution", [section]),
+    ];
+    const heights = measured({
+      nested_remainder_section: 160,
+      ...Object.fromEntries(children.map((child) => [child.id, 20])),
+    });
+    const pages = paginateTwice(units, [40, 160], heights, 2);
+    const firstAreaFragment = pages[0].columns[0].blocks.find(
+      (unit): unit is Extract<PrintContentUnit, { type: "problemAreaFragment" }> => unit.type === "problemAreaFragment",
+    );
+    const firstNestedIds = firstAreaFragment?.layoutSectionFragment?.columns
+      .flatMap((column) => column.blocks.map((unit) => unit.id));
+
+    expect(firstNestedIds).toHaveLength(6);
+    expect(pages[0].columns[0].estimatedContentHeightPx).toBeLessThanOrEqual(100);
+  });
+
+  it("line-slices one over-tall paragraph inside a top-level two-column section", () => {
+    const tall = richParagraph("top_nested_tall", "一つの長い段落");
+    const tail = richParagraph("top_nested_tail", "後続段落");
+    const section = {
+      type: "layoutSection" as const,
+      id: "top_nested_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children: [tall, tail],
+    };
+    const breakOffsets = new Map([[tall.id, [40, 80, 120]]]);
+    const run = () => paginateMeasuredPrintBlocks(
+      [{ type: "block", id: section.id, block: section }],
+      [150],
+      [150],
+      1,
+      100,
+      0,
+      measured({
+        top_nested_section: 150,
+        top_nested_tall: 130,
+        top_nested_tail: 20,
+      }),
+      8,
+      breakOffsets,
+    );
+
+    const pages = run();
+    expect(run()).toEqual(pages);
+    const fragment = pages[0].columns[0].blocks.find(
+      (unit): unit is Extract<PrintContentUnit, { type: "layoutSectionFragment" }> => (
+        unit.type === "layoutSectionFragment"
+      ),
+    );
+    const nested = fragment?.columns.flatMap((column) => column.blocks) ?? [];
+    const slices = nested.filter(
+      (unit): unit is Extract<PrintContentUnit, { type: "blockSlice" }> => unit.type === "blockSlice",
+    );
+
+    expect(slices.map((slice) => [slice.sliceTop, slice.sliceHeight, slice.fragmentRole])).toEqual([
+      [0, 80, "first"],
+      [80, 50, "last"],
+    ]);
+    expect(nested.at(-1)?.id).toBe(tail.id);
+    expect(fragment && renderToStaticMarkup(
+      <PrintLayoutSectionFragment unit={fragment} />,
+    )).toContain('data-block-source-id="top_nested_tall"');
+  });
+
+  it("line-slices one over-tall paragraph inside a solution two-column section", () => {
+    const tall = richParagraph("solution_nested_tall", "解答内の長い段落");
+    const tail = richParagraph("solution_nested_tail", "解答内の後続段落");
+    const section = {
+      type: "layoutSection" as const,
+      id: "solution_nested_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children: [tall, tail],
+    };
+    const breakOffsets = new Map([[tall.id, [40, 80, 120]]]);
+    const run = () => paginateMeasuredPrintBlocks(
+      [problemArea("solution_nested_area", "solution", [section])],
+      [150],
+      [150],
+      1,
+      100,
+      0,
+      measured({
+        solution_nested_section: 150,
+        solution_nested_tall: 130,
+        solution_nested_tail: 20,
+      }),
+      8,
+      breakOffsets,
+    );
+
+    const pages = run();
+    expect(run()).toEqual(pages);
+    const areaFragments = pages.flatMap((page) => page.columns.flatMap((column) => column.blocks))
+      .filter((unit): unit is Extract<PrintContentUnit, { type: "problemAreaFragment" }> => (
+        unit.type === "problemAreaFragment"
+      ));
+    const nested = areaFragments.flatMap((fragment) => (
+      fragment.layoutSectionFragment?.columns.flatMap((column) => column.blocks) ?? []
+    ));
+    const slices = nested.filter(
+      (unit): unit is Extract<PrintContentUnit, { type: "blockSlice" }> => unit.type === "blockSlice",
+    );
+
+    expect(slices.map((slice) => [slice.sliceTop, slice.sliceHeight, slice.fragmentRole])).toEqual([
+      [0, 80, "first"],
+      [80, 50, "last"],
+    ]);
+    expect(nested.at(-1)?.id).toBe(tail.id);
+  });
+
+  it("uses open-edged box fragments inside a two-column section", () => {
+    const box = createBoxBlock("itembox", "", {
+      id: "nested_print_box",
+      bodyId: "nested_print_box_body",
+    });
+    box.blocks = [
+      richParagraph("nested_print_box_1", "枠内一"),
+      richParagraph("nested_print_box_2", "枠内二"),
+      richParagraph("nested_print_box_3", "枠内三"),
+    ];
+    const section = {
+      type: "layoutSection" as const,
+      id: "nested_print_box_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children: [box],
+    };
+    const run = () => paginateMeasuredPrintBlocks(
+      [{ type: "block", id: section.id, block: section }],
+      [159],
+      [159],
+      1,
+      100,
+      0,
+      measured({
+        nested_print_box_section: 159,
+        nested_print_box: 159,
+        nested_print_box_1: 45,
+        nested_print_box_2: 45,
+        nested_print_box_3: 45,
+      }),
+      8,
+    );
+
+    const pages = run();
+    expect(run()).toEqual(pages);
+    const fragments = pages.flatMap((page) => page.columns.flatMap((column) => column.blocks)).filter(
+      (unit): unit is Extract<PrintContentUnit, { type: "layoutSectionFragment" }> => (
+        unit.type === "layoutSectionFragment"
+      ),
+    );
+    const boxFragments = fragments.flatMap((fragment) => fragment.columns.flatMap((column) => column.blocks))
+      .filter((unit): unit is Extract<PrintContentUnit, { type: "boxFragment" }> => unit.type === "boxFragment");
+
+    expect(boxFragments.map((boxFragment) => boxFragment.fragmentRole)).toEqual(["first", "middle", "last"]);
+    expect(boxFragments.flatMap((boxFragment) => boxFragment.blocks.map((child) => child.id))).toEqual([
+      "nested_print_box_1",
+      "nested_print_box_2",
+      "nested_print_box_3",
+    ]);
+    expect(fragments.map((fragment) => renderToStaticMarkup(
+      <PrintLayoutSectionFragment unit={fragment} />,
+    )).join("")).toContain('data-box-fragment="last"');
+  });
+
+  it("moves a keep-with-next pair from a short recursive page to the next full page", () => {
+    const heading = {
+      ...richParagraph("short_keep_heading", "heading"),
+      pagination: { keepWithNext: true },
+    };
+    const body = richParagraph("short_keep_body", "body");
+    const units: PrintContentUnit[] = [
+      { type: "block", id: heading.id, block: heading, pagination: heading.pagination },
+      { type: "block", id: body.id, block: body },
+    ];
+    const run = () => paginateMeasuredPrintBlocks(
+      units,
+      [20, 30],
+      [20, 30],
+      2,
+      100,
+      60,
+      measured({ short_keep_heading: 20, short_keep_body: 30 }),
+      8,
+    );
+
+    const first = run();
+    expect(first[0].columns.flatMap((column) => column.blocks)).toEqual([]);
+    expect(first[1].columns[0].blocks.map((block) => block.id)).toEqual([
+      "short_keep_heading",
+      "short_keep_body",
+    ]);
+    expect(run()).toEqual(first);
+  });
+
+  it("moves a keep-together nested section before fragmenting it", () => {
+    const box = createBoxBlock("itembox", "", { id: "kept_nested_box", bodyId: "kept_nested_body" });
+    box.blocks = [richParagraph("kept_nested_body", "枠")];
+    const section = {
+      type: "layoutSection" as const,
+      id: "kept_nested_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      pagination: { keepTogether: true },
+      children: [box],
+    };
+    const filler = paragraph("kept_nested_filler", "前置き");
+    const heights = measured({
+      kept_nested_section: 40,
+      kept_nested_box: 40,
+      kept_nested_body: 20,
+    });
+    const run = () => paginateMeasuredPrintBlocks(
+      [
+        { type: "block", id: filler.id, block: filler },
+        problemArea("kept_nested_area", "solution", [section]),
+      ],
+      [80, 40],
+      [80, 40],
+      2,
+      100,
+      0,
+      heights,
+      8,
+    );
+
+    const first = run();
+    expect(first[0].columns[0].blocks.every((unit) => unit.type !== "problemAreaFragment")).toBe(true);
+    expect(first[0].columns[1].blocks.some((unit) => unit.type === "problemAreaFragment")).toBe(true);
+    expect(run()).toEqual(first);
+  });
+
+  it("subtracts framed-fragment chrome from nested-section capacity", () => {
+    const children = Array.from({ length: 8 }, (_, index) => richParagraph(`framed_nested_${index + 1}`, "枠内段"));
+    const section = {
+      type: "layoutSection" as const,
+      id: "framed_nested_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      pagination: { break: true as const },
+      children,
+    };
+    const before = richParagraph("framed_nested_before", "枠の前半");
+    const heights = measured({
+      framed_nested_before: 10,
+      framed_nested_section: 360,
+      ...Object.fromEntries(children.map((child) => [child.id, 45])),
+    });
+    const pages = paginateTwice(
+      [problemArea("framed_nested_area", "prompt", [before, section], { hasFrame: true })],
+      [370],
+      heights,
+      2,
+    );
+
+    expect(pages.flatMap((page) => page.columns).every((column) => column.estimatedContentHeightPx <= 100.5)).toBe(true);
+    expect(pages.flatMap((page) => page.oversizedBlockIds)).toEqual([]);
+  });
+
+  it("counts frame chrome once when consuming a framed area's min-height", () => {
+    const before = richParagraph("framed_reservation_before", "前半");
+    const after = {
+      ...richParagraph("framed_reservation_after", "後半"),
+      pagination: { break: true as const },
+    };
+    const pages = paginateTwice(
+      [problemArea("framed_reservation_area", "prompt", [before, after], {
+        hasFrame: true,
+        minHeightMm: 100 / (96 / 25.4),
+      })],
+      [100],
+      measured({ framed_reservation_before: 20, framed_reservation_after: 20 }),
+      2,
+    );
+    const occupied = pages.flatMap((page) => page.columns)
+      .reduce((height, column) => height + column.estimatedContentHeightPx, 0);
+
+    expect(occupied).toBeCloseTo(100, 5);
+  });
+
+  it("excludes the following problem child trailing space from keep-with-next fitting", () => {
+    const heading = {
+      ...richParagraph("problem_keep_heading", "heading"),
+      pagination: { keepWithNext: true },
+    };
+    const body = {
+      ...richParagraph("problem_keep_body", "body"),
+      spaceAfterPx: 20,
+    };
+    const area = problemArea("problem_keep_area", "solution", [
+      richParagraph("problem_keep_filler", "filler"),
+      heading,
+      body,
+    ]);
+    const heights = measured({
+      problem_keep_filler: 70,
+      problem_keep_heading: 20,
+      problem_keep_body: 30,
+    });
+    const run = () => paginateMeasuredPrintBlocks(
+      [area],
+      [120],
+      [120],
+      2,
+      100,
+      0,
+      heights,
+      8,
+    );
+
+    const first = run();
+    expect(first[0].columns[0].blocks).toHaveLength(1);
+    expect(first[0].columns[1].blocks).toHaveLength(0);
+    expect(run()).toEqual(first);
+  });
+
+  it("splits an empty problem-area reservation across pages", () => {
+    const pages = paginateTwice(
+      [problemArea("empty_reserved_area", "solution", [], { minHeightMm: 250 / (96 / 25.4) })],
+      [250],
+      new Map(),
+    );
+
+    expect(pages.map((page) => page.columns[0].estimatedContentHeightPx)).toEqual([100, 100, 50]);
+    expect(pages.flatMap((page) => page.oversizedBlockIds)).toEqual([]);
+  });
+
+  it("moves a fitting boxed problem-area reservation to the next page without splitting it", () => {
+    const filler = paragraph("fitting_reservation_filler", "前置き");
+    const pages = paginateTwice(
+      [
+        { type: "block", id: filler.id, block: filler },
+        problemArea("fitting_boxed_reservation", "prompt", [], {
+          hasFrame: true,
+          minHeightMm: 70 / (96 / 25.4),
+        }),
+      ],
+      [50, 70],
+      new Map(),
+    );
+    const areaFragments = pages.flatMap((page) => page.columns[0].blocks)
+      .filter((unit): unit is Extract<PrintContentUnit, { type: "problemAreaFragment" }> => (
+        unit.type === "problemAreaFragment"
+      ));
+
+    expect(pages).toHaveLength(2);
+    expect(pages[0].columns[0].blocks.map((unit) => unit.id)).toEqual([filler.id]);
+    expect(areaFragments).toHaveLength(1);
+    expect(areaFragments[0].fragmentRole).toBe("single");
+    expect(areaFragments[0].estimatedHeightPx).toBeCloseTo(70, 5);
+  });
+
+  it("splits a boxed problem-area reservation that exceeds a full page", () => {
+    const pages = paginateTwice(
+      [problemArea("oversized_boxed_reservation", "solution", [], {
+        hasFrame: true,
+        minHeightMm: 250 / (96 / 25.4),
+      })],
+      [250],
+      new Map(),
+    );
+    const areaFragments = pages.flatMap((page) => page.columns[0].blocks)
+      .filter((unit): unit is Extract<PrintContentUnit, { type: "problemAreaFragment" }> => (
+        unit.type === "problemAreaFragment"
+      ));
+
+    expect(pages.map((page) => page.columns[0].estimatedContentHeightPx)).toEqual([100, 100, 50]);
+    expect(areaFragments).toHaveLength(3);
+    expect(areaFragments.map((fragment) => fragment.fragmentRole)).toEqual(["first", "middle", "last"]);
+    expect(pages.flatMap((page) => page.oversizedBlockIds)).toEqual([]);
+  });
+
+  it("does not loop when a positive reservation has no column capacity", () => {
+    const run = () => paginateMeasuredPrintBlocks(
+      [problemArea("zero_capacity_reservation", "solution", [], { minHeightMm: 10 })],
+      [40],
+      [40],
+      1,
+      0,
+      0,
+      new Map(),
+      8,
+    );
+
+    const first = run();
+    expect(first).toHaveLength(1);
+    expect(first[0].columns[0].estimatedContentHeightPx).toBe(0);
+    expect(run()).toEqual(first);
   });
 });

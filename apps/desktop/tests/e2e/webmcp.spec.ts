@@ -253,3 +253,99 @@ test("the dock reports a partially registered tool set", async ({ page }) => {
   await expect(taskDock.locator(".ai-task-dock-webmcp")).toContainText("一部の編集ツールを登録できませんでした");
   await expect(taskDock.locator(".ai-task-dock-webmcp")).toContainText("update_overlay");
 });
+
+test("WebMCP on a whiteboard rejects body text, previews proposed shapes as ghosts, and applies them", async ({ page }) => {
+  await installWebMcpMock(page);
+  await page.goto("/");
+  await expect(page.locator(".startup-splash")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }
+  ).__sigmaWebMcpTools.size)).toBe(26);
+
+  // 「新規教材」はホバーで開くメニュー。そこから新しいホワイトボードを開く。
+  await page.locator(".document-tab-action-hover").hover();
+  const newDocMenu = page.getByRole("menu", { name: "新規教材" });
+  await expect(newDocMenu).toBeVisible();
+  await newDocMenu.getByRole("menuitem", { name: "ホワイトボード" }).click();
+  await expect(page.locator(".whiteboard-page-canvas")).toBeVisible();
+  // ツール登録は教材ごとに張り直されるので、新しい教材の分を待つ。
+  await expect.poll(() => page.evaluate(() => (
+    window as unknown as { __sigmaWebMcpTools: Map<string, unknown> }
+  ).__sigmaWebMcpTools.size)).toBe(26);
+
+  type Tools = Map<string, { execute(input: unknown): Promise<unknown> | unknown }>;
+  const inspected = await page.evaluate(async () => {
+    const tools = (window as unknown as { __sigmaWebMcpTools: Tools }).__sigmaWebMcpTools;
+    return tools.get("inspect_document")!.execute({}) as Promise<{ revision: number; documentMode: string; guidance?: string }>;
+  });
+  expect(inspected.documentMode).toBe("whiteboard");
+  expect(inspected.guidance).toContain("create_overlay");
+
+  // 本文は入れられない。理由と代替 (create_overlay kind:text) がエラー文で伝わる。
+  const bodyError = await page.evaluate(async ({ revision }) => {
+    const tools = (window as unknown as { __sigmaWebMcpTools: Tools }).__sigmaWebMcpTools;
+    try {
+      await tools.get("insert_markdown")!.execute({ expectedRevision: revision, targetId: "END_OF_DOCUMENT", markdown: "本文" });
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }, { revision: inspected.revision });
+  expect(bodyError).toContain("WHITEBOARD_NO_BODY");
+  expect(bodyError).toContain('create_overlay kind:"text"');
+  const pendingAfterFailure = await page.evaluate(async () => {
+    const tools = (window as unknown as { __sigmaWebMcpTools: Tools }).__sigmaWebMcpTools;
+    return tools.get("get_pending_proposal")!.execute({}) as Promise<{ pending: boolean }>;
+  });
+  expect(pendingAfterFailure.pending).toBe(false);
+
+  // 文章は overlay text (Markdown 複数ブロック)、図形は CANVAS 絶対座標で提案する。
+  // 新規教材は開いた直後に revision が進みうるので、提案直前に読み直す。
+  const proposal = await page.evaluate(async () => {
+    const tools = (window as unknown as { __sigmaWebMcpTools: Tools }).__sigmaWebMcpTools;
+    const { revision } = await tools.get("inspect_document")!.execute({}) as { revision: number };
+    await tools.get("create_overlay")!.execute({
+      expectedRevision: revision,
+      targetId: "CANVAS",
+      id: "webmcp_wb_text",
+      kind: "text",
+      x: 120,
+      y: 96,
+      w: 360,
+      markdown: "## 円の方程式\n\n式 $x^2+y^2=1$ を考える。\n\n- 中心は $O$\n- 半径は $1$",
+    });
+    return tools.get("create_overlay")!.execute({
+      expectedRevision: revision,
+      targetId: "CANVAS",
+      id: "webmcp_wb_rect",
+      kind: "rectangle",
+      start: { x: 560, y: 120 },
+      end: { x: 760, y: 240 },
+    }) as Promise<{ ok: boolean; status: string; operationCount: number }>;
+  });
+  expect(proposal).toMatchObject({ ok: true, status: "pending_approval", operationCount: 2 });
+
+  // 適用前: キャンバス上に破線ゴーストと承認ウィジェットが見える。実図形はまだ無い。
+  const canvas = page.locator(".whiteboard-canvas");
+  const textGhost = canvas.locator('.overlay-shape.ai-diff-ghost-shape[data-overlay-shape-id="webmcp_wb_text"]');
+  const rectGhost = canvas.locator('.overlay-shape.ai-diff-ghost-shape[data-overlay-shape-id="webmcp_wb_rect"]');
+  await expect(textGhost).toBeVisible();
+  await expect(rectGhost).toBeVisible();
+  await expect(textGhost).toContainText("円の方程式");
+  await expect(textGhost).toContainText("中心は");
+  await expect(textGhost.locator('.inline-math-node[data-tex="x^2+y^2=1"]')).toBeVisible();
+  await expect(canvas.locator(".ai-overlay-approval-widget")).toBeVisible();
+  await expect(page.locator('.overlay-canvas-editor [data-overlay-shape-id="webmcp_wb_rect"]')).toHaveCount(0);
+
+  const taskDock = page.locator(".ai-task-dock-root");
+  await taskDock.getByRole("button", { name: /AIタスク/ }).hover();
+  await taskDock.getByRole("button", { name: "適用", exact: true }).click();
+
+  // 適用後: ゴーストは消え、実図形が同じ場所に居る。
+  await expect(canvas.locator(".overlay-shape.ai-diff-ghost-shape")).toHaveCount(0);
+  const appliedText = page.locator('.overlay-canvas-editor [data-overlay-shape-id="webmcp_wb_text"]');
+  await expect(appliedText).toBeVisible();
+  await expect(appliedText).toContainText("円の方程式");
+  await expect(appliedText.locator('.inline-math-node[data-tex="x^2+y^2=1"]')).toBeVisible();
+  await expect(page.locator('.overlay-canvas-editor [data-overlay-shape-id="webmcp_wb_rect"]')).toBeVisible();
+});

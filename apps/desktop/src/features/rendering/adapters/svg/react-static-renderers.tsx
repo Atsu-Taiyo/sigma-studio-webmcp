@@ -26,7 +26,14 @@ import {
 } from "@/lib/math-environment";
 
 import { renderMathHtml } from "../math-html";
-import { Graph2DPreview, MathEnvironmentValueProvider, OverlayChartStaticView, OverlayTableStaticView } from "../react";
+// Import only the static leaves used by SVG export. The React barrel also exports
+// Graph3DPreview, which depends on three/examples/OrbitControls. Pulling that barrel into
+// Electron main through ai-edit-shape-preview makes the packaged app require a browser-only
+// module at startup (and electron-builder excludes dependency examples by default).
+import { Graph2DPreview } from "../react/Graph2DPreview";
+import { MathEnvironmentValueProvider } from "../react/MathEnvironment";
+import { OverlayChartStaticView } from "../react/OverlayChartStaticView";
+import { OverlayTableStaticView } from "../react/OverlayTableStaticView";
 import {
   serializeOverlayPreviewSvg,
   serializeOverlaySvg,

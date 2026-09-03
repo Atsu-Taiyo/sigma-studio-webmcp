@@ -39,10 +39,10 @@ export function flushDeferredCaretScroll(view: EditorView): void {
  * キャレットの座標がまだ意味を持たない = 次の計測待ちか。
  *
  * - 面ごと `visibility: hidden` (段組みの未計測ユニットなど): 配置前の仮置き。
- * - 段組みのブロック単位配置を使う面で、キャレットのトップレベルブロックにまだ配置
+ * - ブロック単位配置を使う面で、キャレットのトップレベルブロックにまだ配置
  *   (`text-flow-column-block`) が付いていない: 挿入直後のブロック。
  *
- * 断片の複製 (viewport 基準) と、ブロック単位配置を使わない面 (問題エリアの段組みなど) は
+ * 断片の複製 (viewport 基準) と、ブロック単位配置を使わない面は
  * 静的位置がそのまま正しいので対象にしない。
  */
 function caretAwaitsColumnPlacement(view: EditorView): boolean {
@@ -53,18 +53,29 @@ function caretAwaitsColumnPlacement(view: EditorView): boolean {
   if (getComputedStyle(viewDom).visibility === "hidden") {
     return true;
   }
-  const flow = viewDom.closest(".page-flow");
-  if (!flow || !flow.classList.contains("columns-active")) {
-    return false;
-  }
   const block = caretTopLevelBlockElement(view);
-  if (!block || block.parentElement !== viewDom) {
-    return false;
-  }
-  if (block.classList.contains("text-flow-column-block")) {
-    return false;
-  }
-  return viewDom.querySelector(":scope > .text-flow-column-block") !== null;
+  return shouldDeferCaretScrollForPlacement({
+    caretHasPlacement: block?.classList.contains("text-flow-column-block") ?? false,
+    caretIsTopLevelBlock: block?.parentElement === viewDom,
+    hasPlacedBlocks: viewDom.querySelector(":scope > .text-flow-column-block") !== null,
+    isPlacementSurface: viewDom.closest(".text-flow-shell.column-flow-positioned") !== null,
+  });
+}
+
+/**
+ * 配置装飾の更新を待つべきか。ページ段組みと layoutSection の独立カラムは、
+ * どちらも `column-flow-positioned` 面と同じ装飾を使う。
+ */
+export function shouldDeferCaretScrollForPlacement(input: {
+  caretHasPlacement: boolean;
+  caretIsTopLevelBlock: boolean;
+  hasPlacedBlocks: boolean;
+  isPlacementSurface: boolean;
+}): boolean {
+  return input.isPlacementSurface
+    && input.caretIsTopLevelBlock
+    && !input.caretHasPlacement
+    && input.hasPlacedBlocks;
 }
 
 function caretTopLevelBlockElement(view: EditorView): HTMLElement | null {
@@ -93,6 +104,20 @@ export function resolveScrollDelta(
   }
   const below = caret.bottom + margin - viewport.bottom;
   return below > 0 ? below : 0;
+}
+
+/**
+ * `coordsAtPos` が空キャレットに返す原点の 0 矩形は、紙面上の座標ではない。
+ * その場合だけ所属ブロックの矩形へ倒し、見えているブロックを動かさない。
+ */
+export function resolveCaretRectForScroll(
+  caret: { bottom: number; top: number },
+  block: { bottom: number; top: number } | null,
+): { bottom: number; top: number } {
+  const caretIsMeasurable = Number.isFinite(caret.top)
+    && Number.isFinite(caret.bottom)
+    && (caret.top !== 0 || caret.bottom !== 0);
+  return caretIsMeasurable || !block ? caret : block;
 }
 
 /**
@@ -191,7 +216,11 @@ export function scrollCaretIntoView(
   let caret: { bottom: number; top: number };
   try {
     const coords = view.coordsAtPos(view.state.selection.head);
-    caret = { bottom: coords.bottom, top: coords.top };
+    const blockRect = caretTopLevelBlockElement(view)?.getBoundingClientRect() ?? null;
+    caret = resolveCaretRectForScroll(
+      { bottom: coords.bottom, top: coords.top },
+      blockRect ? { bottom: blockRect.bottom, top: blockRect.top } : null,
+    );
   } catch {
     return true;
   }

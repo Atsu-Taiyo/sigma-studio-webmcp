@@ -9,6 +9,7 @@ import type {
   WorkspaceState,
 } from "@/lib/runtime";
 import type { SigmaDocument } from "@/features/document";
+import type { DocumentVersionOrigin } from "@/lib/document-version-history";
 
 const tWorkspace = createCurrentLocaleTranslator("workspace");
 
@@ -94,9 +95,31 @@ export async function loadDocumentById(docId: string): Promise<SigmaDocument | n
   return loadDocumentByFileId(docId);
 }
 
-export async function saveDocumentRecord(write: ObservedDocumentWrite): Promise<StorageResult> {
+export async function saveDocumentRecord(
+  write: ObservedDocumentWrite,
+  options: { origin?: DocumentVersionOrigin } = {},
+): Promise<StorageResult> {
   return getRuntimeLibrary().saveDocument(write.fileId, write.document, {
     expectedRevision: write.observedRevision,
+    origin: options.origin,
+  });
+}
+
+export async function listDocumentVersions(fileId: string) {
+  return getRuntimeLibrary().listDocumentVersions(fileId);
+}
+
+export async function getDocumentVersion(fileId: string, versionId: string) {
+  return getRuntimeLibrary().getDocumentVersion(fileId, versionId);
+}
+
+export async function captureDocumentVersion(
+  write: ObservedDocumentWrite,
+  origin: DocumentVersionOrigin = "restore-backup",
+) {
+  return getRuntimeLibrary().captureDocumentVersion(write.fileId, write.document, {
+    expectedRevision: write.observedRevision,
+    origin,
   });
 }
 

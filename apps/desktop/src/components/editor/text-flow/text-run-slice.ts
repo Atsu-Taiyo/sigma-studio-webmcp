@@ -31,7 +31,13 @@ export function sliceToTextFlowBlocks(
   });
 
   if (blockNodes.length > 0) {
-    return tiptapToTextFlow({ type: "doc", content: blockNodes }, previousBlocks);
+    // A slice intentionally omits blocks outside its range. Carry fields for matching ids,
+    // but do not synthesize owners that belong outside the slice.
+    return tiptapToTextFlow(
+      { type: "doc", content: blockNodes },
+      previousBlocks,
+      { retainDeletedManualBreakOwners: false },
+    );
   }
 
   if (inlineNodes.length === 0) {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   getPrintProblemFrameChromePaddingMm,
+  getPrintProblemFrameFragmentChromeHeightMm,
   getProblemFrameChromePaddingPx,
   PROBLEM_FRAME_STYLE_OPTIONS,
   problemFrameClassName,
@@ -76,5 +77,14 @@ describe("problem frame chrome padding", () => {
       .toEqual(getProblemFrameChromePaddingPx(undefined));
     expect(getPrintProblemFrameChromePaddingMm("no-such-style"))
       .toEqual(getPrintProblemFrameChromePaddingMm(undefined));
+  });
+
+  it("reserves print chrome according to fragment role and frame border width", () => {
+    expect(getPrintProblemFrameFragmentChromeHeightMm("fancybox", "first")).toBeCloseTo(5.3);
+    expect(getPrintProblemFrameFragmentChromeHeightMm("fancybox", "middle")).toBeCloseTo(2.5);
+    expect(getPrintProblemFrameFragmentChromeHeightMm("fancybox", "last")).toBeCloseTo(2.8);
+    expect(getPrintProblemFrameFragmentChromeHeightMm("fancybox", "single")).toBeCloseTo(5.6);
+    expect(getPrintProblemFrameFragmentChromeHeightMm("doublebox", "single")).toBeCloseTo(7.6);
+    expect(getPrintProblemFrameFragmentChromeHeightMm("cornerbox", "single")).toBeCloseTo(12.8);
   });
 });

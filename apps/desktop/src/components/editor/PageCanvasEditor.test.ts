@@ -15,6 +15,7 @@ import {
 } from "@/components/editor/page-canvas/popover-anchors";
 import { computeProblemAreaColumnFlow, simulateBalancedColumnHeightPx } from "@/features/rendering/core";
 import {
+  buildProblemAreaOwnerByBlockId,
   buildRenderUnits,
   getLayoutSectionColumnGapPx,
   getPageColumnSideNoteOffsetPx,
@@ -37,8 +38,52 @@ import type { OverlayShape } from "@/components/editor/overlay-canvas/types";
 import { getPageMetrics, mmToPx, normalizePageLayout, PAGE_GAP_PX, type PageMetrics } from "@/lib/page-layout";
 import { collectBlocksById } from "@/lib/document-tree";
 import type { ProblemNode, RichBlock, SigmaBlock, SigmaDocument } from "@/types/sigma-doc";
+import { getBlockPaginationGapCarrier } from "@/components/editor/PageCanvasEditor";
 
 describe("local layout section columns", () => {
+  it("resolves an empty problem-area editor placeholder to its owning unit", () => {
+    const problem = createProblem({ id: "empty_lead_problem" });
+    const leadUnit = problemAreaUnit(problem, "lead", "empty_lead_unit");
+
+    expect(buildProblemAreaOwnerByBlockId([leadUnit]).get("empty_lead_problem_lead_empty")).toBe(leadUnit);
+  });
+
+  it("carries a first lead block break on the problem-area unit", () => {
+    const lead = paragraph("lead_first", "Lead");
+    const problem = createProblem({ id: "lead_carrier_problem", lead: [lead] });
+    const leadUnit = problemAreaUnit(problem, "lead", "lead_carrier_unit");
+    const owners = buildProblemAreaOwnerByBlockId([leadUnit]);
+
+    expect(getBlockPaginationGapCarrier(lead.id, owners)).toEqual({
+      gapKey: problem.id,
+      appliedGapItem: { kind: "unit", unitId: leadUnit.id },
+    });
+  });
+
+  it("carries an empty first lead break on the problem-area unit", () => {
+    const problem = createProblem({ id: "empty_lead_carrier_problem" });
+    const leadUnit = problemAreaUnit(problem, "lead", "empty_lead_carrier_unit");
+    const owners = buildProblemAreaOwnerByBlockId([leadUnit]);
+
+    expect(getBlockPaginationGapCarrier("empty_lead_carrier_problem_lead_empty", owners)).toEqual({
+      gapKey: problem.id,
+      appliedGapItem: { kind: "unit", unitId: leadUnit.id },
+    });
+  });
+
+  it("keeps later problem-area blocks on their block spacer", () => {
+    const first = paragraph("lead_first", "First");
+    const second = paragraph("lead_second", "Second");
+    const problem = createProblem({ id: "later_block_carrier_problem", lead: [first, second] });
+    const leadUnit = problemAreaUnit(problem, "lead", "later_block_carrier_unit");
+    const owners = buildProblemAreaOwnerByBlockId([leadUnit]);
+
+    expect(getBlockPaginationGapCarrier(second.id, owners)).toEqual({
+      gapKey: second.id,
+      appliedGapItem: { kind: "block", id: second.id },
+    });
+  });
+
   it("uses the section column gap instead of the document-wide fallback", () => {
     expect(getLayoutSectionColumnGapPx({
       type: "layoutSection",
@@ -302,6 +347,68 @@ describe("groupAiEditPreviewEntries", () => {
 });
 
 describe("computeColumnUnitLayouts", () => {
+  it("keeps a problem lead with its framed prompt in the same page column", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const problem = createProblem({
+      lead: [paragraph("problem_lead", "1")],
+      prompt: [paragraph("problem_prompt", "prompt")],
+      frame: { enabled: true, styleId: "fancybox" },
+    });
+    const leadUnit = problemAreaUnit(problem, "lead", "problem_1:lead");
+    const promptUnit = problemAreaUnit(problem, "prompt", "problem_1:prompt");
+    const units: RenderUnit[] = [
+      textUnit(paragraph("lead_keep_filler", "filler"), "lead_keep_filler"),
+      leadUnit,
+      promptUnit,
+    ];
+    const flow = fakeFlow({
+      lead_keep_filler: 80,
+      "problem_1:lead": { blocks: { problem_lead: 20 } },
+      "problem_1:prompt": { blocks: { problem_prompt: 30 } },
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+
+    expect(first.layouts[leadUnit.id].x).toBe(first.layouts[promptUnit.id].x);
+    expect(first.layouts[leadUnit.id].y).toBe(first.layouts[promptUnit.id].y - 20);
+    expect(first.layouts[leadUnit.id].x).toBeGreaterThan(metrics.margins.leftPx);
+    expect(second.layouts).toEqual(first.layouts);
+  });
+
+  it("keeps a problem lead on the page where its full-span prompt starts", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const problem = createProblem({
+      lead: [paragraph("full_lead", "1")],
+      prompt: [paragraph("full_prompt", "prompt")],
+      areaLayout: { prompt: { columnSpan: "full" } },
+    });
+    const leadUnit = problemAreaUnit(problem, "lead", "full_problem:lead");
+    const promptUnit = problemAreaUnit(problem, "prompt", "full_problem:prompt");
+    const units: RenderUnit[] = [
+      textUnit(paragraph("full_lead_filler", "filler"), "full_lead_filler"),
+      leadUnit,
+      promptUnit,
+    ];
+    const flow = fakeFlow({
+      full_lead_filler: 80,
+      "full_problem:lead": { blocks: { full_lead: 20 } },
+      "full_problem:prompt": { blocks: { full_prompt: 30 } },
+    });
+
+    const result = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const leadPage = Math.floor(result.layouts[leadUnit.id].y / (metrics.page.heightPx + PAGE_GAP_PX));
+    const promptPage = Math.floor(result.layouts[promptUnit.id].y / (metrics.page.heightPx + PAGE_GAP_PX));
+
+    expect(leadPage).toBe(promptPage);
+    expect(promptPage).toBe(1);
+    expect(result.layouts[promptUnit.id].y).toBe(result.layouts[leadUnit.id].y + 20);
+  });
+
   it("places full-span prompt areas across the page and starts solution columns below them", () => {
     const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
       flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
@@ -397,6 +504,45 @@ describe("computeColumnUnitLayouts", () => {
       height: 80,
     }));
     expect(result.pageCount).toBe(2);
+  });
+
+  it("uses every remaining column below a full-span band before continuing on the next page", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const problem = createProblem({
+      prompt: [paragraph("full_span_before_nested", "full")],
+      areaLayout: { prompt: { columnSpan: "full" } },
+    });
+    const children = Array.from({ length: 5 }, (_, index) => paragraph(`after_full_inner_${index}`, String(index)));
+    const section = {
+      type: "layoutSection" as const,
+      id: "after_full_nested",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children,
+    };
+    const units: RenderUnit[] = [
+      problemAreaUnit(problem, "prompt", "problem_1:prompt"),
+      { type: "layoutSection", id: section.id, section, blocks: children },
+    ];
+    const flow = fakeFlow({
+      "problem_1:prompt": 40,
+      [section.id]: { blocks: Object.fromEntries(children.map((child) => [child.id, 60])) },
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+
+    expect(first.layouts[section.id].y).toBe(Math.round(metrics.margins.topPx + 40));
+    expect(first.nestedColumnLayouts[section.id].blockLayouts.after_full_inner_2.x).toBeGreaterThan(
+      first.nestedColumnLayouts[section.id].blockLayouts.after_full_inner_1.x,
+    );
+    expect(first.nestedColumnLayouts[section.id].blockLayouts.after_full_inner_4.y).toBe(
+      Math.round(metrics.page.heightPx + PAGE_GAP_PX - 40),
+    );
+    expect(first.pageCount).toBe(2);
+    expect(second.layouts).toEqual(first.layouts);
+    expect(second.nestedColumnLayouts).toEqual(first.nestedColumnLayouts);
   });
 
   it("advances manual break to the next column, then to the next physical page", () => {
@@ -504,6 +650,344 @@ describe("computeColumnUnitLayouts", () => {
     expect(result.blockLayouts.kept_box.x).toBe(Math.round(columnStep));
     expect(result.blockLayouts.kept_box.y).toBe(0);
     expect(result.boxBlockFragmentLayouts.kept_box).toBeUndefined();
+  });
+
+  it("flows an oversized layout section through its inner columns and into the next page column", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const children = Array.from({ length: 5 }, (_, index) => paragraph(`inner_${index}`, String(index)));
+    const section = {
+      type: "layoutSection" as const,
+      id: "nested_columns",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children,
+    };
+    const units: RenderUnit[] = [{
+      type: "layoutSection",
+      id: section.id,
+      section,
+      blocks: children,
+    }];
+    const flow = fakeFlow({
+      nested_columns: { blocks: Object.fromEntries(children.map((block) => [block.id, 60])) },
+    });
+
+    const result = computeColumnUnitLayouts(
+      flow,
+      units,
+      metrics,
+      metrics.page.heightPx,
+      PAGE_GAP_PX,
+      1,
+    );
+
+    const nested = result.nestedColumnLayouts.nested_columns;
+    const outerColumnStep = metrics.flow.columnWidthPx + metrics.flow.columnGapPx;
+    expect(nested).toBeDefined();
+    expect(nested.blockLayouts.inner_0.x).toBe(0);
+    expect(nested.blockLayouts.inner_1.x).toBeGreaterThan(0);
+    expect(nested.blockLayouts.inner_2.x).toBeCloseTo(Math.round(outerColumnStep), 0);
+    expect(nested.blockLayouts.inner_4.y).toBeGreaterThanOrEqual(metrics.page.heightPx + PAGE_GAP_PX - 1);
+    expect(result.pageCount).toBe(2);
+  });
+
+  it("fragments an over-tall paragraph inside nested columns and resumes immediately after it", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const tall = paragraph("nested_tall", "tall");
+    const innerTail = paragraph("nested_tail", "tail");
+    const section = {
+      type: "layoutSection" as const,
+      id: "nested_tall_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children: [tall, innerTail],
+    };
+    const after = paragraph("after_nested_tall", "after");
+    const units: RenderUnit[] = [
+      { type: "layoutSection", id: section.id, section, blocks: section.children },
+      textUnit(after, after.id),
+    ];
+    const flow = fakeFlow({
+      [section.id]: { blocks: { [tall.id]: 220, [innerTail.id]: 20 } },
+      [after.id]: 10,
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const fragments = first.boxBlockFragmentLayouts[tall.id];
+
+    expect(first.boxFragmentSourceLayouts[tall.id]).toEqual({ visibleHeight: 100, totalHeight: 220 });
+    expect(fragments).toHaveLength(2);
+    expect(fragments[0]).toEqual(expect.objectContaining({
+      blockId: tall.id,
+      fragmentIndex: 1,
+      sourceOffsetY: 100,
+      height: 100,
+    }));
+    expect(fragments[1]).toEqual(expect.objectContaining({
+      blockId: tall.id,
+      fragmentIndex: 2,
+      sourceOffsetY: 200,
+      height: 20,
+    }));
+    expect(first.nestedColumnLayouts[section.id].blockLayouts[innerTail.id].y).toBe(20);
+    expect(first.layouts[after.id].y).toBe(fragments[1].y + fragments[1].height + 20);
+    expect(second.layouts).toEqual(first.layouts);
+    expect(second.nestedColumnLayouts).toEqual(first.nestedColumnLayouts);
+    expect(second.boxFragmentSourceLayouts).toEqual(first.boxFragmentSourceLayouts);
+    expect(second.boxBlockFragmentLayouts).toEqual(first.boxBlockFragmentLayouts);
+  });
+
+  it("bounds all nested-column replicas across one layout operation", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const firstTall = paragraph("nested_budget_a", "a");
+    const secondTall = paragraph("nested_budget_b", "b");
+    const section = {
+      type: "layoutSection" as const,
+      id: "nested_budget_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children: [firstTall, secondTall],
+    };
+    const units: RenderUnit[] = [{ type: "layoutSection", id: section.id, section, blocks: section.children }];
+    const flow = fakeFlow({
+      [section.id]: { blocks: { [firstTall.id]: 1_000_000, [secondTall.id]: 1_000_000 } },
+    });
+
+    const result = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const fragmentCount = Object.values(result.boxBlockFragmentLayouts)
+      .reduce((count, fragments) => count + fragments.length + 1, 0);
+
+    expect(fragmentCount).toBeLessThanOrEqual(1_000);
+    expect(Number.isFinite(result.layouts[section.id].height)).toBe(true);
+    expect(result.nestedColumnLayouts[section.id].blockLayouts[secondTall.id]).toBeDefined();
+  });
+
+  it("uses the remaining nested-column space for a box before continuing in the next inner column", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const filler = paragraph("nested_box_filler", "filler");
+    const box = {
+      type: "boxBlock" as const,
+      id: "nested_flow_box",
+      styleId: "fancybox",
+      blocks: [paragraph("nested_flow_box_body", "box")],
+    };
+    const tail = paragraph("nested_box_tail", "tail");
+    const section = {
+      type: "layoutSection" as const,
+      id: "nested_flow_box_section",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children: [filler, box, tail],
+    };
+    const units: RenderUnit[] = [{ type: "layoutSection", id: section.id, section, blocks: section.children }];
+    const flow = fakeFlow({
+      [section.id]: { blocks: { [filler.id]: 40, [box.id]: 80, [tail.id]: 100 } },
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const continuation = first.boxBlockFragmentLayouts[box.id];
+
+    expect(first.boxFragmentSourceLayouts[box.id]).toEqual({ visibleHeight: 60, totalHeight: 80 });
+    expect(continuation).toHaveLength(1);
+    expect(continuation[0]).toEqual(expect.objectContaining({
+      blockId: box.id,
+      fragmentIndex: 1,
+      sourceOffsetY: 60,
+      height: 20,
+    }));
+    expect(continuation[0].x).toBeGreaterThan(first.layouts[section.id].x);
+    expect(second.layouts).toEqual(first.layouts);
+    expect(second.nestedColumnLayouts).toEqual(first.nestedColumnLayouts);
+    expect(second.boxFragmentSourceLayouts).toEqual(first.boxFragmentSourceLayouts);
+    expect(second.boxBlockFragmentLayouts).toEqual(first.boxBlockFragmentLayouts);
+  });
+
+  it("splits a layout section at an inner manual break in column flow", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const children = [
+      paragraph("inner_before", "before"),
+      { ...paragraph("inner_after", "after"), pagination: { break: true as const } },
+    ];
+    const section = {
+      type: "layoutSection" as const,
+      id: "manual_nested_columns",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children,
+    };
+    const units: RenderUnit[] = [{
+      type: "layoutSection",
+      id: section.id,
+      section,
+      blocks: children,
+    }];
+    const flow = fakeFlow({
+      manual_nested_columns: { blocks: { inner_before: 20, inner_after: 20 } },
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const nested = first.nestedColumnLayouts.manual_nested_columns;
+
+    expect(nested.markerLayouts.inner_after).toEqual({
+      x: 0,
+      y: 20,
+      width: Math.round(nested.columnWidthPx),
+    });
+    expect(nested.blockLayouts.inner_after.x).toBeGreaterThan(nested.blockLayouts.inner_before.x);
+    expect(second.layouts).toEqual(first.layouts);
+    expect(second.nestedColumnLayouts).toEqual(first.nestedColumnLayouts);
+    expect(second.pageCount).toBe(first.pageCount);
+  });
+
+  it("honors child keep hints inside a flowed layout section", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const children = [
+      paragraph("inner_filler", "filler"),
+      { ...paragraph("inner_heading", "heading"), pagination: { keepWithNext: true } },
+      paragraph("inner_body", "body"),
+      {
+        type: "boxBlock" as const,
+        id: "inner_box",
+        styleId: "fancybox",
+        blocks: [paragraph("inner_box_body", "box")],
+        pagination: { keepTogether: true },
+      },
+      paragraph("inner_tail", "tail"),
+    ];
+    const section = {
+      type: "layoutSection" as const,
+      id: "nested_keep_hints",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children,
+    };
+    const units: RenderUnit[] = [{ type: "layoutSection", id: section.id, section, blocks: children }];
+    const flow = fakeFlow({
+      nested_keep_hints: { blocks: {
+        inner_filler: 60,
+        inner_heading: 25,
+        inner_body: 25,
+        inner_box: 60,
+        inner_tail: 100,
+      } },
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const nested = first.nestedColumnLayouts.nested_keep_hints;
+
+    expect(nested.blockLayouts.inner_heading.x).toBeGreaterThan(nested.blockLayouts.inner_filler.x);
+    expect(nested.blockLayouts.inner_body.x).toBe(nested.blockLayouts.inner_heading.x);
+    expect(nested.blockLayouts.inner_box.x).toBeGreaterThan(nested.blockLayouts.inner_heading.x);
+    expect(second.nestedColumnLayouts).toEqual(first.nestedColumnLayouts);
+  });
+
+  it.each([80, 100])("advances before nested flow when the starting column already consumed %ipx", (fillerHeight) => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const children = [
+      paragraph("boundary_inner_1", "1"),
+      paragraph("boundary_inner_2", "2"),
+      paragraph("boundary_inner_3", "3"),
+    ];
+    const section = {
+      type: "layoutSection" as const,
+      id: `nested_boundary_${fillerHeight}`,
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children,
+    };
+    const after = paragraph("after_nested_boundary", "after");
+    const units: RenderUnit[] = [
+      textUnit(paragraph("boundary_filler", "filler"), "boundary_filler"),
+      { type: "layoutSection", id: section.id, section, blocks: children },
+      textUnit(after, after.id),
+    ];
+    const flow = fakeFlow({
+      boundary_filler: fillerHeight,
+      [section.id]: { blocks: Object.fromEntries(children.map((child) => [child.id, 60])) },
+      [after.id]: 10,
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const outerColumnStep = metrics.flow.columnWidthPx + metrics.flow.columnGapPx;
+
+    expect(first.nestedColumnLayouts[section.id].blockLayouts.boundary_inner_1.x).toBeCloseTo(outerColumnStep, 0);
+    expect(first.layouts[after.id].y).toBeGreaterThanOrEqual(metrics.page.heightPx + PAGE_GAP_PX);
+    expect(second.layouts).toEqual(first.layouts);
+    expect(second.pageCount).toBe(first.pageCount);
+  });
+
+  it("uses nested flow occupancy, not vertically summed children, for the remaining reservation", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const children = Array.from({ length: 4 }, (_, index) => paragraph(`reserved_inner_${index}`, String(index)));
+    const section = {
+      type: "layoutSection" as const,
+      id: "reserved_nested",
+      layout: { columnCount: 2, columnGapMm: 4 },
+      children,
+    };
+    const problem = createProblem({
+      solution: [section],
+      areaLayout: { solution: { minHeightMm: 250 / mmToPx(1) } },
+    });
+    const unit = buildRenderUnits([problem]).find((candidate) => candidate.type === "problemLayoutSection");
+    if (!unit) throw new Error("problem layout section expected");
+    const after = paragraph("after_reserved_nested", "after");
+    const units: RenderUnit[] = [unit, textUnit(after, after.id)];
+    const flow = fakeFlow({
+      [section.id]: { blocks: Object.fromEntries(children.map((child) => [child.id, 60])) },
+      [after.id]: 10,
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+
+    expect(first.layouts[after.id].y).toBeCloseTo(metrics.page.heightPx + PAGE_GAP_PX + metrics.margins.topPx + 50, 0);
+    expect(second.layouts).toEqual(first.layouts);
+    expect(second.nestedColumnLayouts).toEqual(first.nestedColumnLayouts);
+  });
+
+  it("consumes a balanced layout-section reservation and ignores a non-finite reservation", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const run = (minHeightMm: number) => {
+      const children = [paragraph("balanced_1", "1"), paragraph("balanced_2", "2")];
+      const section = {
+        type: "layoutSection" as const,
+        id: "balanced_reserved",
+        layout: { columnCount: 2, columnGapMm: 4 },
+        children,
+      };
+      const problem = createProblem({ solution: [section], areaLayout: { solution: { minHeightMm } } });
+      const unit = buildRenderUnits([problem]).find((candidate) => candidate.type === "problemLayoutSection");
+      if (!unit) throw new Error("problem layout section expected");
+      const after = paragraph("after_balanced", "after");
+      const units: RenderUnit[] = [unit, textUnit(after, after.id)];
+      const flow = fakeFlow({ [section.id]: { blocks: { balanced_1: 20, balanced_2: 20 } }, [after.id]: 10 });
+      return computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    };
+
+    const reserved = run(80 / mmToPx(1));
+    expect(reserved.nestedColumnLayouts.balanced_reserved).toBeUndefined();
+    expect(reserved.layouts.after_balanced.y).toBeCloseTo(metrics.margins.topPx + 80, 0);
+
+    const nonFinite = run(Number.POSITIVE_INFINITY);
+    expect(nonFinite.layouts.after_balanced.y).toBeCloseTo(metrics.margins.topPx + 40, 0);
+    expect(run(Number.POSITIVE_INFINITY).layouts).toEqual(nonFinite.layouts);
   });
 
   it("preserves problem-level break when prompt blocks use column flow", () => {
@@ -863,6 +1347,27 @@ describe("computeColumnUnitLayouts", () => {
     expect(result.pageCount).toBe(1);
   });
 
+  it("bounds extreme page-column fragmentation and aggregates the remainder", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const tall = paragraph("bounded_column_block", "tall");
+    const result = computeColumnUnitLayouts(
+      fakeFlow({ [tall.id]: 1_000_000 }),
+      [textUnit(tall, tall.id)],
+      metrics,
+      metrics.page.heightPx,
+      PAGE_GAP_PX,
+      1,
+    );
+    const continuations = result.boxBlockFragmentLayouts[tall.id];
+
+    expect(continuations).toHaveLength(999);
+    expect(result.boxFragmentSourceLayouts[tall.id].visibleHeight
+      + continuations.reduce((sum, fragment) => sum + fragment.height, 0)).toBe(1_000_000);
+    expect(continuations.at(-1)?.height).toBeGreaterThan(100);
+  });
+
   it("splits an over-tall problem-area block into continuation fragments", () => {
     const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
       flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
@@ -946,6 +1451,66 @@ describe("computeColumnUnitLayouts", () => {
       width: metrics.flow.columnWidthPx,
     }));
     expect(result.pageCount).toBe(1);
+  });
+
+  it("excludes the following block's trailing space from column keep-with-next fitting", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const heading = { ...paragraph("column_keep_heading", "heading"), pagination: { keepWithNext: true } };
+    const body = { ...paragraph("column_keep_body", "body"), spaceAfterPx: 20 };
+    const units: RenderUnit[] = [
+      textUnit(paragraph("column_keep_filler", "filler"), "column_keep_filler"),
+      textRunUnit([heading, body], heading.id),
+    ];
+    const flow = fakeFlow({
+      column_keep_filler: 70,
+      [heading.id]: { blocks: { [heading.id]: 20, [body.id]: 30 } },
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+
+    expect(first.blockLayouts[heading.id].x).toBe(0);
+    expect(first.blockLayouts[heading.id].y).toBe(0);
+    expect(first.blockLayouts[body.id].y).toBe(20);
+    expect(second.blockLayouts).toEqual(first.blockLayouts);
+  });
+
+  it("counts every split problem-frame chrome piece against the area reservation", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const prompt = [
+      paragraph("framed_reserved_first", "first"),
+      { ...paragraph("framed_reserved_second", "second"), pagination: { break: true as const } },
+    ];
+    const problem = createProblem({
+      prompt,
+      frame: { enabled: true },
+      areaLayout: { prompt: { minHeightMm: 100 / mmToPx(1) } },
+    });
+    const after = paragraph("after_framed_reservation", "after");
+    const units: RenderUnit[] = [
+      problemAreaUnit(problem, "prompt", "problem_1:prompt"),
+      textUnit(after, after.id),
+    ];
+    const flow = fakeFlow({
+      "problem_1:prompt": { blocks: { framed_reserved_first: 20, framed_reserved_second: 20 } },
+      [after.id]: 10,
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+
+    expect(first.frameFragmentLayouts["problem_1:prompt"]).toHaveLength(2);
+    expect(first.layouts[after.id].x).toBeCloseTo(
+      metrics.margins.leftPx + metrics.flow.columnWidthPx + metrics.flow.columnGapPx,
+      0,
+    );
+    expect(first.layouts[after.id].y).toBeCloseTo(metrics.margins.topPx + 56, 0);
+    expect(second.layouts).toEqual(first.layouts);
+    expect(second.frameFragmentLayouts).toEqual(first.frameFragmentLayouts);
   });
 
   it("continues problem-area blocks onto the next page after the last column", () => {
@@ -1069,7 +1634,7 @@ describe("computeColumnUnitLayouts", () => {
     // block into the next column.
     expect(result.blockLayouts.framed_prompt_1).toEqual(roundedTextBlockLayout({
       x: 0,
-      y: 0,
+      y: 8,
       width: metrics.flow.columnWidthPx,
     }));
     expect(result.markerLayouts.framed_prompt_2).toBeDefined();
@@ -1078,6 +1643,98 @@ describe("computeColumnUnitLayouts", () => {
       y: 0,
       width: metrics.flow.columnWidthPx,
     }));
+  });
+
+  it("reserves the top chrome of a manually split frame after preceding content", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const before = paragraph("manual_frame_before", "before");
+    const framedProblem = createProblem({
+      id: "manual_frame_problem",
+      prompt: [
+        paragraph("manual_frame_first", "first"),
+        { ...paragraph("manual_frame_second", "second"), pagination: { break: true } },
+      ],
+      frame: { enabled: true },
+    });
+    const units: RenderUnit[] = [
+      textUnit(before, before.id),
+      problemAreaUnit(framedProblem, "prompt", "manual_frame_problem:prompt"),
+    ];
+    const flow = fakeFlow({
+      [before.id]: 40,
+      "manual_frame_problem:prompt": { blocks: { manual_frame_first: 30, manual_frame_second: 30 } },
+    });
+
+    const result = computeColumnUnitLayouts(
+      flow,
+      units,
+      metrics,
+      metrics.page.heightPx,
+      PAGE_GAP_PX,
+      1,
+    );
+    const areaLayout = result.layouts["manual_frame_problem:prompt"];
+    const firstPiece = result.frameFragmentLayouts["manual_frame_problem:prompt"][0];
+    const firstPieceTop = areaLayout.y + firstPiece.y - 8;
+    const beforeBottom = result.layouts[before.id].y + 40;
+
+    expect(firstPieceTop).toBeGreaterThanOrEqual(beforeBottom);
+    expect(firstPieceTop).toBeGreaterThanOrEqual(metrics.margins.topPx);
+  });
+
+  it("automatically flows a framed prompt taller than one column and keeps the following block after its frame", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const framedProblem = createProblem({
+      id: "problem_framed_tall",
+      prompt: [
+        paragraph("framed_tall_1", "first"),
+        paragraph("framed_tall_2", "second"),
+      ],
+      frame: { enabled: true },
+    });
+    const after = paragraph("after_framed_tall", "after");
+    const units: RenderUnit[] = [
+      problemAreaUnit(framedProblem, "prompt", "problem_framed_tall:prompt"),
+      textUnit(after, after.id),
+    ];
+    const flow = fakeFlow({
+      "problem_framed_tall:prompt": { blocks: { framed_tall_1: 70, framed_tall_2: 70 } },
+      [after.id]: 20,
+    });
+
+    const run = () => computeColumnUnitLayouts(
+      flow,
+      units,
+      metrics,
+      metrics.page.heightPx,
+      PAGE_GAP_PX,
+      1,
+    );
+    const first = run();
+    const second = run();
+
+    expect(first.frameFragmentLayouts["problem_framed_tall:prompt"]).toHaveLength(2);
+    expect(first.blockLayouts.framed_tall_1.x).toBe(0);
+    expect(first.blockLayouts.framed_tall_2.x).toBeGreaterThan(0);
+    expect(first.layouts[after.id].x).toBe(first.layouts["problem_framed_tall:prompt"].x + first.blockLayouts.framed_tall_2.x);
+    expect(first.layouts[after.id].y).toBeGreaterThan(
+      first.layouts["problem_framed_tall:prompt"].y + first.blockLayouts.framed_tall_2.y + 70,
+    );
+    const framePieceBottoms = first.frameFragmentLayouts["problem_framed_tall:prompt"].map((fragment) => (
+      first.layouts["problem_framed_tall:prompt"].y + fragment.y + fragment.height + 8
+    ));
+    for (const bottom of framePieceBottoms) {
+      const pageIndex = Math.floor(Math.max(0, bottom - 1) / (metrics.page.heightPx + PAGE_GAP_PX));
+      const contentBottom = pageIndex * (metrics.page.heightPx + PAGE_GAP_PX)
+        + metrics.margins.topPx + metrics.content.heightPx;
+      expect(bottom).toBeLessThanOrEqual(contentBottom);
+    }
+    expect(first.layouts[after.id].y).toBeGreaterThanOrEqual(framePieceBottoms.at(-1) ?? 0);
+    expect(second).toEqual(first);
   });
 
   it("splits a full-span problem area across a page when a manual break is placed inside it", () => {
@@ -1126,6 +1783,36 @@ describe("computeColumnUnitLayouts", () => {
     expect(result.pageCount).toBe(2);
   });
 
+  it("automatically flows a full-span area taller than one page", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const problem = createProblem({
+      id: "problem_full_tall",
+      solution: [
+        paragraph("full_tall_1", "first"),
+        paragraph("full_tall_2", "second"),
+      ],
+      areaLayout: { solution: { columnSpan: "full" } },
+    });
+    const units: RenderUnit[] = [problemAreaUnit(problem, "solution", "problem_full_tall:solution")];
+    const flow = fakeFlow({
+      "problem_full_tall:solution": { blocks: { full_tall_1: 70, full_tall_2: 70 } },
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+
+    expect(first.blockLayouts.full_tall_1).toEqual(roundedTextBlockLayout({
+      x: 0,
+      y: 0,
+      width: metrics.content.widthPx,
+    }));
+    expect(first.blockLayouts.full_tall_2.y).toBeCloseTo(metrics.page.heightPx + PAGE_GAP_PX, 0);
+    expect(first.pageCount).toBe(2);
+    expect(second).toEqual(first);
+  });
+
   it("reserves a problem area's minimum height when it stays in one column", () => {
     const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
       flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
@@ -1162,7 +1849,7 @@ describe("computeColumnUnitLayouts", () => {
     }));
   });
 
-  it("moves past the page when a problem-area minimum-height reservation crosses the content bottom", () => {
+  it("continues a problem-area minimum-height reservation in the next page column", () => {
     const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
       flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
     })), 100);
@@ -1191,14 +1878,40 @@ describe("computeColumnUnitLayouts", () => {
       1,
     );
 
-    expect(result.layouts["problem_1:solution"].height).toBe(Math.round(mmToPx(minHeightMm)));
     expect(result.layouts.after_solution).toEqual(roundedLayout({
-      x: metrics.margins.leftPx,
-      y: metrics.page.heightPx + PAGE_GAP_PX + metrics.margins.topPx,
+      x: metrics.margins.leftPx + metrics.flow.columnWidthPx + metrics.flow.columnGapPx,
+      y: metrics.margins.topPx + mmToPx(minHeightMm) - 20,
       width: metrics.flow.columnWidthPx,
       height: 20,
     }));
-    expect(result.pageCount).toBe(2);
+    expect(result.pageCount).toBe(1);
+  });
+
+  it("keeps the remaining reservation after a flowed problem area and counts its trailing page", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout({
+      flow: { type: "columns", columnCount: 2, columnGapMm: 8 },
+    })), 100);
+    const minHeightMm = 250 / mmToPx(1);
+    const problem = createProblem({
+      solution: [
+        paragraph("solution_first", "first"),
+        paragraph("solution_second", "second"),
+      ],
+      areaLayout: { solution: { minHeightMm } },
+    });
+    const units: RenderUnit[] = [problemAreaUnit(problem, "solution", "problem_1:solution")];
+    const flow = fakeFlow({
+      "problem_1:solution": { blocks: { solution_first: 80, solution_second: 80 } },
+    });
+
+    const first = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+    const second = computeColumnUnitLayouts(flow, units, metrics, metrics.page.heightPx, PAGE_GAP_PX, 1);
+
+    expect(first.blockLayouts.solution_second.x).toBeGreaterThan(first.blockLayouts.solution_first.x);
+    expect(first.pageCount).toBe(2);
+    expect(second.layouts).toEqual(first.layouts);
+    expect(second.blockLayouts).toEqual(first.blockLayouts);
+    expect(second.pageCount).toBe(first.pageCount);
   });
 
   it("falls back to the measured problem-area element when the editable area has no blocks", () => {
@@ -1329,7 +2042,7 @@ function resolveContextMenuBreakTarget(
   });
 }
 
-function problemAreaUnit(problem: ProblemNode, area: "prompt" | "solution", id: string): RenderUnit {
+function problemAreaUnit(problem: ProblemNode, area: "lead" | "prompt" | "solution", id: string): RenderUnit {
   return {
     type: "problemArea",
     id,
@@ -1337,8 +2050,10 @@ function problemAreaUnit(problem: ProblemNode, area: "prompt" | "solution", id: 
     area,
     blocks: problem[area],
     problemNumber: 1,
-    isFirstProblemArea: area === "prompt",
+    isFirstProblemArea: area === "lead" || (problem.lead.length === 0 && area === "prompt"),
     isLastProblemArea: area === "solution",
+    isFirstProblemAreaUnit: true,
+    problemAreaUnitCount: 1,
     isFirstProblemFrameArea: area === "prompt",
     isLastProblemFrameArea: area === "prompt",
   };
@@ -1507,6 +2222,31 @@ describe("collectProblemAreaColumnInputs", () => {
     expect(inputs[0].blockHeights.map((block) => block.height)).toEqual([30, 40]);
   });
 
+  it("carries keep hints into the shared nested-column input", () => {
+    const hinted = structuredClone(twoColumnSection);
+    if (hinted.type !== "layoutSection") throw new Error("layout section expected");
+    hinted.blocks[0].pagination = { keepWithNext: true };
+    hinted.blocks[1] = {
+      type: "boxBlock",
+      id: "inner_box",
+      styleId: "fancybox",
+      blocks: [paragraph("box_body", "box")],
+      pagination: { keepTogether: true },
+    };
+    const inputs = collectProblemAreaColumnInputs(
+      new Map([[hinted.id, unitElement(600, 120)]]),
+      { top: 100, left: 0 } as DOMRect,
+      [hinted],
+      new Map([[hinted.blocks[0].id, { height: 30 } as BlockExtent], [hinted.blocks[1].id, { height: 40 } as BlockExtent]]),
+      1,
+      24,
+      10,
+    );
+
+    expect(inputs[0].blockHeights[0].keepWithNext).toBe(true);
+    expect(inputs[0].blockHeights[1].keepTogether).toBe(true);
+  });
+
   it("skips a unit that is absent from the index", () => {
     expect(collectProblemAreaColumnInputs(
       new Map(),
@@ -1545,6 +2285,18 @@ describe("computeProblemAreaColumnFlow", () => {
     expect(result.blockLayouts.b6).toEqual({ x: 0, y: 423, width: 100 });
     expect(result.blockLayouts.b9).toEqual({ x: 0, y: 723, width: 100 });
     expect(result.totalHeightPx).toBe(823);
+  });
+
+  it("moves a full-segment block out of the single-column editor's short first segment", () => {
+    const run = () => computeProblemAreaColumnFlow([
+      { id: "single_short_first", height: 30 },
+      { id: "single_full_segment", height: 60 },
+    ], 2, 100, 10, 40, 100, 120);
+
+    const first = run();
+    expect(first.blockLayouts.single_short_first).toEqual({ x: 0, y: 0, width: 100 });
+    expect(first.blockLayouts.single_full_segment).toEqual({ x: 0, y: 60, width: 100 });
+    expect(run()).toEqual(first);
   });
 
   it("honors manual breaks by moving the block to the next column", () => {
@@ -1782,6 +2534,41 @@ describe("createSingleColumnBoxFragments", () => {
     });
     expect(fragments.length).toBeGreaterThan(2);
     expect(fragments.slice(0, -1).every((fragment) => fragment.sourceOffsetY % 20 === 0 && fragment.height % 20 === 0)).toBe(true);
+  });
+
+  it("keeps split-frame chrome inside every page fragment", () => {
+    const metrics = withContentHeight(getPageMetrics(normalizePageLayout()), 100);
+    const fragments = createSingleColumnBoxFragments({
+      blockId: "framed_tall_block",
+      height: 180,
+      metrics,
+      pageHeightPx: 200,
+      pageStride: 220,
+      sourceTop: metrics.margins.topPx,
+      width: 300,
+      x: 20,
+      fragmentEndSpacePx: 8,
+    });
+
+    expect(fragments.length).toBeGreaterThanOrEqual(2);
+    expect(fragments.every((fragment) => fragment.height + 8 <= 100 + 0.5)).toBe(true);
+  });
+
+  it("bounds extreme single-column fragmentation and aggregates the remainder", () => {
+    const fragments = createSingleColumnBoxFragments({
+      blockId: "bounded_single_column_block",
+      height: 1_000_000,
+      metrics: withContentHeight(getPageMetrics(normalizePageLayout()), 100),
+      pageHeightPx: 200,
+      pageStride: 220,
+      sourceTop: 20,
+      width: 300,
+      x: 20,
+    });
+
+    expect(fragments).toHaveLength(1_000);
+    expect(fragments.reduce((sum, fragment) => sum + fragment.height, 0)).toBe(1_000_000);
+    expect(fragments.at(-1)?.height).toBeGreaterThan(100);
   });
 
 });

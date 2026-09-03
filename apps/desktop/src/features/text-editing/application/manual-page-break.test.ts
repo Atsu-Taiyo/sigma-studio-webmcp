@@ -80,6 +80,33 @@ describe("manual page-break application model", () => {
     )).toBeNull();
   });
 
+  it("removes a manual break owned by a nested layout child", () => {
+    const blocks = [{
+      type: "boxBlock" as const,
+      id: "box",
+      styleId: "fancybox",
+      blocks: [{
+        type: "layoutSection" as const,
+        id: "layout",
+        layout: { columnCount: 2 as const },
+        children: [
+          paragraph("first-column", "first"),
+          { ...paragraph("second-column", "second"), pagination: { break: true as const } },
+        ],
+      }],
+    }];
+
+    const result = resolveManualTextPageBreakBlocks(blocks, "second-column", false);
+
+    expect(result?.blocks[0]).toMatchObject({
+      type: "boxBlock",
+      blocks: [{
+        type: "layoutSection",
+        children: [{ id: "first-column" }, { id: "second-column", pagination: undefined }],
+      }],
+    });
+  });
+
   it("defers only edge selections at the final chunk block", () => {
     const blocks = [paragraph("first", "abc")];
     const detail = {

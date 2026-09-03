@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 
 import { Editor, getSchema, type Editor as TiptapEditor } from "@tiptap/core";
+import { Fragment, Slice } from "@tiptap/pm/model";
 import { EditorState, NodeSelection, TextSelection } from "@tiptap/pm/state";
 import { describe, expect, it, vi } from "vitest";
 
@@ -11,23 +12,39 @@ import {
   BoxBlockBodyExtension,
   BoxBlockExtension,
   BoxBlockTitleExtension,
+  consumeRejectedManualBreakPaste,
+  deleteManualBreakSpanningSelection,
   isLiteralPasteShortcut,
   resolveTextFlowFormatCommandOptions,
   resolveManualBreakBoundaryNavigation,
   resolveTextFormatStateContext,
   applyTextFlowSelectionBookmark,
   focusTextFlowSurface,
+  getTextBlockBoundaryInsertPosition,
   getTextFlowSelectionBookmark,
+  pasteHasUsableContent,
+  resolveManualBreakPasteContent,
   SigmaDocTextAttrs,
   SigmaDocTextIdentity,
   setTextFlowContentPreservingSelection,
   resolveManualTextPageBreakBlocks,
+  selectionCrossesManualBreak,
+  textFlowBlocksForSelectionClipboard,
+  transferManualBreakToPastedBlocksAtOwnerStart,
+  transferManualBreakToPastedSliceAtOwnerStart,
   shouldUseDocumentNextBlockForPageBreak,
+  shouldHandleTextPageBreakRequest,
   shouldSyncFocusedTextFlowContent,
   textFlowToTiptap,
   tiptapToTextFlow,
+  writeTextFlowSelectionClipboard,
   type TextFlowBlock,
 } from "@/components/editor/TextFlowEditor";
+import {
+  createTextFlowClipboardPayload,
+  readEditorClipboardPayload,
+  writeEditorClipboardData,
+} from "@/lib/editor-clipboard";
 import { findTouchedGuardedBlockIds } from "@/components/tiptap/edit-guard-extension";
 import { createRichTextEngineExtensions } from "@/components/tiptap/rich-text-engine";
 import {
@@ -394,6 +411,21 @@ describe("resolveManualBreakBoundaryNavigation", () => {
     });
   });
 
+  it.each([
+    { altKey: true },
+    { metaKey: true },
+    { ctrlKey: true },
+  ])("also protects a manual-break boundary for modified deletion (%o)", (modifiers) => {
+    const state = createParagraphBoundaryState(blocksWithBreak, "after_break", "start");
+
+    expect(resolveManualBreakBoundaryNavigation(
+      state,
+      "backward",
+      blocksWithBreak,
+      { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, isComposing: false, ...modifiers },
+    )).not.toBeNull();
+  });
+
   it("does not intercept an ordinary boundary", () => {
     const blocks = [
       paragraph("ordinary_first", "前"),
@@ -402,6 +434,352 @@ describe("resolveManualBreakBoundaryNavigation", () => {
     const state = createParagraphBoundaryState(blocks, "ordinary_second", "start");
 
     expect(resolveManualBreakBoundaryNavigation(state, "backward", blocks)).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "list",
+      block: {
+        type: "list" as const,
+        id: "nested_owner",
+        listType: "bullet" as const,
+        items: [{ type: "listItem" as const, id: "nested_leaf", children: [{ type: "text" as const, text: "後" }] }],
+        pagination: { break: true as const },
+      },
+    },
+    {
+      name: "quote",
+      block: {
+        type: "quote" as const,
+        id: "nested_owner",
+        blocks: [paragraph("nested_leaf", "後")],
+        pagination: { break: true as const },
+      },
+    },
+    {
+      name: "code",
+      block: {
+        type: "codeBlock" as const,
+        id: "nested_leaf",
+        children: [{ type: "text" as const, text: "後" }],
+        pagination: { break: true as const },
+      },
+    },
+    {
+      name: "box title",
+      targetId: "nested_owner",
+      block: {
+        type: "boxBlock" as const,
+        id: "nested_owner",
+        styleId: "fancybox",
+        blocks: [paragraph("nested_leaf", "後")],
+        pagination: { break: true as const },
+      },
+    },
+  ])("protects Backspace at the first text position of a $name block", ({ block, targetId }) => {
+    const blocks: TextFlowBlock[] = [paragraph("before_nested", "前"), block as TextFlowBlock];
+    const state = createParagraphBoundaryState(blocks, targetId ?? "nested_leaf", "start");
+
+    expect(resolveManualBreakBoundaryNavigation(state, "backward", blocks)).not.toBeNull();
+  });
+});
+
+describe("manual-break selection and paste boundaries", () => {
+  it("lets only the canonical editor claim a shared break-removal event", () => {
+    const detail = { blockId: "break_owner", enabled: false, handled: false };
+    let mutations = 0;
+    // Replicas may have registered before the source, but they never claim the command.
+    for (const isReplica of [true, true, false, true]) {
+      if (shouldHandleTextPageBreakRequest(detail, isReplica)) {
+        detail.handled = true;
+        mutations += 1;
+      }
+    }
+
+    expect(mutations).toBe(1);
+    expect(shouldHandleTextPageBreakRequest(detail, false)).toBe(false);
+  });
+
+  it("recognizes a range that crosses a break but not a range contained after it", () => {
+    const blocks: TextFlowBlock[] = [
+      paragraph("before_range", "前側"),
+      { ...paragraph("after_range", "後側"), pagination: { break: true } },
+    ];
+    const crossing = createTextRangeState(blocks, "before_range", 1, "after_range", 1);
+    const afterOnly = createTextRangeState(blocks, "after_range", 0, "after_range", 1);
+
+    expect(selectionCrossesManualBreak(crossing)).toBe(true);
+    expect(selectionCrossesManualBreak(afterOnly)).toBe(false);
+  });
+
+  it("marks a block paste at the break-owner start so the adapter can transfer the break", () => {
+    const previousBlocks: TextFlowBlock[] = [
+      paragraph("before_paste", "前"),
+      { ...paragraph("after_paste", "後"), pagination: { break: true } },
+    ];
+    const breakStart = createParagraphBoundaryState(previousBlocks, "after_paste", "start");
+    const ordinaryStart = createParagraphBoundaryState([
+      paragraph("ordinary_before", "前"),
+      paragraph("ordinary_after", "後"),
+    ], "ordinary_after", "start");
+
+    expect(getTextBlockBoundaryInsertPosition(breakStart)).not.toBeNull();
+    expect(getTextBlockBoundaryInsertPosition(ordinaryStart)).not.toBeNull();
+
+    const pasted = [paragraph("pasted_first", "貼付1"), paragraph("pasted_second", "貼付2")];
+    expect(transferManualBreakToPastedBlocksAtOwnerStart(breakStart, pasted)
+      .map((block) => block.pagination?.break)).toEqual([true, undefined]);
+    expect(transferManualBreakToPastedBlocksAtOwnerStart(ordinaryStart, pasted)).toBe(pasted);
+
+    const schema = breakStart.schema;
+    const pastedDoc = textFlowToTiptap(pasted);
+    const slice = new Slice(Fragment.fromArray([
+      schema.nodeFromJSON(pastedDoc.content![0]),
+      schema.nodeFromJSON(pastedDoc.content![1]),
+    ]), 0, 0);
+    const transferred = transferManualBreakToPastedSliceAtOwnerStart(breakStart, slice);
+    expect(transferred.content.child(0).attrs.pagination).toEqual({ break: true });
+    expect(transferred.content.child(1).attrs.pagination?.break).not.toBe(true);
+
+    const insertPos = getTextBlockBoundaryInsertPosition(breakStart);
+    expect(insertPos).not.toBeNull();
+    const transaction = breakStart.tr.insert(insertPos!, transferred.content);
+    expect(tiptapToTextFlow(transaction.doc.toJSON() as TiptapDoc, previousBlocks)
+      .map((block) => [block.id, block.pagination?.break])).toEqual([
+      ["before_paste", undefined],
+      ["pasted_first", true],
+      ["pasted_second", undefined],
+      ["after_paste", undefined],
+    ]);
+  });
+
+  it("deletes text on both sides without merging the break owner and inserts at the leading side", () => {
+    const blocks: TextFlowBlock[] = [
+      paragraph("before_replace", "AB"),
+      { ...paragraph("after_replace", "YZ"), pagination: { break: true } },
+    ];
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: createRichTextEngineExtensions({ blockExtensions: [SigmaDocTextAttrs] }),
+      content: textFlowToTiptap(blocks),
+    });
+    const selected = createTextRangeState(blocks, "before_replace", 1, "after_replace", 1).selection;
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(
+      editor.state.doc,
+      selected.from,
+      selected.to,
+    )));
+
+    expect(deleteManualBreakSpanningSelection(editor.view, "X")).toBe(true);
+    expect(tiptapToTextFlow(editor.getJSON() as TiptapDoc, blocks)).toEqual([
+      paragraph("before_replace", "AX"),
+      { ...paragraph("after_replace", "Z"), pagination: { break: true } },
+    ]);
+    editor.destroy();
+  });
+
+  it("writes a cross-break cut to the clipboard before the custom deletion runs", () => {
+    const blocks: TextFlowBlock[] = [
+      paragraph("cut_before", "AB"),
+      { ...paragraph("cut_after", "YZ"), pagination: { break: true } },
+    ];
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: createRichTextEngineExtensions({ blockExtensions: [SigmaDocTextAttrs] }),
+      content: textFlowToTiptap(blocks),
+    });
+    const selected = createTextRangeState(blocks, "cut_before", 1, "cut_after", 1).selection;
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(
+      editor.state.doc,
+      selected.from,
+      selected.to,
+    )));
+    const clipboardData = new DataTransfer();
+
+    expect(writeTextFlowSelectionClipboard(editor.view, clipboardData, blocks)).toBe(true);
+    expect(clipboardData.getData("text/plain")).toBe("B\nY");
+    const payload = readEditorClipboardPayload(clipboardData);
+    expect(payload?.kind).toBe("textFlowBlocks");
+    expect(payload?.kind === "textFlowBlocks"
+      ? payload.blocks.map((block) => block.pagination?.break)
+      : null).toEqual([undefined, true]);
+    editor.destroy();
+  });
+
+  it("builds and dispatches a cross-break paste as one atomic transaction", () => {
+    const blocks: TextFlowBlock[] = [
+      paragraph("atomic_before", "AB"),
+      { ...paragraph("atomic_after", "YZ"), pagination: { break: true } },
+    ];
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: createRichTextEngineExtensions({ blockExtensions: [SigmaDocTextAttrs] }),
+      content: textFlowToTiptap(blocks),
+    });
+    const selected = createTextRangeState(blocks, "atomic_before", 1, "atomic_after", 1).selection;
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(
+      editor.state.doc,
+      selected.from,
+      selected.to,
+    )));
+    const dispatch = vi.spyOn(editor.view, "dispatch");
+
+    expect(deleteManualBreakSpanningSelection(editor.view, [paragraph("paste_new", "X")])).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(tiptapToTextFlow(editor.getJSON() as TiptapDoc, blocks)).toEqual([
+      paragraph("atomic_before", "AX"),
+      { ...paragraph("atomic_after", "Z"), pagination: { break: true } },
+    ]);
+    editor.destroy();
+  });
+
+  it("rejects an incompatible custom payload without changing the document or selection", () => {
+    const blocks: TextFlowBlock[] = [
+      paragraph("reject_before", "AB"),
+      { ...paragraph("reject_after", "YZ"), pagination: { break: true } },
+    ];
+    const editor = new Editor({
+      element: document.createElement("div"),
+      // This surface intentionally accepts only ordinary rich-text blocks.
+      extensions: createRichTextEngineExtensions({ blockExtensions: [SigmaDocTextAttrs] }),
+      content: textFlowToTiptap(blocks),
+    });
+    const selected = createTextRangeState(blocks, "reject_before", 1, "reject_after", 1).selection;
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(
+      editor.state.doc,
+      selected.from,
+      selected.to,
+    )));
+    const state = editor.state;
+    const beforeDoc = state.doc.toJSON();
+    const beforeSelection = state.selection.toJSON();
+    const clipboardData = new DataTransfer();
+    writeEditorClipboardData(clipboardData, createTextFlowClipboardPayload([
+      { type: "divider", id: "unsupported_divider" },
+    ]));
+    const event = new ClipboardEvent("paste", { clipboardData });
+    const preventDefault = vi.spyOn(event, "preventDefault");
+
+    // PM が通常貼り付けに使える non-empty slice も渡しておく。custom payload が不適合なら
+    // native replaceSelection へ落とさず、この選択と break をそのまま保つ。
+    expect(resolveManualBreakPasteContent(
+      state,
+      event,
+      state.doc.slice(0, state.doc.content.size),
+      false,
+    )).toBeNull();
+    expect(consumeRejectedManualBreakPaste(event)).toBe(true);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(state.doc.toJSON()).toEqual(beforeDoc);
+    expect(state.selection.toJSON()).toEqual(beforeSelection);
+    editor.destroy();
+  });
+
+  it("normalizes HTML-only rich text and pastes it on the leading side without removing the break", () => {
+    const blocks: TextFlowBlock[] = [
+      paragraph("rich_before", "AB"),
+      { ...paragraph("rich_after", "YZ"), pagination: { break: true } },
+    ];
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: createRichTextEngineExtensions({ blockExtensions: [SigmaDocTextAttrs] }),
+      content: textFlowToTiptap(blocks),
+    });
+    const sourceBlocks: TextFlowBlock[] = [{
+      type: "paragraph",
+      id: "rich_source",
+      children: [{ type: "text", text: "太字", marks: ["bold"] }],
+    }];
+    const source = new Editor({
+      element: document.createElement("div"),
+      extensions: createRichTextEngineExtensions({ blockExtensions: [SigmaDocTextAttrs] }),
+      content: textFlowToTiptap(sourceBlocks),
+    });
+    const selected = createTextRangeState(blocks, "rich_before", 1, "rich_after", 1).selection;
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(
+      editor.state.doc,
+      selected.from,
+      selected.to,
+    )));
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/html", "<p><strong>太字</strong></p>");
+    const event = new ClipboardEvent("paste", { clipboardData });
+    const slice = source.state.doc.slice(0, source.state.doc.content.size);
+
+    const replacement = resolveManualBreakPasteContent(editor.state, event, slice, false);
+    expect(replacement).not.toBeNull();
+    const pasted = replacement?.blocks[0];
+    expect(pasted && "children" in pasted ? pasted.children : null).toEqual([
+      { type: "text", text: "太字", marks: ["bold"] },
+    ]);
+    expect(deleteManualBreakSpanningSelection(editor.view, replacement?.blocks ?? [])).toBe(true);
+    expect(tiptapToTextFlow(editor.getJSON() as TiptapDoc, blocks)).toEqual([
+      {
+        ...paragraph("rich_before", "A太字"),
+        children: [
+          { type: "text", text: "A" },
+          { type: "text", text: "太字", marks: ["bold"] },
+        ],
+      },
+      { ...paragraph("rich_after", "Z"), pagination: { break: true } },
+    ]);
+    source.destroy();
+    editor.destroy();
+  });
+
+  it("removes fully selected intermediate headings instead of leaving empty shells", () => {
+    const blocks: TextFlowBlock[] = [
+      paragraph("before_structural", "AB"),
+      { type: "heading", id: "selected_heading", level: 2, children: [{ type: "text", text: "見出し" }] },
+      { ...paragraph("after_structural", "YZ"), pagination: { break: true } },
+    ];
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: createRichTextEngineExtensions({ blockExtensions: [SigmaDocTextAttrs] }),
+      content: textFlowToTiptap(blocks),
+    });
+    const selected = createTextRangeState(blocks, "before_structural", 1, "after_structural", 1).selection;
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(
+      editor.state.doc,
+      selected.from,
+      selected.to,
+    )));
+
+    expect(deleteManualBreakSpanningSelection(editor.view)).toBe(true);
+    const next = tiptapToTextFlow(editor.getJSON() as TiptapDoc, blocks);
+    expect(next.map((block) => block.id)).toEqual(["before_structural", "after_structural"]);
+    expect(next.map((block) => block.pagination?.break)).toEqual([undefined, true]);
+    editor.destroy();
+  });
+
+  it("does not consider an empty or file-only clipboard usable for cross-break replacement", () => {
+    const state = createTextRangeState([
+      paragraph("before_unsupported", "AB"),
+      { ...paragraph("after_unsupported", "YZ"), pagination: { break: true } },
+    ], "before_unsupported", 1, "after_unsupported", 1);
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File(["image"], "image.png", { type: "image/png" }));
+    const event = new ClipboardEvent("paste", { clipboardData });
+
+    expect(pasteHasUsableContent(state, event, state.doc.slice(0, 0), false)).toBe(false);
+  });
+
+  it("copies internal breaks but excludes the break before the selection's first block", () => {
+    const blocks: TextFlowBlock[] = [
+      { ...paragraph("copy_first", "AB"), pagination: { break: true } },
+      { ...paragraph("copy_second", "YZ"), pagination: { break: true } },
+    ];
+    const editor = new Editor({
+      element: document.createElement("div"),
+      extensions: createRichTextEngineExtensions({ blockExtensions: [SigmaDocTextAttrs] }),
+      content: textFlowToTiptap(blocks),
+    });
+    const selected = createTextRangeState(blocks, "copy_first", 1, "copy_second", 1).selection;
+    const slice = editor.state.doc.slice(selected.from, selected.to);
+
+    expect(textFlowBlocksForSelectionClipboard(slice, blocks).map((block) => block.pagination?.break))
+      .toEqual([undefined, true]);
+    editor.destroy();
   });
 });
 
@@ -1019,6 +1397,18 @@ describe("キャレット復元のフォーカス所有権", () => {
     editor.destroy();
   });
 
+  it("focusTextFlowSurface は DOM を preventScroll 付きでフォーカスする", () => {
+    const editor = createCaretOwnershipEditor();
+    const domFocusSpy = vi.spyOn(editor.view.dom, "focus");
+    const viewFocusSpy = vi.spyOn(editor.view, "focus").mockImplementation(() => undefined);
+
+    focusTextFlowSurface(editor, null);
+
+    expect(domFocusSpy).toHaveBeenCalledWith({ preventScroll: true });
+    expect(domFocusSpy.mock.invocationCallOrder[0]).toBeLessThan(viewFocusSpy.mock.invocationCallOrder[0]);
+    editor.destroy();
+  });
+
   it("選択が空でないときは storedMarks を張り直さない", () => {
     const editor = createCaretOwnershipEditor();
     const marks = [editor.schema.marks.styledText.create({ color: "#1d4ed8" })];
@@ -1249,6 +1639,7 @@ function createParagraphBoundaryState(
       BoxBlockTitleExtension,
       BoxBlockBodyExtension,
     ],
+    bodyBlocks: true,
   }));
   const doc = schema.nodeFromJSON(textFlowToTiptap(blocks));
   let position = -1;
@@ -1256,7 +1647,12 @@ function createParagraphBoundaryState(
     if (node.attrs.sigmaDocId !== blockId) {
       return undefined;
     }
-    position = boundary === "start" ? pos + 1 : pos + node.nodeSize - 1;
+    if (node.isTextblock) {
+      position = boundary === "start" ? pos + 1 : pos + node.nodeSize - 1;
+    } else {
+      const found = TextSelection.findFrom(doc.resolve(pos + 1), boundary === "start" ? 1 : -1, true);
+      position = found?.from ?? -1;
+    }
     return false;
   });
   if (position < 0) {
@@ -1266,6 +1662,30 @@ function createParagraphBoundaryState(
     doc,
     selection: TextSelection.create(doc, position),
   });
+}
+
+function createTextRangeState(
+  blocks: TextFlowBlock[],
+  fromBlockId: string,
+  fromOffset: number,
+  toBlockId: string,
+  toOffset: number,
+): EditorState {
+  const schema = getSchema(createRichTextEngineExtensions({
+    blockExtensions: [SigmaDocTextAttrs, BoxBlockExtension, BoxBlockTitleExtension, BoxBlockBodyExtension],
+    bodyBlocks: true,
+  }));
+  const doc = schema.nodeFromJSON(textFlowToTiptap(blocks));
+  const positions = new Map<string, number>();
+  doc.descendants((node, pos) => {
+    if (typeof node.attrs.sigmaDocId === "string") {
+      positions.set(node.attrs.sigmaDocId, pos + 1);
+    }
+    return undefined;
+  });
+  const from = (positions.get(fromBlockId) ?? 0) + fromOffset;
+  const to = (positions.get(toBlockId) ?? 0) + toOffset;
+  return EditorState.create({ doc, selection: TextSelection.create(doc, from, to) });
 }
 
 function textBlockAtPosition(

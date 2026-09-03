@@ -52,7 +52,7 @@ export function resolveManualTextPageBreakBlocks(
   const createId = options.createId ?? createTextFlowId;
 
   if (!enabled) {
-    const result = setTextFlowBlockBreakBefore(blocks, requestedBlockId, false);
+    const result = setTextFlowBlockBreakBeforeRecursively(blocks, requestedBlockId, false);
     return result.changed
       ? { blocks: result.blocks, focusBlockId: requestedBlockId, focusPosition: "start" }
       : null;
@@ -126,6 +126,36 @@ export function resolveManualTextPageBreakBlocks(
     focusBlockId: appended.id,
     focusPosition: "start",
   };
+}
+
+function setTextFlowBlockBreakBeforeRecursively(
+  blocks: TextFlowBlock[],
+  blockId: string,
+  enabled: boolean,
+): { blocks: TextFlowBlock[]; changed: boolean } {
+  let changed = false;
+  const nextBlocks = blocks.map((block) => {
+    if (block.id === blockId) {
+      const nextBlock = setTextFlowBlockBreakBeforeValue(block, enabled);
+      changed = changed || nextBlock !== block;
+      return nextBlock;
+    }
+    if (block.type === "boxBlock") {
+      const nested = setTextFlowBlockBreakBeforeRecursively(block.blocks, blockId, enabled);
+      if (nested.changed) {
+        changed = true;
+        return { ...block, blocks: nested.blocks };
+      }
+    } else if (block.type === "layoutSection") {
+      const nested = setTextFlowBlockBreakBeforeRecursively(block.children, blockId, enabled);
+      if (nested.changed) {
+        changed = true;
+        return { ...block, children: nested.blocks as typeof block.children };
+      }
+    }
+    return block;
+  });
+  return { blocks: changed ? nextBlocks : blocks, changed };
 }
 
 function setTextFlowBlockBreakBefore(

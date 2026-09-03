@@ -6,7 +6,7 @@ import {
 } from "./store-backend";
 
 export const BROWSER_DATABASE_NAME = "sigma-studio";
-export const BROWSER_DATABASE_VERSION = 1;
+export const BROWSER_DATABASE_VERSION = 2;
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {

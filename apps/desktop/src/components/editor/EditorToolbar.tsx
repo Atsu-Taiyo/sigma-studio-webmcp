@@ -26,11 +26,13 @@ export function EditorToolbar({
   ariaLabel,
   bordered = false,
   className,
+  inert,
   children,
 }: {
   ariaLabel?: string;
   bordered?: boolean;
   className?: string;
+  inert?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -38,6 +40,7 @@ export function EditorToolbar({
       className={joinClassNames("quick-toolbar-row", bordered && "bordered", className)}
       aria-label={ariaLabel}
       data-editor-toolbar="quick"
+      inert={inert}
     >
       {children}
     </div>

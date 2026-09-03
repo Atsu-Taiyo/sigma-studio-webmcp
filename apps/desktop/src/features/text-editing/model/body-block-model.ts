@@ -10,6 +10,8 @@ import type {
   ProblemAreaBlock,
   ProblemAreaKind,
   ProblemNode,
+  LayoutSectionNode,
+  LayoutSectionChildBlock,
   QuoteBlockNode,
   SectionNode,
   SigmaBlock,
@@ -36,6 +38,100 @@ export type BodyTextFlowBlock =
   | Extract<SigmaBlock, { type: "layoutSection" }>;
 
 export type BodyEditableBlock = SigmaBlock | ProblemAreaBlock | ListItemNode;
+
+export const LAYOUT_SECTION_WIDTH_TOTAL = 10_000;
+
+function normalizeLayoutSectionColumnWidths(widths: readonly number[], count: number): number[] {
+  const safeCount = Math.max(1, count);
+  const usable = widths.length === safeCount && widths.every((value) => Number.isFinite(value) && value > 0)
+    ? widths
+    : Array.from({ length: safeCount }, () => 1);
+  const total = usable.reduce((sum, value) => sum + value, 0);
+  if (total === LAYOUT_SECTION_WIDTH_TOTAL && usable.every(Number.isInteger)) {
+    return [...usable];
+  }
+  const distributable = LAYOUT_SECTION_WIDTH_TOTAL - safeCount;
+  const normalized = usable.map((value) => 1 + Math.floor(value / total * distributable));
+  normalized[normalized.length - 1] += LAYOUT_SECTION_WIDTH_TOTAL - normalized.reduce((sum, value) => sum + value, 0);
+  return normalized;
+}
+
+/**
+ * Resolve the persisted, independent columns. New sections always have `columnStartIds`; the
+ * deterministic fallback is only for in-memory fixtures that have not yet been updated.
+ */
+export function getLayoutSectionColumns(section: LayoutSectionNode): LayoutSectionChildBlock[][] {
+  const count = Math.min(4, Math.max(1, Math.floor(section.layout.columnCount)));
+  if (count <= 1 || section.children.length <= 1) {
+    return [section.children];
+  }
+  const actualCount = Math.min(count, section.children.length);
+  const starts = section.layout.columnStartIds ?? [];
+  const childIndexById = new Map(section.children.map((child, index) => [child.id, index]));
+  const startIndexes = [0];
+  for (let columnIndex = 1; columnIndex < actualCount; columnIndex += 1) {
+    const persisted = childIndexById.get(starts[columnIndex] ?? "");
+    const minimum = startIndexes[columnIndex - 1] + 1;
+    const maximum = section.children.length - (actualCount - columnIndex);
+    // A start belongs to its persisted column slot. In particular, a first-column id that
+    // moved into the middle after Enter must not become an extra boundary. If a boundary owner
+    // disappeared, keep as much of the surviving prefix in its former column as possible. An
+    // even repartition would move unrelated survivors across columns (for example deleting c
+    // from [a,b] [c,d] used to produce [a] [b,d]). Live editor mutations additionally carry
+    // their pre-edit ownership through the Tiptap projection; this is only the deterministic
+    // last resort for malformed/incomplete data.
+    const conservativeFallback = maximum;
+    startIndexes.push(
+      persisted !== undefined && persisted >= minimum && persisted <= maximum
+        ? persisted
+        : Math.min(maximum, Math.max(minimum, conservativeFallback)),
+    );
+  }
+  return startIndexes.map((start, index) => (
+    section.children.slice(start, startIndexes[index + 1] ?? section.children.length)
+  ));
+}
+
+export function getLayoutSectionColumnWidths(section: LayoutSectionNode, count = getLayoutSectionColumns(section).length): number[] {
+  const widths = section.layout.columnWidths;
+  if (widths?.length === count && widths.every((value) => Number.isFinite(value) && value > 0)) {
+    return normalizeLayoutSectionColumnWidths(widths, count);
+  }
+  return normalizeLayoutSectionColumnWidths([], count);
+}
+
+export function setLayoutSectionColumns(
+  section: LayoutSectionNode,
+  columns: readonly (readonly LayoutSectionChildBlock[])[],
+  widths: readonly number[] = getLayoutSectionColumnWidths(section, columns.length),
+): LayoutSectionNode {
+  const populated = columns
+    .map((column, index) => ({
+      column: column.map((child) => {
+        if (child.pagination?.break !== true) return child;
+        const { break: _break, ...pagination } = child.pagination;
+        void _break;
+        if (Object.keys(pagination).length > 0) return { ...child, pagination };
+        const { pagination: _pagination, ...rest } = child;
+        void _pagination;
+        return rest as LayoutSectionChildBlock;
+      }),
+      width: widths[index] ?? 1,
+    }))
+    .filter(({ column }) => column.length > 0);
+  if (populated.length === 0) return section;
+  const columnWidths = normalizeLayoutSectionColumnWidths(populated.map(({ width }) => width), populated.length);
+  return {
+    ...section,
+    layout: {
+      ...section.layout,
+      columnCount: populated.length,
+      columnStartIds: populated.map(({ column }) => column[0].id),
+      columnWidths,
+    },
+    children: populated.flatMap(({ column }) => column),
+  };
+}
 
 export function isProblemAreaKind(value: string | null): value is ProblemAreaKind {
   return value === "lead" || value === "prompt" || value === "hints" || value === "solution";
@@ -171,37 +267,22 @@ export function bodyTextFlowBlockContainsId(
 export function setLayoutSectionColumnCount<T extends SigmaBlock | ProblemAreaBlock>(
   block: T,
   columnCount: number,
+  createEmptyBlock?: () => ParagraphNode,
 ): T {
   if (block.type !== "layoutSection") {
     return block;
   }
 
   const nextColumnCount = Math.min(4, Math.max(1, Math.floor(columnCount)));
-  const currentColumnCount = Math.min(4, Math.max(1, Math.floor(block.layout.columnCount)));
-  let children = block.children;
-
-  if (nextColumnCount < currentColumnCount) {
-    const maximumManualBreaks = nextColumnCount - 1;
-    let manualBreakCount = 0;
-    children = block.children.map((child, index) => {
-      if (index === 0 || child.pagination?.break !== true) {
-        return child;
-      }
-      manualBreakCount += 1;
-      return manualBreakCount > maximumManualBreaks
-        ? setBlockBreakBefore(child, false)
-        : child;
-    });
-  }
-
-  return {
-    ...block,
-    layout: {
-      ...block.layout,
-      columnCount: nextColumnCount,
-    },
-    children,
-  } as T;
+  const children = [...block.children];
+  while (children.length < nextColumnCount && createEmptyBlock) children.push(createEmptyBlock());
+  const actualColumnCount = Math.min(children.length, nextColumnCount);
+  const columns = Array.from({ length: actualColumnCount }, (_, index) => {
+    const start = Math.floor(index * children.length / actualColumnCount);
+    const end = Math.floor((index + 1) * children.length / actualColumnCount);
+    return children.slice(start, end);
+  });
+  return setLayoutSectionColumns(block, columns) as T;
 }
 
 export function setBlockBreakBefore<T extends SigmaBlock | ProblemAreaBlock>(
@@ -229,7 +310,7 @@ export function setBlockBreakBefore<T extends SigmaBlock | ProblemAreaBlock>(
  * 値が変わらないときは **同一参照** を返す — 呼び出し側 (`updateBlockInDocument`) が identity で
  * 「変わっていない」を見て、ドラッグ中の無駄な文書更新と再描画を止められるように。
  */
-export function setBlockSpaceAfter<T extends SigmaBlock | ProblemAreaBlock>(
+export function setBlockSpaceAfter<T extends SigmaBlock | ProblemAreaBlock | ListItemNode>(
   block: T,
   spaceAfterPx: number,
 ): T {

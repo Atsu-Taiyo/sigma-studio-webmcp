@@ -61,11 +61,11 @@ describe("normalizeBlockSpaceAfterPx", () => {
 });
 
 describe("rendersBlockSpaceAfter", () => {
-  it.each(["paragraph", "heading", "section", "list", "divider"])("draws the space below %s", (type) => {
+  it.each(["paragraph", "heading", "section", "list", "listItem", "divider"])("draws the space below %s", (type) => {
     expect(rendersBlockSpaceAfter(type)).toBe(true);
   });
 
-  it.each(["quote", "codeBlock", "boxBlock", "layoutSection", "problem", "listItem"])(
+  it.each(["quote", "codeBlock", "boxBlock", "layoutSection", "problem"])(
     "does not draw the space below %s (framed or non-flow)",
     (type) => {
       expect(rendersBlockSpaceAfter(type)).toBe(false);

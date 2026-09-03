@@ -1,5 +1,8 @@
 import {
+  getLayoutSectionColumns,
+  getLayoutSectionColumnWidths,
   isTextFlowBlock,
+  setLayoutSectionColumns,
   type TextFlowBlock,
 } from "@/features/text-editing";
 import { PROBLEM_AREA_ORDER } from "@/features/document";
@@ -87,16 +90,19 @@ export function resolveBodyTextFlowTransition(
       if (target.type !== "layoutSection") {
         return target;
       }
-
-      return {
-        ...target,
-        children: replaceLayoutSectionChildren(
-          target.children,
-          request.previousIds,
-          request.nextBlocks,
-          reservedIds,
-        ),
-      };
+      const columns = getLayoutSectionColumns(target);
+      const columnIndex = columns.findIndex((column) => (
+        request.previousIds.some((id) => column.some((child) => child.id === id))
+      ));
+      if (columnIndex < 0) return target;
+      const nextColumn = replaceLayoutSectionChildren(
+        columns[columnIndex],
+        request.previousIds,
+        request.nextBlocks,
+        reservedIds,
+      );
+      const nextColumns = columns.map((column, index) => index === columnIndex ? nextColumn : column);
+      return setLayoutSectionColumns(target, nextColumns, getLayoutSectionColumnWidths(target, columns.length));
     },
   };
 }

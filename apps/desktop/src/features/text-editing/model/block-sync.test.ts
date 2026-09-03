@@ -461,4 +461,20 @@ describe("hasTextFlowBlockAttributeChange", () => {
     }]);
     expect(hasTextFlowBlockAttributeChange(getTextFlowBlockAttributes(list()), list(40))).toBe(true);
   });
+
+  it("リスト項目自身の下余白変更も見る", () => {
+    const list = (spaceAfterPx?: number): TextFlowBlock[] => ([{
+      type: "list",
+      id: "list",
+      listType: "bullet",
+      items: [{
+        type: "listItem",
+        id: "item",
+        children: [],
+        ...(spaceAfterPx === undefined ? {} : { spaceAfterPx }),
+      }],
+    }]);
+
+    expect(hasTextFlowBlockAttributeChange(getTextFlowBlockAttributes(list()), list(40))).toBe(true);
+  });
 });

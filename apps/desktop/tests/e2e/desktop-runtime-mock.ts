@@ -4,6 +4,7 @@ import type { SigmaDocument } from "@/types/sigma-doc";
 import type { MaterialItem } from "@/types/material";
 import type { TemplateItem } from "@/types/template";
 import type { LedgerSchemaFailure } from "@/lib/library-schema";
+import type { DocumentVersion, DocumentVersionMetadata } from "@/lib/document-version-history";
 import type {
   DesktopAiEditChatRoom,
   DesktopMcpEditProposalListOptions,
@@ -187,6 +188,7 @@ export async function installDesktopRuntimeMock(
     };
     let currentDocument = aiEnabled ? ensureOverlayShapeFixture(structuredClone(initialDocument)) : structuredClone(initialDocument);
     let currentRevision = 1;
+    let currentVersions: DocumentVersion[] = [];
     let currentMaterials = structuredClone(initialMaterials);
     let currentTemplates = structuredClone(initialTemplates);
     let currentDocumentLoadFailure = initialDocumentLoadFailure
@@ -386,6 +388,59 @@ export async function installDesktopRuntimeMock(
     const emitStorageChange = (event: DesktopStorageChangeEvent) => {
       storageChangeHandlers.forEach((handler) => handler(event));
     };
+    const versionCounter = (window as unknown as { __sigmaVersionCount: number });
+    versionCounter.__sigmaVersionCount = 0;
+    const comparableDocument = (doc: SigmaDocument) => {
+      const value = structuredClone(doc) as SigmaDocument & { updatedAt?: string };
+      delete value.updatedAt;
+      if (value.pageLayout?.overlay) delete value.pageLayout.overlay.updatedAt;
+      return JSON.stringify(value);
+    };
+    const captureMockVersion = (
+      origin: "user" | "ai" | "restore-backup" | "tab-switch" | "app-close",
+      before: SigmaDocument,
+      after: SigmaDocument,
+      force = false,
+    ) => {
+      const boundaryOrigin = origin === "tab-switch" || origin === "app-close";
+      const comparisonDocument = boundaryOrigin ? currentVersions[0]?.document : before;
+      if (!force && comparisonDocument && comparableDocument(comparisonDocument) === comparableDocument(after)) return null;
+      if (
+        !force
+        && origin === "user"
+        && currentVersions[0]
+        && Date.now() - Date.parse(currentVersions[0].capturedAt) < 10 * 60 * 1_000
+      ) return null;
+      const version: DocumentVersion = {
+        versionId: `version_e2e_${currentVersions.length + 1}`,
+        revision: currentRevision,
+        capturedAt: new Date(Date.now() + currentVersions.length).toISOString(),
+        origin,
+        document: structuredClone(after),
+      };
+      currentVersions = [version, ...currentVersions].slice(0, 200);
+      versionCounter.__sigmaVersionCount = currentVersions.length;
+      emitStorageChange({ type: "documentVersion", fileId, change: "captured", timestamp: Date.now() });
+      return version;
+    };
+    (window as unknown as { __seedSigmaVersionHistory?: () => void }).__seedSigmaVersionHistory = () => {
+      const replaceFirstParagraph = (text: string) => ({
+        ...currentDocument,
+        content: currentDocument.content.map((block, index) => index === 0 && block.type === "paragraph"
+          ? { ...block, children: [{ type: "text" as const, text }] }
+          : block),
+        updatedAt: new Date().toISOString(),
+      });
+      let before = cloneDocument();
+      currentDocument = replaceFirstParagraph("first saved version");
+      currentRevision += 1;
+      captureMockVersion("ai", before, currentDocument);
+      before = cloneDocument();
+      currentDocument = replaceFirstParagraph("second saved version with additions");
+      currentRevision += 1;
+      captureMockVersion("ai", before, currentDocument);
+      emitStorageChange({ type: "document", fileId, change: "changed", timestamp: Date.now() });
+    };
 
     let chatRooms: DesktopAiEditChatRoom[] = [];
     let mcpProposals: DesktopMcpEditProposalSummary[] = [];
@@ -411,6 +466,7 @@ export async function installDesktopRuntimeMock(
       proposal.updatedAt = new Date().toISOString();
       applyProposalDraft(proposal);
       currentRevision += 1;
+      captureMockVersion("ai", revertDocument, currentDocument);
       proposal.appliedRevision = currentRevision;
       proposal.appliedDiff = buildAppliedDiff(revertDocument, currentDocument, proposal);
       saveSnapshot();
@@ -851,6 +907,10 @@ export async function installDesktopRuntimeMock(
       app: {
         getInfo: async () => ({ version: "0.1.0", releaseUrl: "https://github.com/Atsu-Taiyo/SIGMA-Studio/releases/latest" }),
         openLatestReleasePage: async () => ({ ok: true }),
+        onCloseRequested: () => () => undefined,
+        acknowledgeCloseRequest: async () => true,
+        notifyCloseReady: async () => true,
+        cancelCloseRequest: async () => true,
       },
       shell: {
         openExternal: async () => ({ ok: true }),
@@ -1089,7 +1149,7 @@ export async function installDesktopRuntimeMock(
         saveDocument: async (
           requestedFileId: string,
           nextDocument: SigmaDocument,
-          saveOptions: { expectedRevision: number },
+          saveOptions: { expectedRevision: number; origin?: "user" | "ai" | "restore-backup" | "tab-switch" | "app-close" },
         ) => {
           if (requestedFileId !== fileId) {
             return { ok: false, error: "教材が見つかりません。" };
@@ -1102,8 +1162,10 @@ export async function installDesktopRuntimeMock(
               error: "他の変更が先に保存されています。",
             };
           }
+          const previousDocument = cloneDocument();
           currentDocument = structuredClone(nextDocument);
           currentRevision += 1;
+          captureMockVersion(saveOptions.origin ?? "user", previousDocument, currentDocument);
           saveSnapshot();
           if (emitWatcherEventOnSave) {
             // 実機の fs watcher は「誰が書いたか」を知らないので、自分の保存でも返ってくる。
@@ -1116,6 +1178,38 @@ export async function installDesktopRuntimeMock(
             }));
           }
           return { ok: true, revision: currentRevision };
+        },
+        listDocumentVersions: async (requestedFileId: string): Promise<DocumentVersionMetadata[]> => requestedFileId === fileId
+          ? currentVersions.map((version) => structuredClone({
+              versionId: version.versionId,
+              revision: version.revision,
+              capturedAt: version.capturedAt,
+              origin: version.origin,
+            }))
+          : [],
+        getDocumentVersion: async (requestedFileId: string, versionId: string) => requestedFileId === fileId
+          ? structuredClone(currentVersions.find((version) => version.versionId === versionId) ?? null)
+          : null,
+        captureDocumentVersion: async (
+          requestedFileId: string,
+          nextDocument: SigmaDocument,
+          captureOptions: { expectedRevision: number; origin: "user" | "ai" | "restore-backup" | "tab-switch" | "app-close" },
+        ) => {
+          if (requestedFileId !== fileId || captureOptions.expectedRevision !== currentRevision) {
+            return { ok: false, error: "他の変更が先に保存されています。" };
+          }
+          const version = captureMockVersion(
+            captureOptions.origin,
+            cloneDocument(),
+            nextDocument,
+            captureOptions.origin === "restore-backup",
+          );
+          return { ok: true, ...(version ? { version: {
+            versionId: version.versionId,
+            revision: version.revision,
+            capturedAt: version.capturedAt,
+            origin: version.origin,
+          } } : {}) };
         },
         createDocument: async () => ({ file: metadata(), document: cloneDocument() }),
         createFileFromDocument: async ({ document: nextDocument }: { document: SigmaDocument }) => {
@@ -1181,6 +1275,7 @@ export async function installDesktopRuntimeMock(
           applyProposalDraft(proposal);
           currentRevision += 1;
           currentDocument = { ...currentDocument, updatedAt: new Date().toISOString() };
+          captureMockVersion("ai", revertDocument, currentDocument);
           proposal.appliedRevision = currentRevision;
           proposal.appliedDiff = buildAppliedDiff(revertDocument, currentDocument, proposal);
           saveSnapshot();
@@ -1207,6 +1302,7 @@ export async function installDesktopRuntimeMock(
             // main側の書き込みヘルパは承認保存のたびに updatedAt を押す。ここを省くと、
             // 「保存時刻だけが動いた文書」を人手編集と誤認する退行をe2eで captureできない。
             currentDocument = { ...currentDocument, updatedAt: new Date().toISOString() };
+            captureMockVersion("ai", revertDocument, currentDocument);
           }
           approvedProposals.forEach((proposal) => {
             proposal.appliedDiff = buildAppliedDiff(revertDocument, currentDocument, proposal);

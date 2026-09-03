@@ -175,6 +175,27 @@ const CORPUS: Array<{ blocks: TextFlowBlock[]; name: string }> = [
       items: [{ type: "listItem", id: "li3", children: [{ type: "text", text: "いち" }] }],
     }],
   },
+  {
+    name: "list item space after",
+    blocks: [{
+      type: "list",
+      id: "l3",
+      listType: "bullet",
+      items: [{
+        type: "listItem",
+        id: "li4",
+        children: [{ type: "text", text: "項目" }],
+        spaceAfterPx: 18,
+        continuations: [{ type: "paragraph", id: "li4-cont", children: [{ type: "text", text: "続き" }] }],
+        nested: [{
+          type: "list",
+          id: "l4",
+          listType: "bullet",
+          items: [{ type: "listItem", id: "li5", children: [{ type: "text", text: "入れ子" }] }],
+        }],
+      }],
+    }],
+  },
 ];
 
 /**
@@ -184,7 +205,7 @@ const CORPUS: Array<{ blocks: TextFlowBlock[]; name: string }> = [
  * 高さが変わりうるので、可視範囲化ではリストを含むユニットを「常に Tiptap を建てる」側に
  * 置いている。直すなら静的側を `p` に寄せる (= 印刷の出力が変わる) 判断が要る。
  */
-const KNOWN_DIVERGENT = new Set(["bullet list", "ordered list"]);
+const KNOWN_DIVERGENT = new Set(["bullet list", "ordered list", "list item space after"]);
 
 describe("body blocks project the same DOM through Tiptap and the static renderer", () => {
   for (const { blocks, name } of CORPUS) {
@@ -198,6 +219,25 @@ describe("body blocks project the same DOM through Tiptap and the static rendere
       expect(staticDom(blocks)).toEqual(editorDom(blocks));
     });
   }
+
+  it("puts list-item space on the li edge in both projections", () => {
+    const blocks = CORPUS.find(({ name }) => name === "list item space after")!.blocks;
+    const findItem = (nodes: NormalizedNode[]): NormalizedNode | undefined => {
+      const containsItemId = (node: NormalizedNode): boolean => (
+        node.attrs?.["data-sigma-doc-id"] === "li4"
+        || node.children?.some(containsItemId) === true
+      );
+      for (const node of nodes) {
+        if (node.tag === "li" && containsItemId(node)) return node;
+        const nested = node.children ? findItem(node.children) : undefined;
+        if (nested) return nested;
+      }
+      return undefined;
+    };
+
+    expect(findItem(staticDom(blocks))?.style?.["--sigma-doc-list-item-space-after"]).toBe("18px");
+    expect(findItem(editorDom(blocks))?.style?.["--sigma-doc-list-item-space-after"]).toBe("18px");
+  });
 });
 
 function staticDom(blocks: TextFlowBlock[]): NormalizedNode[] {

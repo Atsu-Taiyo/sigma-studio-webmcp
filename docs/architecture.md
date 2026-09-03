@@ -159,6 +159,8 @@ TeXは数式ノードの中だけに閉じ込めます。
 
 デスクトップ版は `data/documents`、`library.json`、`workspace.json` を監視します。外部エディタやファイル同期ツールが現在開いている `documents/<fileId>.sigmadoc.json` を更新した場合、main process は `{ type: "document", fileId, change }` をrendererへ通知し、renderer はそのSigmaDocを読み直して画面に即時反映します。アプリ内編集がdirtyな状態で外部更新が来た場合は、新しい `fileId` の退避教材を作ってから外部変更を反映します。外部削除時は削除済みfileを復活させず、別fileへ切り替えます。
 
+教材ごとのバージョン履歴はSigmaDoc本体に焼き込まず、`data/doc-versions/<encodedFileId>/` のサイドカーとして保持します。各版の本文は個別の `<versionId>.sigmadoc.json`、一覧に必要な時刻と出所は追記型 `index.jsonl` に分け、通常の保存で履歴全体を読み書きしません。通常編集は最新版から10分ごと、それに加えて教材タブを離れる時とアプリ終了時に、最新版と本文が異なる場合だけスナップショットを追加します。履歴は右上の専用ボタンから開き、選択した版を編集面の代わりに読み取り専用の紙面として表示します。保持上限は1教材あたり200版で、超過時だけ古いスナップショットの削除とindexのcompactionを行います。Web版でもIndexedDBのメタデータと本文を別object storeに保存し、一覧取得は本文をdeserializeしません。
+
 IDの境界は分けます。`fileId` はローカルのファイル管理IDで、workspace、folder、revision、タブ、一覧、watch、AI編集対象の基準です。`docId` はSigmaDoc内部IDで、教材本文の内部識別子としてだけ残します。
 
 教材作成、保存、削除、フォルダ移動、workspace変更、画像参照はすべてローカルlibrary内で完結し、標準UIもこのローカルデータだけを表示します。`library.json` が現行スキーマに適合しない場合は専用エラー画面で違反箇所とAI修復用プロンプトを示し、再読み込みされるまで台帳へ書き込みません。
@@ -327,7 +329,7 @@ Tiptapは編集UIとして使い、保存形式にはしません。
 }
 ```
 
-`preset` は `A4` / `A3` / `B5` / `B4` / `custom` を持てます。本文 `content` は段ごとの配列に分けず、論理順の1本の配列を正本にします。段への流し込み、ページ寸法、本文矩形、ヘッダー/フッターの表示テキストは `features/document` の正規化・metrics関数から派生させます。文書全体ではなく本文途中だけを段組みにする場合は、対象段落を `layoutSection` にまとめ、そこから段数・段間を派生させます。`layoutSection` はトップレベル本文、問題の各エリア、`boxBlock.blocks` のどこでも同じ局所段組モデルであり、段数・段間・段内改段の解釈と通常のbalanced columns表示を共有します。外側のページをまたぐときだけ、`PageCanvasEditor` のページcompositorが配置を派生させます。ヘッダー/フッター本文は `blocks` を正規データにし、Tiptapのページ表示拡張は実験的な表示レイヤーとして使い、Tiptap JSONや拡張内部状態は正本にしません。
+`preset` は `A4` / `A3` / `B5` / `B4` / `custom` を持てます。文書全体の本文 `content` は段ごとの配列に分けず、論理順の1本の配列を正本にします。ページ段への流し込み、ページ寸法、本文矩形、ヘッダー/フッターの表示テキストは `features/document` の正規化・metrics関数から派生させます。一方、本文途中だけを段組みにする `layoutSection` は新聞型の自動流し込みではなく、`layout.columnStartIds`で各childの列所属、`layout.columnWidths`で相対幅を明示します。列ごとに独立した編集面とページカーソルを持つため、左列末尾のEnterやページ溢れで右列へ本文が移ることはありません。短い列は空白のまま、長い列だけが次ページへ続きます。`pagination.break`は局所段組の列境界には使いません。ヘッダー/フッター本文は `blocks` を正規データにし、Tiptapのページ表示拡張は実験的な表示レイヤーとして使い、Tiptap JSONや拡張内部状態は正本にしません。
 
 ### Math Editor
 

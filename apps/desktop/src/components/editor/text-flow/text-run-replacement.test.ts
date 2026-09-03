@@ -119,6 +119,121 @@ describe("buildTextRunReplacementMutations", () => {
     expect(result[0].selection).toEqual(caretBookmark("a", 2));
   });
 
+  it("does not join paragraph remnants across a manual break", () => {
+    const result = buildTextRunReplacementMutations(
+      crossChunkSegments(
+        [paragraph("a", "前半")],
+        [{ ...paragraph("b", "後半"), pagination: { break: true } }],
+      ),
+      [],
+      () => paragraph("empty", ""),
+    );
+
+    expect(result[0].nextBlocks.map((block) => [block.id, text(block), block.pagination?.break])).toEqual([
+      ["a", "前半", undefined],
+      ["b", "後半", true],
+    ]);
+  });
+
+  it("puts replacement text before the trailing manual-break block without joining it", () => {
+    const result = buildTextRunReplacementMutations(
+      crossChunkSegments(
+        [paragraph("a", "前半")],
+        [{ ...paragraph("b", "後半"), pagination: { break: true } }],
+      ),
+      [paragraph("typed", "入力")],
+      () => paragraph("empty", ""),
+    );
+
+    expect(result[0].nextBlocks.map((block) => [block.id, text(block), block.pagination?.break])).toEqual([
+      ["a", "前半入力", undefined],
+      ["b", "後半", true],
+    ]);
+  });
+
+  it("retains every manual break across a replacement spanning three chunks", () => {
+    const result = buildTextRunReplacementMutations([
+      {
+        unitId: "chunk-a", scopeId: "document", previousIds: ["a"],
+        previousBlocks: [paragraph("a", "A")], before: [paragraph("a", "A")], after: [],
+        startsInsideTextBlock: true, preserveEmpty: false,
+      },
+      {
+        unitId: "chunk-b", scopeId: "document", previousIds: ["b"],
+        previousBlocks: [{ ...paragraph("b", "B"), pagination: { break: true } }], before: [], after: [],
+        preserveEmpty: false,
+      },
+      {
+        unitId: "chunk-c", scopeId: "document", previousIds: ["c"],
+        previousBlocks: [{ ...paragraph("c", "C"), pagination: { break: true } }], before: [],
+        after: [{ ...paragraph("c", "C"), pagination: { break: true } }],
+        endsInsideTextBlock: true, preserveEmpty: false,
+      },
+    ], [paragraph("typed", "X")], () => paragraph("empty", ""));
+
+    const nextBlocks = result.flatMap((mutation) => mutation.nextBlocks);
+    expect(nextBlocks.filter((block) => block.pagination?.break).map((block) => block.id)).toEqual(["b", "c"]);
+    expect(nextBlocks.map(text).join("")).toBe("AXC");
+  });
+
+  it("keeps manual-break chunks as independent mutations when deleting across them", () => {
+    const before = paragraph("p_before", "前の");
+    const breakOwner = {
+      ...paragraph("p_break", "の段落テキストです。"),
+      pagination: { break: true as const },
+    };
+    const after = paragraph("p_after", "後ろの段落テキストです。");
+
+    const result = buildTextRunReplacementMutations([{
+      unitId: "before-unit",
+      scopeId: "document",
+      previousIds: ["p_before"],
+      previousBlocks: [paragraph("p_before", "前の段落テキストです。")],
+      before: [before],
+      after: [],
+      startsInsideTextBlock: true,
+      preserveEmpty: false,
+    }, {
+      unitId: "break-unit",
+      scopeId: "document",
+      previousIds: ["p_break", "p_after"],
+      previousBlocks: [{
+        ...paragraph("p_break", "改ページ後の段落テキストです。"),
+        pagination: { break: true },
+      }, after],
+      before: [],
+      after: [breakOwner, after],
+      endsInsideTextBlock: true,
+      preserveEmpty: false,
+    }], [], () => paragraph("empty", ""));
+
+    expect(result.map(({ unitId, nextBlocks }) => ({
+      unitId,
+      blocks: nextBlocks.map((block) => [block.id, text(block), block.pagination?.break]),
+    }))).toEqual([{
+      unitId: "before-unit",
+      blocks: [["p_before", "前の", undefined]],
+    }, {
+      unitId: "break-unit",
+      blocks: [
+        ["p_break", "の段落テキストです。", true],
+        ["p_after", "後ろの段落テキストです。", undefined],
+      ],
+    }]);
+  });
+
+  it("drops only a copied leading break when the paste lands at a container start", () => {
+    const result = buildTextRunReplacementMutations([{
+      unitId: "chunk-a", scopeId: "layout:a", previousIds: ["old"], previousBlocks: [paragraph("old", "")],
+      before: [], after: [], preserveEmpty: true, startsInsideTextBlock: false,
+    }], [
+      { ...paragraph("pasted-first", "一"), pagination: { break: true } },
+      { ...paragraph("pasted-second", "二"), pagination: { break: true } },
+    ], () => paragraph("empty", ""));
+
+    expect(result[0].nextBlocks.map((block) => block.pagination?.break)).toEqual([undefined, true]);
+  });
+
   it("joins a single-character paste or replacement with both paragraph remnants", () => {
     const result = buildTextRunReplacementMutations(
       crossChunkSegments([paragraph("a", "AB")], [paragraph("b", "YZ")]),

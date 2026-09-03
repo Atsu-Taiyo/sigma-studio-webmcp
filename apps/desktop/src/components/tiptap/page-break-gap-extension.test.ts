@@ -1,4 +1,6 @@
-import { Extension, getSchema } from "@tiptap/core";
+// @vitest-environment happy-dom
+
+import { Editor, Extension, getSchema } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { Decoration } from "@tiptap/pm/view";
 import StarterKit from "@tiptap/starter-kit";
@@ -8,6 +10,7 @@ import { EditorState } from "@tiptap/pm/state";
 
 import {
   createPageBreakDecorations,
+  PageBreakGapExtension,
   paginationGapKey,
   shouldRebuildPageBreakDecorations,
 } from "@/components/tiptap/page-break-gap-extension";
@@ -77,6 +80,75 @@ describe("page break gap extension", () => {
       "page-break-marker-p_after-pageBreak-pageBreak-inline",
       "page-break-spacer-p_after-96",
     ]);
+  });
+
+  it("renders an accessible remove button and invokes the marker callback", () => {
+    const doc = createDoc([
+      { id: "p_before", text: "before" },
+      { id: "p_after", text: "after" },
+    ]);
+    const removed: string[] = [];
+    const marker = createPageBreakDecorations(doc, {}, new Set(["p_after"]), {
+      markerLabel: () => "改ページ",
+      removeLabel: () => "改ページを解除",
+      removeButtonLabel: () => "× 解除",
+      onRemove: (blockId) => removed.push(blockId),
+    }).find()[0];
+    const dom = decorationType(marker).toDOM?.() as HTMLElement;
+    const button = dom.querySelector<HTMLButtonElement>("button");
+
+    expect(button?.getAttribute("aria-label")).toBe("改ページを解除");
+    expect(button?.textContent).toBe("× 解除");
+    const mouseDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    button?.dispatchEvent(mouseDown);
+    expect(mouseDown.defaultPrevented).toBe(true);
+    expect(removed).toEqual(["p_after"]);
+
+    // A pointer click after mousedown must not dispatch twice, even if it lands late.
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    expect(removed).toEqual(["p_after"]);
+
+    const keyboardMarker = createPageBreakDecorations(doc, {}, new Set(["p_after"]), {
+      markerLabel: () => "改ページ",
+      removeLabel: () => "改ページを解除",
+      removeButtonLabel: () => "× 解除",
+      onRemove: (blockId) => removed.push(blockId),
+    }).find()[0];
+    const keyboardButton = (decorationType(keyboardMarker).toDOM?.() as HTMLElement)
+      .querySelector<HTMLButtonElement>("button");
+    keyboardButton?.click();
+    expect(removed).toEqual(["p_after", "p_after"]);
+  });
+
+  it("does not render an actionable remove button on a continuation replica", () => {
+    const element = document.createElement("div");
+    document.body.append(element);
+    const editor = new Editor({
+      element,
+      extensions: [
+        StarterKit.configure({ undoRedo: false }),
+        SigmaDocIdAttrs,
+        PageBreakGapExtension.configure({
+          getGaps: () => ({}),
+          getBreakBeforeIds: () => ["p_after"],
+          getBreakBeforeKind: () => "pageBreak",
+          getBreakBeforeKinds: () => ({}),
+          getBreakBeforeLabel: () => "改ページ",
+          getRemoveBreakLabel: () => "改ページを解除",
+          getRemoveBreakButtonLabel: () => "× 解除",
+          onRemoveBreak: () => {
+            throw new Error("replica must not own removal");
+          },
+          isReplicaSurface: () => true,
+          getBreakBeforeMarkerLayouts: () => ({}),
+        }),
+      ],
+      content: createDoc([{ id: "p_after", text: "after" }]).toJSON(),
+    });
+
+    expect(element.querySelector("[data-page-break-marker] button")).toBeNull();
+    editor.destroy();
+    element.remove();
   });
 
   it("marks a column break by kind, not by the label text", () => {
@@ -211,6 +283,7 @@ function createDoc(blocks: Array<{ id: string; text: string }>): ProseMirrorNode
 }
 
 interface DecorationTypeWithSpec {
+  toDOM?: () => Node;
   spec: {
     blockId?: string;
     gap?: number;

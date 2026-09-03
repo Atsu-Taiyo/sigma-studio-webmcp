@@ -251,6 +251,7 @@ export function buildLargeTextPastePlan({
     const mutation = buildTextRunReplacementMutations([{
       unitId,
       previousIds: getTextFlowBlockIds(previousBlocks),
+      previousBlocks,
       before: sliceToTextFlowBlocks(state.doc.slice(0, from), previousBlocks),
       after: sliceToTextFlowBlocks(state.doc.slice(to, state.doc.content.size), previousBlocks),
       startsInsideTextBlock: isInsideTextBlock(state.doc.resolve(from)),

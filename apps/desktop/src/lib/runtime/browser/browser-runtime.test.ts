@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createBlankDocument } from "@/lib/blank-document";
 import { sampleDocument } from "@/lib/sample-document";
@@ -18,6 +18,43 @@ function createRuntime(backend: BrowserStoreBackend): AppRuntime {
   });
 }
 
+function failVersionWrites(backend: BrowserStoreBackend, message: string): BrowserStoreBackend {
+  return {
+    read: (stores, run) => backend.read(stores, run),
+    write: (stores, run) => backend.write(stores, (tx) => run({
+      ...tx,
+      put: (store, key, value) => (
+        store === "documentVersionMetadata" || store === "documentVersionSnapshots"
+          ? Promise.reject(new Error(message))
+          : tx.put(store, key, value)
+      ),
+      delete: (store, key) => (
+        store === "documentVersionMetadata" || store === "documentVersionSnapshots"
+          ? Promise.reject(new Error(message))
+          : tx.delete(store, key)
+      ),
+    })),
+  };
+}
+
+function installTestWebLocks(): void {
+  const queues = new Map<string, Promise<void>>();
+  vi.stubGlobal("navigator", {
+    locks: {
+      request<T>(name: string, run: () => Promise<T>): Promise<T> {
+        const prior = queues.get(name) ?? Promise.resolve();
+        const next = prior.catch(() => undefined).then(run);
+        const tail = next.then(() => undefined, () => undefined);
+        queues.set(name, tail);
+        void tail.then(() => {
+          if (queues.get(name) === tail) queues.delete(name);
+        });
+        return next;
+      },
+    },
+  });
+}
+
 describe("browser runtime", () => {
   let backend: BrowserStoreBackend;
   let runtime: AppRuntime;
@@ -25,6 +62,10 @@ describe("browser runtime", () => {
   beforeEach(() => {
     backend = createMemoryStoreBackend();
     runtime = createRuntime(backend);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("reports itself as the web target with browser storage", () => {
@@ -77,6 +118,51 @@ describe("browser runtime", () => {
     expect((await reopened.library.listFiles())[0].title).toBe("保存した教材");
   });
 
+  it("skips stored version metadata with an invalid capturedAt", async () => {
+    const initialized = await runtime.library.initializeWorkspace();
+    const fileId = initialized.ok ? initialized.state.activeFileId : "";
+    await backend.write(["documentVersionMetadata", "documentVersionSnapshots"], async (tx) => {
+      await tx.put("documentVersionMetadata", `${fileId}:version_bad`, {
+        fileId,
+        versionId: "version_bad",
+        revision: 1,
+        capturedAt: "not-a-date",
+        origin: "user",
+      });
+      await tx.put(
+        "documentVersionSnapshots",
+        `${fileId}:version_bad`,
+        createBlankDocument("不正な日時の版"),
+      );
+    });
+
+    await expect(runtime.library.listDocumentVersions(fileId)).resolves.toEqual([]);
+    await expect(runtime.library.getDocumentVersion(fileId, "version_bad")).resolves.toBeNull();
+  });
+
+  it("captures a tab boundary against the latest version after an unversioned autosave", async () => {
+    const initialized = await runtime.library.initializeWorkspace();
+    const fileId = initialized.ok ? initialized.state.activeFileId : "";
+    const first = createBlankDocument("12:00 version");
+    const firstSave = await runtime.library.saveDocument(fileId, first, { expectedRevision: 1, origin: "ai" });
+    const autosaved = createBlankDocument("12:01 autosave");
+    const autosave = await runtime.library.saveDocument(fileId, autosaved, { expectedRevision: firstSave.revision!, origin: "user" });
+    expect(autosave.versionCaptured).toBe(false);
+
+    const boundary = await runtime.library.saveDocument(fileId, structuredClone(autosaved), {
+      expectedRevision: autosave.revision!,
+      origin: "tab-switch",
+    });
+    expect(boundary.versionCaptured).toBe(true);
+    expect((await runtime.library.listDocumentVersions(fileId))[0]).toMatchObject({ origin: "tab-switch" });
+
+    const duplicateBoundary = await runtime.library.saveDocument(fileId, structuredClone(autosaved), {
+      expectedRevision: boundary.revision!,
+      origin: "app-close",
+    });
+    expect(duplicateBoundary.versionCaptured).toBe(false);
+  });
+
   it("rejects a save that was built from an older revision", async () => {
     const initialized = await runtime.library.initializeWorkspace();
     const fileId = initialized.ok ? initialized.state.activeFileId : "";
@@ -89,6 +175,75 @@ describe("browser runtime", () => {
 
     expect(stale).toMatchObject({ ok: false, code: "revision-mismatch", currentRevision: 2 });
     expect((await runtime.library.listFiles())[0].title).toBe("最初");
+  });
+
+  it("keeps a canonical save successful when version capture fails", async () => {
+    const initialized = await runtime.library.initializeWorkspace();
+    const fileId = initialized.ok ? initialized.state.activeFileId : "";
+    const failingRuntime = createRuntime(failVersionWrites(backend, "quota exceeded"));
+
+    const saved = await failingRuntime.library.saveDocument(
+      fileId,
+      createBlankDocument("正本は保存済み"),
+      { expectedRevision: 1 },
+    );
+
+    expect(saved).toMatchObject({
+      ok: true,
+      revision: 2,
+      versionCaptured: false,
+      versionCaptureError: "quota exceeded",
+    });
+    const loaded = await runtime.library.loadDocumentWithRecovery(fileId);
+    expect(loaded.ok && loaded.document.metadata.title).toBe("正本は保存済み");
+    expect(loaded.ok && loaded.revision).toBe(2);
+  });
+
+  it("serializes canonical save and version capture across browser runtimes", async () => {
+    installTestWebLocks();
+    const initialized = await runtime.library.initializeWorkspace();
+    const fileId = initialized.ok ? initialized.state.activeFileId : "";
+    let releaseFirstVersionWrite!: () => void;
+    let reportFirstVersionWrite!: () => void;
+    const firstVersionWriteStarted = new Promise<void>((resolve) => {
+      reportFirstVersionWrite = resolve;
+    });
+    const firstVersionWriteReleased = new Promise<void>((resolve) => {
+      releaseFirstVersionWrite = resolve;
+    });
+    let blockFirstVersionWrite = true;
+    const blockingBackend: BrowserStoreBackend = {
+      read: (stores, run) => backend.read(stores, run),
+      write: async (stores, run) => {
+        if (blockFirstVersionWrite && stores.includes("documentVersionMetadata")) {
+          blockFirstVersionWrite = false;
+          reportFirstVersionWrite();
+          await firstVersionWriteReleased;
+        }
+        return backend.write(stores, run);
+      },
+    };
+    const firstRuntime = createRuntime(blockingBackend);
+    const secondRuntime = createRuntime(blockingBackend);
+
+    const firstSave = firstRuntime.library.saveDocument(
+      fileId,
+      createBlankDocument("先のAI編集"),
+      { expectedRevision: 1, origin: "ai" },
+    );
+    await firstVersionWriteStarted;
+    const secondSave = secondRuntime.library.saveDocument(
+      fileId,
+      createBlankDocument("後のAI編集"),
+      { expectedRevision: 2, origin: "ai" },
+    );
+    await Promise.resolve();
+    expect((await runtime.library.listFiles())[0]?.revision).toBe(2);
+
+    releaseFirstVersionWrite();
+    await expect(firstSave).resolves.toMatchObject({ ok: true, revision: 2, versionCaptured: true });
+    await expect(secondSave).resolves.toMatchObject({ ok: true, revision: 3, versionCaptured: true });
+    expect((await runtime.library.listDocumentVersions(fileId)).map((version) => version.revision)).toEqual([3, 2]);
   });
 
   it("publishes document and library changes to subscribers", async () => {
@@ -144,6 +299,22 @@ describe("browser runtime", () => {
     expect(deleted.ok).toBe(true);
     const remaining = await runtime.library.listFiles();
     expect(remaining.map((file) => file.fileId)).toEqual([first?.fileId]);
+  });
+
+  it("keeps a canonical delete successful when version cleanup fails", async () => {
+    const initialized = await runtime.library.initializeWorkspace();
+    const fileId = initialized.ok ? initialized.state.activeFileId : "";
+    await runtime.library.saveDocument(fileId, createBlankDocument("履歴あり"), { expectedRevision: 1 });
+    const [version] = await runtime.library.listDocumentVersions(fileId);
+    expect(version).toBeDefined();
+    const failingRuntime = createRuntime(failVersionWrites(backend, "cleanup quota failure"));
+
+    const deleted = await failingRuntime.library.deleteFile(fileId);
+
+    expect(deleted).toEqual({ ok: true, versionCleanupError: "cleanup quota failure" });
+    expect(await runtime.library.listFiles()).toEqual([]);
+    expect(await runtime.library.listDocumentVersions(fileId)).toEqual([]);
+    expect(await runtime.library.getDocumentVersion(fileId, version!.versionId)).toBeNull();
   });
 
   it("duplicates a document into a new file", async () => {

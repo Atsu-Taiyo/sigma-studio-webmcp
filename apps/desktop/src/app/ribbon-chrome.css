@@ -210,6 +210,10 @@ body:has(.app-shell[data-ui-layout="word"]) .overlay-drawing-hint {
   flex: 0 0 auto;
 }
 
+.app-shell[data-ui-layout="word"] .ribbon-titlebar-actions .version-history-button {
+  flex: 0 0 auto;
+}
+
 .app-shell[data-ui-layout="word"] .document-tabs-row {
   grid-column: 2 / 5;
   grid-row: 2;

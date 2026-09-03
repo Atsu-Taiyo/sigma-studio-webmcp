@@ -105,10 +105,12 @@ test("問題を含む範囲をコピーすると問題のまま貼られる", as
 test("問題ブロックを選んで ⌘C / ⌘V でコピペできる", async ({ page }) => {
   await openEditor(page);
 
-  // ブロックハンドル (ホバーで出る) で問題そのものを選ぶ。
+  // ブロックハンドル (ホバーで出る) で問題そのものを選ぶ。本文の上では中の段落のグリップが
+  // 出るので、問題ごと掴むときは左ガター (余白) から寄る。
   const promptBlock = page.locator('[data-sigma-doc-id="prob_prompt"]').first();
-  await promptBlock.hover();
-  const handle = page.locator('.page-block-handle').first();
+  const promptBox = (await promptBlock.boundingBox())!;
+  await page.mouse.move(promptBox.x - 40, promptBox.y + promptBox.height / 2, { steps: 3 });
+  const handle = page.locator('.page-block-handle[data-block-id="prob_1"]').first();
   await expect(handle).toBeVisible();
   await handle.click();
   await page.keyboard.press("Escape");

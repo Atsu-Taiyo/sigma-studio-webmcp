@@ -284,6 +284,7 @@ test("a selected whiteboard shape can start an AI edit proposal without a body b
   });
 
   await expect(page.locator(".whiteboard-canvas .ai-overlay-approval-widget")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('.whiteboard-canvas .overlay-shape.ai-diff-ghost-shape[data-overlay-shape-id="whiteboard_shape_1"]')).toBeVisible();
 });
 
 async function startShapeRun(page: Page, shapeId: string, instruction: string): Promise<void> {

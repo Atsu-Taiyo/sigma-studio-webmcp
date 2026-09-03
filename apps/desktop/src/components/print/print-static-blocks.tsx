@@ -95,6 +95,8 @@ export type PrintContentUnit =
       problemId: string;
       area: ProblemAreaKind;
       blocks: ProblemAreaBlock[];
+      layoutSectionFragment?: Extract<PrintContentUnit, { type: "layoutSectionFragment" }>;
+      blockSlice?: Extract<PrintContentUnit, { type: "blockSlice" }>;
       fragmentRole: "single" | "first" | "middle" | "last";
       estimatedHeightPx: number;
       minHeightMm?: number;
@@ -195,7 +197,7 @@ export function PrintBlock({
       <PrintProblemArea
         problemId={unit.problemId}
         area={unit.area}
-        minHeightMm={unit.fragmentRole === "single" ? unit.minHeightMm : undefined}
+        minHeightMm={unit.minHeightMm}
         problemNumber={unit.problemNumber}
         numberFontSize={unit.numberFontSize}
         hasFrame={unit.hasFrame}
@@ -206,6 +208,8 @@ export function PrintBlock({
         columnGapMm={columnGapMm}
         mathFractionSizing={mathFractionSizing}
         blocks={unit.blocks}
+        layoutSectionFragment={unit.layoutSectionFragment}
+        blockSlice={unit.blockSlice}
         fragmentRole={unit.fragmentRole}
         sourceId={unit.sourceId}
       />
@@ -446,10 +450,14 @@ export function PrintProblemArea({
   mathFractionSizing,
   fragmentRole,
   sourceId,
+  layoutSectionFragment,
+  blockSlice,
 }: {
   problemId: string;
   area: ProblemAreaKind;
   blocks: ProblemAreaBlock[];
+  layoutSectionFragment?: Extract<PrintContentUnit, { type: "layoutSectionFragment" }>;
+  blockSlice?: Extract<PrintContentUnit, { type: "blockSlice" }>;
   minHeightMm?: number;
   problemNumber?: number;
   numberFontSize: number;
@@ -465,15 +473,18 @@ export function PrintProblemArea({
 }) {
   const isFirstFragment = !fragmentRole || fragmentRole === "single" || fragmentRole === "first";
   const showNumber = area === "lead" && typeof problemNumber === "number" && isFirstFragment;
-  if (blocks.length === 0 && !minHeightMm && !showNumber) return null;
+  if (blocks.length === 0 && !layoutSectionFragment && !blockSlice && !minHeightMm && !showNumber) return null;
 
   const showEmptyLeadPlaceholder = showNumber && blocks.length === 0;
   const frameClasses = hasFrame ? problemFrameClassName("print-problem-area with-frame", frameStyleId) : "print-problem-area";
   const fragmentClasses = fragmentRole ? ` print-problem-area-fragment print-problem-area-fragment-${fragmentRole}` : "";
+  const reservationClass = blocks.length === 0 && !layoutSectionFragment && minHeightMm
+    ? " print-problem-area-reservation-only"
+    : "";
 
   return (
     <section
-      className={`${frameClasses}${fragmentClasses} ${hasFrame && isFirstProblemFrameArea ? "first-frame-area" : ""} ${hasFrame && isLastProblemFrameArea ? "last-frame-area" : ""}`}
+      className={`${frameClasses}${fragmentClasses}${reservationClass} ${hasFrame && isFirstProblemFrameArea ? "first-frame-area" : ""} ${hasFrame && isLastProblemFrameArea ? "last-frame-area" : ""}`}
       data-sigma-doc-id={isFirstProblemArea && isFirstFragment ? problemId : undefined}
       data-problem-area={area}
       data-problem-area-fragment={fragmentRole}
@@ -487,7 +498,18 @@ export function PrintProblemArea({
           {showEmptyLeadPlaceholder ? (
             <div className="print-empty-lead-shell" aria-hidden="true" />
           ) : (
-            blocks.map((child) => child.type === "layoutSection" || child.type === "boxBlock" ? (
+            blockSlice ? (
+              <PrintBlock
+                unit={blockSlice}
+                columnGapMm={columnGapMm}
+                mathFractionSizing={mathFractionSizing}
+              />
+            ) : layoutSectionFragment ? (
+              <PrintLayoutSectionFragment
+                unit={layoutSectionFragment}
+                mathFractionSizing={mathFractionSizing}
+              />
+            ) : blocks.map((child) => child.type === "layoutSection" || child.type === "boxBlock" ? (
               <PrintBlock
                 key={child.id}
                 unit={{ type: "block", id: child.id, block: child, pagination: child.pagination }}

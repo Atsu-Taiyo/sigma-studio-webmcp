@@ -6,6 +6,7 @@ import {
   applyAiTableCellPatches,
   buildGraph3DSpecFromToolArgs,
   commitSigmaDocMutation,
+  createShapeToolMarkdownBlocks,
   createSigmaDocAgentSession,
   createTableSpecFromAiToolArgs,
   executeSigmaDocAgentDraftTool,
@@ -1345,6 +1346,22 @@ describe("SigmaDoc draft mutation tools", () => {
 
     // Four lines: two items, one continuation, one nested item — at the 16px line box of size "m".
     expect(getShapeToolTextBox(blocks, "m")).toEqual({ w: DEFAULT_TEXT_SHAPE_WIDTH, h: 64 });
+  });
+
+  it("converts text-shape Markdown into heading, paragraph math, and list blocks", () => {
+    const blocks = createShapeToolMarkdownBlocks("## 見出し\n\n式 $x^2$ を考える。\n\n- 一つ\n- 二つ");
+
+    expect(blocks.map((block) => block.type)).toEqual(["heading", "paragraph", "list"]);
+    expect(blocks[0]).toMatchObject({ type: "heading", level: 2 });
+    const paragraph = blocks[1];
+    expect(paragraph?.type === "paragraph" ? paragraph.children : []).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "mathInline", tex: "x^2" }),
+    ]));
+    expect(blocks[2]).toMatchObject({
+      type: "list",
+      items: [{ children: [{ type: "text", text: "一つ" }] }, { children: [{ type: "text", text: "二つ" }] }],
+    });
+    expect(() => createShapeToolMarkdownBlocks("")).toThrow();
   });
 
   it("builds text and callout shapes the overlay validator accepts", () => {

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { getCaretZoomScale, resolveScrollDelta, visibleBottomOf } from "./caret-scroll";
+import {
+  getCaretZoomScale,
+  resolveCaretRectForScroll,
+  resolveScrollDelta,
+  shouldDeferCaretScrollForPlacement,
+  visibleBottomOf,
+} from "./caret-scroll";
 
 describe("resolveScrollDelta", () => {
   it("可視域の内側なら 0", () => {
@@ -28,6 +34,47 @@ describe("resolveScrollDelta", () => {
 
   it("上下ともはみ出す前に、まず上を合わせる", () => {
     expect(resolveScrollDelta({ top: -5, bottom: 805 }, { top: 0, bottom: 800 }, 0)).toBe(-5);
+  });
+});
+
+describe("resolveCaretRectForScroll", () => {
+  it("空キャレットが原点矩形でも、可視域内のブロックへ倒してスクロールしない", () => {
+    const caret = resolveCaretRectForScroll(
+      { top: 0, bottom: 0 },
+      { top: 497, bottom: 525 },
+    );
+
+    expect(caret).toEqual({ top: 497, bottom: 525 });
+    expect(resolveScrollDelta(caret, { top: 116, bottom: 720 }, 24)).toBe(0);
+  });
+});
+
+describe("shouldDeferCaretScrollForPlacement", () => {
+  it("独立カラムで挿入直後のブロックが未配置なら待つ", () => {
+    expect(shouldDeferCaretScrollForPlacement({
+      caretHasPlacement: false,
+      caretIsTopLevelBlock: true,
+      hasPlacedBlocks: true,
+      isPlacementSurface: true,
+    })).toBe(true);
+  });
+
+  it("通常本文は挿入直後でも静的配置のため待たない", () => {
+    expect(shouldDeferCaretScrollForPlacement({
+      caretHasPlacement: false,
+      caretIsTopLevelBlock: true,
+      hasPlacedBlocks: false,
+      isPlacementSurface: false,
+    })).toBe(false);
+  });
+
+  it("配置済みブロックなら待たない", () => {
+    expect(shouldDeferCaretScrollForPlacement({
+      caretHasPlacement: true,
+      caretIsTopLevelBlock: true,
+      hasPlacedBlocks: true,
+      isPlacementSurface: true,
+    })).toBe(false);
   });
 });
 

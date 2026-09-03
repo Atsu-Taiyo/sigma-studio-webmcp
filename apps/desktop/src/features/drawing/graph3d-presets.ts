@@ -150,7 +150,7 @@ export function createGraph3DSpecPreset(
           kind: "primitive",
           primitive: "cylinder",
           center: { x: "0", y: "0", z: "0" },
-          size: { x: "2", y: "2", z: "2.6" },
+          size: { x: "2", y: "2", z: "7.8" },
           style: { color: "#2563eb", opacity: 0.04 },
         },
         {
@@ -159,7 +159,7 @@ export function createGraph3DSpecPreset(
           kind: "primitive",
           primitive: "cylinder",
           center: { x: "0", y: "0", z: "0" },
-          size: { x: "2", y: "2", z: "2.6" },
+          size: { x: "2", y: "2", z: "7.8" },
           // A primitive cylinder stands on its own z-axis; a quarter turn about y lays it along x.
           rotation: { x: "0", y: "pi/2", z: "0" },
           style: { color: "#d14343", opacity: 0.04 },
@@ -170,7 +170,7 @@ export function createGraph3DSpecPreset(
           kind: "primitive",
           primitive: "cylinder",
           center: { x: "0", y: "0", z: "0" },
-          size: { x: "2", y: "2", z: "2.6" },
+          size: { x: "2", y: "2", z: "7.8" },
           rotation: { x: "pi/2", y: "0", z: "0" },
           style: { color: "#2f855a", opacity: 0.04 },
         },
@@ -179,7 +179,10 @@ export function createGraph3DSpecPreset(
           name: names.cutPlaneH,
           kind: "plane",
           plane: { kind: "equation", expression: "z = h" },
-          size: { x: "3", y: "3", z: "0" },
+          // Wide enough to carry the pieces drawn on it: each cylinder meets the plane in a band
+          // as long as the cylinder is, so a quad the width of the shared body would have those
+          // bands running off it.
+          size: { x: "8", y: "8", z: "0" },
           style: { color: "#94a3b8", opacity: 0.12 },
         },
       ],

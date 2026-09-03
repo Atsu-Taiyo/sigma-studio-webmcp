@@ -5,11 +5,14 @@ import type { TextFlowBlock } from "@/features/text-editing";
 
 import {
   buildRenderUnits,
+  getProblemAreaUnitGapKey,
+  getSingleColumnProblemLayoutSectionMinHeightMm,
   pickUnitBreakGaps,
   pickUnitCommentThreads,
   reconcileRenderUnits,
 } from "./render-units";
 import { getChunkBoundaryState } from "./text-run-chunking";
+import type { RenderUnit } from "./types";
 
 function paragraph(id: string, text = "本文"): TextFlowBlock {
   return { type: "paragraph", id, children: [{ type: "text", text }] } as TextFlowBlock;
@@ -108,6 +111,67 @@ describe("reconcileRenderUnits with problem areas", () => {
     const reconciled = reconcileRenderUnits(previous, next);
     const reusedTargetUnit = reconciled.find((unit) => unit.id === previous[0].id);
     expect(reusedTargetUnit).not.toBe(previous[0]);
+  });
+
+  it("assigns the problem-id gap carrier to only the first unit of a split first area", () => {
+    const splitProblem = {
+      type: "problem",
+      id: "q_split",
+      lead: [
+        paragraph("lead_before"),
+        {
+          type: "layoutSection",
+          id: "lead_columns",
+          layout: { columnCount: 2 },
+          children: [paragraph("lead_column_child")],
+        },
+        paragraph("lead_after"),
+      ],
+      prompt: [],
+      hints: [],
+      solution: [],
+    } as unknown as SigmaBlock;
+
+    const areaUnits = buildRenderUnits([splitProblem]).filter((unit): unit is Extract<RenderUnit, {
+      type: "problemArea" | "problemLayoutSection";
+    }> => (
+      (unit.type === "problemArea" || unit.type === "problemLayoutSection") && unit.area === "lead"
+    ));
+
+    expect(areaUnits).toHaveLength(3);
+    expect(areaUnits.map((unit) => unit.isFirstProblemArea)).toEqual([true, true, true]);
+    expect(areaUnits.map((unit) => unit.isFirstProblemAreaUnit)).toEqual([true, false, false]);
+    expect(areaUnits.map((unit) => unit.problemAreaUnitCount)).toEqual([3, 3, 3]);
+    const gapKeys = areaUnits.map(getProblemAreaUnitGapKey);
+    expect(gapKeys[0]).toBe("q_split");
+    expect(new Set(gapKeys).size).toBe(3);
+  });
+
+  it("applies min-height to a layout-section-only area only in the single-column path", () => {
+    const layoutOnlyProblem = {
+      type: "problem",
+      id: "q_layout_only",
+      lead: [],
+      prompt: [],
+      hints: [],
+      solution: [{
+        type: "layoutSection",
+        id: "solution_columns",
+        layout: { columnCount: 2 },
+        children: [paragraph("solution_child")],
+      }],
+      areaLayout: { solution: { minHeightMm: 120 } },
+    } as unknown as SigmaBlock;
+    const unit = buildRenderUnits([layoutOnlyProblem]).find((candidate): candidate is Extract<RenderUnit, {
+      type: "problemLayoutSection";
+    }> => candidate.type === "problemLayoutSection" && candidate.area === "solution");
+
+    expect(unit).toBeDefined();
+    if (!unit) {
+      throw new Error("solution problemLayoutSection was not built");
+    }
+    expect(getSingleColumnProblemLayoutSectionMinHeightMm(unit, false)).toBe(120);
+    expect(getSingleColumnProblemLayoutSectionMinHeightMm(unit, true)).toBe(0);
   });
 });
 
