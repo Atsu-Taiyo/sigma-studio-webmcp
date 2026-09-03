@@ -9,11 +9,6 @@
   },
   "content": [
     {
-      "id": "p_91633144-59ac-4fae-9ce4-3ba48d128db9",
-      "type": "paragraph",
-      "children": []
-    },
-    {
       "id": "ai3_sat_title",
       "pagination": {
         "keepWithNext": true
@@ -37,8 +32,8 @@
       "children": []
     },
     {
-      "type": "layoutSection",
       "id": "layout_section_a51e93ca-3670-4d7d-87b7-3462b93a46d0",
+      "type": "layoutSection",
       "layout": {
         "columnCount": 2,
         "columnGapMm": 8,
@@ -197,6 +192,181 @@
           "fontSize": 8
         }
       ]
+    },
+    {
+      "id": "p_68b1c28d-536e-4f5b-98c7-fe2172e2552a",
+      "pagination": {
+        "break": true
+      },
+      "type": "paragraph",
+      "children": [
+        {
+          "type": "text",
+          "text": "    1.   ",
+          "marks": [
+            "bold"
+          ],
+          "color": "#ffffff",
+          "backgroundColor": "#000000"
+        },
+        {
+          "type": "text",
+          "text": "                                                                                                     ",
+          "marks": [
+            "bold"
+          ],
+          "color": "#ffffff",
+          "backgroundColor": "#d0d0d0"
+        }
+      ]
+    },
+    {
+      "id": "ai_coord_problem_retry",
+      "type": "problem",
+      "tags": [
+        "SAT",
+        "coordinate plane",
+        "linear function"
+      ],
+      "lead": [
+        {
+          "id": "ai_retry_lead",
+          "type": "paragraph",
+          "children": [
+            {
+              "type": "text",
+              "text": "Line "
+            },
+            {
+              "type": "mathInline",
+              "id": "ai_retry_l1",
+              "tex": "\\ell",
+              "display": "inline",
+              "semanticRole": "expression"
+            },
+            {
+              "type": "text",
+              "text": " is graphed in the "
+            },
+            {
+              "type": "mathInline",
+              "id": "ai_retry_xy",
+              "tex": "xy",
+              "display": "inline",
+              "semanticRole": "expression"
+            },
+            {
+              "type": "text",
+              "text": "-plane below."
+            }
+          ]
+        }
+      ],
+      "prompt": [
+        {
+          "id": "ai_retry_space_1",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_2",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_3",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_4",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_5",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_6",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_7",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_8",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_9",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_10",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_11",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_space_12",
+          "type": "paragraph",
+          "children": []
+        },
+        {
+          "id": "ai_retry_prompt",
+          "type": "paragraph",
+          "children": [
+            {
+              "type": "text",
+              "text": "If line "
+            },
+            {
+              "type": "mathInline",
+              "id": "ai_retry_l2",
+              "tex": "\\ell",
+              "display": "inline",
+              "semanticRole": "expression"
+            },
+            {
+              "type": "text",
+              "text": " is translated up 5 units and right 7 units, then what is the slope of the new line?"
+            }
+          ]
+        },
+        {
+          "id": "ai_retry_a",
+          "spaceAfterPx": 124,
+          "type": "paragraph",
+          "children": [],
+          "align": "left"
+        }
+      ],
+      "solution": [],
+      "hints": [],
+      "numbering": {
+        "enabled": false
+      }
+    },
+    {
+      "id": "p_922786c7-7664-45c7-a380-f3443412e0a7",
+      "type": "paragraph",
+      "children": [
+        {
+          "type": "text",
+          "text": ""
+        }
+      ]
     }
   ],
   "outputProfiles": {
@@ -272,18 +442,18 @@
           {
             "id": "overlay_shape_b0c88651-84d7-4523-85ee-8033e083f348",
             "type": "geo",
-            "x": 220.58336062930283,
-            "y": 781.3777498378674,
+            "x": 220.5442357400041,
+            "y": 781.3462283783579,
             "rotation": 0,
             "stackLayer": "background",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 293.7197658033559,
-              "dx": 97.64380268119936,
+              "dy": 324.15711921952413,
+              "dx": 97.60464600416451,
               "line": {
                 "index": 0,
-                "dy": 284.7197319227873
+                "dy": 315.15709135701377
               }
             },
             "props": {
@@ -301,18 +471,18 @@
           {
             "id": "overlay_shape_ccbafeff-077c-43bb-92f1-108dc95046db",
             "type": "line",
-            "x": 282.55938435530777,
-            "y": 861.2356052371297,
+            "x": 282.52025946600884,
+            "y": 861.2040837776201,
             "rotation": 0,
             "stackLayer": "background",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 373.57762120261816,
-              "dx": 159.6198264072043,
+              "dy": 404.01497461878637,
+              "dx": 159.58066973016923,
               "line": {
                 "index": 0,
-                "dy": 364.5775873220495
+                "dy": 395.014946756276
               }
             },
             "props": {
@@ -342,17 +512,17 @@
           {
             "id": "ai3_reference_grid",
             "type": "tableShape",
-            "x": 144.05637676082193,
-            "y": 691.6674778691856,
+            "x": 144.0172518715232,
+            "y": 691.635956409676,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 204.00949383467412,
-              "dx": 21.116818812718464,
+              "dy": 234.44684725084232,
+              "dx": 21.07766213568361,
               "line": {
                 "index": 0,
-                "dy": 195.00945995410547
+                "dy": 225.44681938833196
               }
             },
             "props": {
@@ -505,16 +675,16 @@
           {
             "id": "overlay_group_af7827e5-2ec4-4732-b5c0-515781aef990",
             "type": "group",
-            "x": 179.67542350961725,
-            "y": 605.5958297007601,
+            "x": 179.6362986203185,
+            "y": 605.5643082412505,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 117.93784566624856,
-              "dx": 56.735865561513776,
+              "dy": 148.37519908241677,
+              "dx": 56.69670888447892,
               "line": {
                 "index": 0,
-                "dy": 108.93781178567991
+                "dy": 139.3751712199064
               }
             },
             "props": {
@@ -525,18 +695,18 @@
           {
             "id": "overlay_shape_393521cd-22ff-4e72-8110-ed0e39d6e250",
             "type": "geo",
-            "x": 179.67542350961725,
-            "y": 605.5958297007601,
+            "x": 179.6362986203185,
+            "y": 605.5643082412505,
             "rotation": 0,
             "parentId": "overlay_group_af7827e5-2ec4-4732-b5c0-515781aef990",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 117.93784566624856,
-              "dx": 56.735865561513776,
+              "dy": 148.37519908241677,
+              "dx": 56.69670888447892,
               "line": {
                 "index": 0,
-                "dy": 108.93781178567991
+                "dy": 139.3751712199064
               }
             },
             "props": {
@@ -554,18 +724,18 @@
           {
             "id": "overlay_shape_3b220997-18cb-497b-a18a-dd1cce3a1ee2",
             "type": "line",
-            "x": 220.68138554090729,
-            "y": 646.5507088528843,
+            "x": 220.64226065160855,
+            "y": 646.5191873933748,
             "rotation": 0,
             "parentId": "overlay_group_af7827e5-2ec4-4732-b5c0-515781aef990",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 158.8927248183728,
-              "dx": 97.74182759280382,
+              "dy": 189.33007823454102,
+              "dx": 97.70267091576896,
               "line": {
                 "index": 0,
-                "dy": 149.89269093780416
+                "dy": 180.33005037203066
               }
             },
             "props": {
@@ -594,18 +764,18 @@
           {
             "id": "overlay_shape_7602d6f1-7cc0-4aee-8af2-e378abb7af38",
             "type": "text",
-            "x": 237.1132391354131,
-            "y": 615.9107076933976,
+            "x": 237.07411424611436,
+            "y": 615.879186233888,
             "rotation": 0,
             "parentId": "overlay_group_af7827e5-2ec4-4732-b5c0-515781aef990",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 128.2527236588861,
-              "dx": 114.17368118730963,
+              "dy": 158.69007707505432,
+              "dx": 114.13452451027477,
               "line": {
                 "index": 0,
-                "dy": 119.25268977831746
+                "dy": 149.69004921254395
               }
             },
             "props": {
@@ -634,17 +804,17 @@
           {
             "id": "overlay_shape_44fe0d01-e173-4ea2-b277-1ee82d56e1d5",
             "type": "geo",
-            "x": 342.51134518175775,
-            "y": 626.0971494131845,
+            "x": 342.4722202924588,
+            "y": 626.065627953675,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 138.439165378673,
-              "dx": 219.57178723365428,
+              "dy": 168.87651879484122,
+              "dx": 219.5326305566192,
               "line": {
                 "index": 0,
-                "dy": 129.43913149810436
+                "dy": 159.87649093233085
               }
             },
             "props": {
@@ -662,17 +832,17 @@
           {
             "id": "overlay_shape_07f79966-8729-41c2-bbbe-d8f84a278f1c",
             "type": "text",
-            "x": 384.65497417613085,
-            "y": 602.8096733975899,
+            "x": 384.6158492868319,
+            "y": 602.7781519380803,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 115.15168936307839,
-              "dx": 261.7154162280274,
+              "dy": 145.5890427792466,
+              "dx": 261.6762595509923,
               "line": {
                 "index": 0,
-                "dy": 106.15165548250974
+                "dy": 136.58901491673623
               }
             },
             "props": {
@@ -701,17 +871,17 @@
           {
             "id": "overlay_shape_fd11f314-4bca-476d-9a6d-8d9305ac8815",
             "type": "text",
-            "x": 449.44796549699686,
-            "y": 646.2535486056659,
+            "x": 449.4088406076979,
+            "y": 646.2220271461563,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 158.59556457115434,
-              "dx": 326.5084075488934,
+              "dy": 189.03291798732255,
+              "dx": 326.4692508718583,
               "line": {
                 "index": 0,
-                "dy": 149.5955306905857
+                "dy": 180.03289012481218
               }
             },
             "props": {
@@ -740,16 +910,16 @@
           {
             "id": "overlay_group_9304e16d-58a6-4a8b-962c-d9291313c561",
             "type": "group",
-            "x": 503.46934016574244,
-            "y": 584.5184006710758,
+            "x": 503.4302152764435,
+            "y": 584.4868792115662,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 96.86041663656431,
-              "dx": 380.52978221763897,
+              "dy": 127.29777005273252,
+              "dx": 380.4906255406039,
               "line": {
                 "index": 0,
-                "dy": 87.86038275599566
+                "dy": 118.29774219022215
               }
             },
             "props": {
@@ -760,18 +930,18 @@
           {
             "id": "overlay_shape_e4b675bb-1adb-463b-9927-f0bfde66a284",
             "type": "geo",
-            "x": 503.46934016574244,
-            "y": 592.9619889681403,
+            "x": 503.4302152764435,
+            "y": 592.9304675086307,
             "rotation": 0,
             "parentId": "overlay_group_9304e16d-58a6-4a8b-962c-d9291313c561",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 105.30400493362879,
-              "dx": 380.52978221763897,
+              "dy": 135.741358349797,
+              "dx": 380.4906255406039,
               "line": {
                 "index": 0,
-                "dy": 96.30397105306014
+                "dy": 126.74133048728663
               }
             },
             "props": {
@@ -790,18 +960,18 @@
           {
             "id": "overlay_shape_2c823302-43ce-47f9-9285-7d1795750312",
             "type": "line",
-            "x": 546.7281429822773,
-            "y": 594.5184006710758,
+            "x": 546.689018092978,
+            "y": 594.4868792115662,
             "rotation": 0,
             "parentId": "overlay_group_9304e16d-58a6-4a8b-962c-d9291313c561",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 106.86041663656431,
-              "dx": 423.7885850341738,
+              "dy": 137.29777005273252,
+              "dx": 423.7494283571384,
               "line": {
                 "index": 0,
-                "dy": 97.86038275599566
+                "dy": 128.29774219022215
               }
             },
             "props": {
@@ -830,18 +1000,18 @@
           {
             "id": "overlay_shape_b2b6c12b-d140-42e1-997b-f88ceabac95d",
             "type": "text",
-            "x": 557.4578614399048,
-            "y": 682.6733172881727,
+            "x": 557.4187365506056,
+            "y": 682.6417958286631,
             "rotation": 0,
             "parentId": "overlay_group_9304e16d-58a6-4a8b-962c-d9291313c561",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 195.0153332536612,
-              "dx": 434.51830349180136,
+              "dy": 225.4526866698294,
+              "dx": 434.47914681476595,
               "line": {
                 "index": 0,
-                "dy": 186.01529937309255
+                "dy": 216.45265880731904
               }
             },
             "props": {
@@ -870,18 +1040,18 @@
           {
             "id": "overlay_shape_b198cc31-bc48-42c9-bc5a-2e9961be957b",
             "type": "text",
-            "x": 551.9749979676957,
-            "y": 625.782300699411,
+            "x": 551.9358730783964,
+            "y": 625.7507792399015,
             "rotation": 0,
             "parentId": "overlay_group_9304e16d-58a6-4a8b-962c-d9291313c561",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 138.12431666489954,
-              "dx": 429.0354400195922,
+              "dy": 168.56167008106775,
+              "dx": 428.9962833425568,
               "line": {
                 "index": 0,
-                "dy": 129.1242827843309
+                "dy": 159.56164221855738
               }
             },
             "props": {
@@ -910,18 +1080,18 @@
           {
             "id": "overlay_shape_bdcb9aaf-a395-4f06-bf7a-7d454d16167e",
             "type": "geo",
-            "x": 546.7281429822773,
-            "y": 658.9577830955875,
+            "x": 546.689018092978,
+            "y": 658.9262616360779,
             "rotation": 0,
             "parentId": "overlay_group_9304e16d-58a6-4a8b-962c-d9291313c561",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 171.299799061076,
-              "dx": 423.7885850341738,
+              "dy": 201.7371524772442,
+              "dx": 423.7494283571384,
               "line": {
                 "index": 0,
-                "dy": 162.29976518050734
+                "dy": 192.73712461473383
               }
             },
             "props": {
@@ -939,17 +1109,17 @@
           {
             "id": "overlay_shape_80740dfe-67e2-4277-a9fb-c0d4bb1ebb9d",
             "type": "geo",
-            "x": 189.67542350961725,
-            "y": 803.7768037141641,
+            "x": 189.6362986203185,
+            "y": 803.7452822546545,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 316.1188196796526,
-              "dx": 66.73586556151378,
+              "dy": 346.5561730958208,
+              "dx": 66.69670888447892,
               "line": {
                 "index": 0,
-                "dy": 307.1187857990839
+                "dy": 337.5561452333104
               }
             },
             "props": {
@@ -967,17 +1137,17 @@
           {
             "id": "overlay_shape_770fe268-0c0e-42c8-a6bb-95aa351da580",
             "type": "text",
-            "x": 229.78513112298793,
-            "y": 866.2679614850304,
+            "x": 229.7460062336892,
+            "y": 866.2364400255208,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 378.60997745051884,
-              "dx": 106.84557317488446,
+              "dy": 409.04733086668705,
+              "dx": 106.80641649784961,
               "line": {
                 "index": 0,
-                "dy": 369.6099435699502
+                "dy": 400.0473030041767
               }
             },
             "props": {
@@ -1006,17 +1176,17 @@
           {
             "id": "overlay_shape_6ddef634-757b-4b4e-8d7a-20948e25c9a0",
             "type": "text",
-            "x": 300.45203646715413,
-            "y": 846.350554930777,
+            "x": 300.4129115778552,
+            "y": 846.3190334712674,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 358.69257089626547,
-              "dx": 177.51247851905066,
+              "dy": 389.1299243124337,
+              "dx": 177.4733218420156,
               "line": {
                 "index": 0,
-                "dy": 349.6925370156968
+                "dy": 380.1298964499233
               }
             },
             "props": {
@@ -1045,17 +1215,17 @@
           {
             "id": "overlay_shape_64337cf7-36de-4abf-8e47-d12bbb9a59b5",
             "type": "text",
-            "x": 318.3280875221336,
-            "y": 804.019293563462,
+            "x": 318.2889626328347,
+            "y": 803.9877721039525,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 316.3613095289505,
-              "dx": 195.38852957403014,
+              "dy": 346.79866294511874,
+              "dx": 195.34937289699508,
               "line": {
                 "index": 0,
-                "dy": 307.3612756483819
+                "dy": 337.79863508260837
               }
             },
             "props": {
@@ -1084,16 +1254,16 @@
           {
             "id": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "type": "group",
-            "x": 372.46328123319483,
-            "y": 755.9372941912275,
+            "x": 372.4241563438959,
+            "y": 755.9057727317179,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 268.27931015671595,
-              "dx": 249.52372328509136,
+              "dy": 298.71666357288416,
+              "dx": 249.4845666080563,
               "line": {
                 "index": 0,
-                "dy": 259.2792762761473
+                "dy": 289.7166357103738
               }
             },
             "props": {
@@ -1104,18 +1274,18 @@
           {
             "id": "overlay_shape_21ba7bba-9e96-47d3-971e-c3188dbdaf34",
             "type": "geo",
-            "x": 379.77635441083066,
-            "y": 765.9372941912275,
+            "x": 379.73722952153173,
+            "y": 765.9057727317179,
             "rotation": 0,
             "parentId": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 278.27931015671595,
-              "dx": 256.8367964627272,
+              "dy": 308.71666357288416,
+              "dx": 256.7976397856921,
               "line": {
                 "index": 0,
-                "dy": 269.2792762761473
+                "dy": 299.7166357103738
               }
             },
             "props": {
@@ -1134,18 +1304,18 @@
           {
             "id": "overlay_shape_2d856996-fa3b-499e-93ca-0c59fae8c985",
             "type": "line",
-            "x": 382.46328123319483,
-            "y": 832.732259164151,
+            "x": 382.4241563438959,
+            "y": 832.7007377046414,
             "rotation": 0,
             "parentId": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 345.07427512963943,
-              "dx": 259.52372328509136,
+              "dy": 375.51162854580764,
+              "dx": 259.4845666080563,
               "line": {
                 "index": 0,
-                "dy": 336.0742412490708
+                "dy": 366.5116006832973
               }
             },
             "props": {
@@ -1174,18 +1344,18 @@
           {
             "id": "overlay_shape_01ebc70f-5b1c-413a-af8f-aa4c7aac6646",
             "type": "line",
-            "x": 475.1472112853145,
-            "y": 832.4868282195093,
+            "x": 475.10808639601555,
+            "y": 832.4553067599998,
             "rotation": 0,
             "parentId": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 344.8288441849978,
-              "dx": 352.207653337211,
+              "dy": 375.266197601166,
+              "dx": 352.16849666017595,
               "line": {
                 "index": 0,
-                "dy": 335.82881030442917
+                "dy": 366.26616973865566
               }
             },
             "props": {
@@ -1214,18 +1384,18 @@
           {
             "id": "overlay_shape_ba03f963-8eb6-4ed5-b276-a2de94e4353b",
             "type": "line",
-            "x": 451.1164748733447,
-            "y": 765.9372941912275,
+            "x": 451.0773499840458,
+            "y": 765.9057727317179,
             "rotation": 0,
             "parentId": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 278.27931015671595,
-              "dx": 328.17691692524124,
+              "dy": 308.71666357288416,
+              "dx": 328.1377602482062,
               "line": {
                 "index": 0,
-                "dy": 269.2792762761473
+                "dy": 299.7166357103738
               }
             },
             "props": {
@@ -1254,18 +1424,18 @@
           {
             "id": "overlay_shape_8889b0d7-a6ef-4179-92c9-a5e7fc07efbf",
             "type": "line",
-            "x": 440.2932689959674,
-            "y": 832.732259164151,
+            "x": 440.2541441066685,
+            "y": 832.7007377046414,
             "rotation": 0,
             "parentId": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 345.07427512963943,
-              "dx": 317.35371104786395,
+              "dy": 375.51162854580764,
+              "dx": 317.3145543708289,
               "line": {
                 "index": 0,
-                "dy": 336.0742412490708
+                "dy": 366.5116006832973
               }
             },
             "props": {
@@ -1294,18 +1464,18 @@
           {
             "id": "overlay_shape_71afc126-904a-4486-ba71-38bf67af2f1b",
             "type": "line",
-            "x": 440.2932689959674,
-            "y": 765.9372941912275,
+            "x": 440.2541441066685,
+            "y": 765.9057727317179,
             "rotation": 0,
             "parentId": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 278.27931015671595,
-              "dx": 317.35371104786395,
+              "dy": 308.71666357288416,
+              "dx": 317.3145543708289,
               "line": {
                 "index": 0,
-                "dy": 269.2792762761473
+                "dy": 299.7166357103738
               }
             },
             "props": {
@@ -1334,18 +1504,18 @@
           {
             "id": "overlay_shape_c8737cc5-dff3-42e0-a922-1e0d0db44967",
             "type": "line",
-            "x": 451.1164748733448,
-            "y": 768.8967744758402,
+            "x": 451.0773499840459,
+            "y": 768.8652530163306,
             "rotation": 0,
             "parentId": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 281.23879044132866,
-              "dx": 328.17691692524136,
+              "dy": 311.67614385749687,
+              "dx": 328.1377602482063,
               "line": {
                 "index": 0,
-                "dy": 272.23875656076
+                "dy": 302.6761159949865
               }
             },
             "props": {
@@ -1374,18 +1544,18 @@
           {
             "id": "overlay_shape_f5547d7a-b22a-42a0-b42b-ad7da0cc627e",
             "type": "line",
-            "x": 451.43697146440286,
-            "y": 840.0580460690696,
+            "x": 451.3978465751039,
+            "y": 840.02652460956,
             "rotation": 0,
             "parentId": "overlay_group_54aeae1e-51a1-4f71-b9e0-1526fcdca08c",
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 352.4000620345581,
-              "dx": 328.4974135162994,
+              "dy": 382.8374154507263,
+              "dx": 328.4582568392643,
               "line": {
                 "index": 0,
-                "dy": 343.40002815398947
+                "dy": 373.83738758821596
               }
             },
             "props": {
@@ -1418,17 +1588,17 @@
           {
             "id": "overlay_shape_8cd3059f-d112-40d9-b858-909090050431",
             "type": "text",
-            "x": 426.7704017562685,
-            "y": 869.1347498264442,
+            "x": 426.73127686696955,
+            "y": 869.1032283669347,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 381.47676579193273,
-              "dx": 303.830843808165,
+              "dy": 411.91411920810094,
+              "dx": 303.79168713112995,
               "line": {
                 "index": 0,
-                "dy": 372.4767319113641
+                "dy": 402.9140913455906
               }
             },
             "props": {
@@ -1457,17 +1627,17 @@
           {
             "id": "overlay_shape_1a6d3ab7-83cf-431f-8003-40a63cb66c2a",
             "type": "text",
-            "x": 507.6810504638339,
-            "y": 849.5001103245907,
+            "x": 507.641925574535,
+            "y": 849.4685888650811,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 361.84212629007914,
-              "dx": 384.74149251573044,
+              "dy": 392.27947970624734,
+              "dx": 384.7023358386954,
               "line": {
                 "index": 0,
-                "dy": 352.8420924095105
+                "dy": 383.279451843737
               }
             },
             "props": {
@@ -1496,17 +1666,17 @@
           {
             "id": "overlay_shape_a3764d4d-3c6b-4c25-b13f-768a49fa2ef9",
             "type": "text",
-            "x": 454.68283877604404,
-            "y": 814.732259164151,
+            "x": 454.6437138867451,
+            "y": 814.7007377046414,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 327.07427512963943,
-              "dx": 331.74328082794057,
+              "dy": 357.51162854580764,
+              "dx": 331.7041241509055,
               "line": {
                 "index": 0,
-                "dy": 318.0742412490708
+                "dy": 348.5116006832973
               }
             },
             "props": {
@@ -1535,17 +1705,17 @@
           {
             "id": "overlay_shape_9c449b18-a541-42c3-acdd-79928f7e6a0f",
             "type": "tableShape",
-            "x": 108.13638991699906,
-            "y": 887.626753205087,
+            "x": 108.09726502770044,
+            "y": 887.5952317455774,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 399.96876917057546,
-              "dx": -14.803168031104406,
+              "dy": 430.40612258674366,
+              "dx": -14.842324708139145,
               "line": {
                 "index": 0,
-                "dy": 390.9687352900068
+                "dy": 421.4060947242333
               }
             },
             "props": {
@@ -1653,17 +1823,17 @@
           {
             "id": "ai3_top_rule",
             "type": "line",
-            "x": 0.8032853695738282,
-            "y": -0.02477254949650387,
+            "x": 0.7641604802752084,
+            "y": 1.5000759501848222,
             "rotation": 0,
             "anchor": {
               "type": "block",
-              "blockId": "p_91633144-59ac-4fae-9ce4-3ba48d128db9",
-              "dy": -70.05626664951241,
-              "dx": -122.13627257852964,
+              "blockId": "ai3_sat_title",
+              "dy": -84.53149211209399,
+              "dx": -122.17542925556438,
               "line": {
                 "index": 0,
-                "dy": -70.05626664951241
+                "dy": -88.53152144970167
               }
             },
             "props": {
@@ -1693,17 +1863,17 @@
           {
             "id": "ai3_reference_rule",
             "type": "line",
-            "x": 106.27995363503145,
-            "y": 540.5684017011201,
+            "x": 106.24082874573283,
+            "y": 540.5368802416106,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 52.91041766660862,
-              "dx": -16.659604313072023,
+              "dy": 83.34777108277683,
+              "dx": -16.698760990106763,
               "line": {
                 "index": 0,
-                "dy": 43.91038378603997
+                "dy": 74.34774322026647
               }
             },
             "props": {
@@ -1732,17 +1902,17 @@
           {
             "id": "overlay_shape_8bece955-38f1-4f12-b0c6-d7c3280a182c",
             "type": "line",
-            "x": 106.27995363503145,
-            "y": 174.32869796681862,
+            "x": 106.24082874573283,
+            "y": 164.31928968108656,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "p_f3a8b888-7960-4916-bdeb-e21a20338db2",
-              "dy": 5.953090162058828,
-              "dx": -16.659604313072023,
+              "dy": 26.412539034825244,
+              "dx": -16.698760990106763,
               "line": {
                 "index": 0,
-                "dy": 5.953090162058828
+                "dy": 26.412539034825244
               }
             },
             "props": {
@@ -1771,17 +1941,17 @@
           {
             "id": "overlay_shape_cf27fbc2-089b-447a-806c-83a0db10d781",
             "type": "line",
-            "x": 190.1408654517005,
-            "y": 804.019293563462,
+            "x": 190.10174056240177,
+            "y": 803.9877721039525,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 316.3613095289505,
-              "dx": 67.20130750359704,
+              "dy": 346.79866294511874,
+              "dx": 67.16215082656218,
               "line": {
                 "index": 0,
-                "dy": 307.3612756483819
+                "dy": 337.79863508260837
               }
             },
             "props": {
@@ -1811,17 +1981,17 @@
           {
             "id": "overlay_shape_046b0f9e-130f-4e38-9873-aa9ac1485301",
             "type": "line",
-            "x": 282.55938435530777,
-            "y": 804.019293563462,
+            "x": 282.52025946600884,
+            "y": 803.9877721039525,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 316.3613095289505,
-              "dx": 159.6198264072043,
+              "dy": 346.79866294511874,
+              "dx": 159.58066973016923,
               "line": {
                 "index": 0,
-                "dy": 307.3612756483819
+                "dy": 337.79863508260837
               }
             },
             "props": {
@@ -1851,17 +2021,17 @@
           {
             "id": "overlay_shape_9ca0770b-e4a5-4285-8ab9-82d836d07f30",
             "type": "line",
-            "x": 190.1408654517005,
-            "y": 861.019293563462,
+            "x": 190.10174056240177,
+            "y": 860.9877721039525,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 373.3613095289505,
-              "dx": 67.20130750359704,
+              "dy": 403.79866294511874,
+              "dx": 67.16215082656218,
               "line": {
                 "index": 0,
-                "dy": 364.3612756483819
+                "dy": 394.79863508260837
               }
             },
             "props": {
@@ -1889,19 +2059,264 @@
             }
           },
           {
-            "id": "overlay_shape_97a28919-cfd7-4e9b-a2fe-69275e7d94a9",
+            "id": "ai_coord_graph_retry",
+            "type": "graph2dShape",
+            "x": 207.86606153524414,
+            "y": 1315.0561181520984,
+            "rotation": 0,
+            "anchor": {
+              "type": "block",
+              "blockId": "ai_retry_lead",
+              "dy": 43.59854854737182,
+              "dx": 84.92647179940455,
+              "line": {
+                "index": 0,
+                "dy": 40.59850747061273
+              }
+            },
+            "props": {
+              "boundsMode": "plot",
+              "w": 320,
+              "h": 338.0076586646196,
+              "spec": {
+                "kind": "cartesian",
+                "title": "",
+                "width": 384,
+                "height": 390.0076586646196,
+                "viewBox": {
+                  "xMin": "-6",
+                  "xMax": "10",
+                  "yMin": "-7",
+                  "yMax": "13"
+                },
+                "axes": {
+                  "grid": true,
+                  "showX": true,
+                  "showY": true,
+                  "showTicks": false,
+                  "xLabel": "",
+                  "yLabel": "",
+                  "originLabel": "",
+                  "tickFontSize": 9,
+                  "xTickStep": "1",
+                  "yTickStep": "1"
+                },
+                "curves": [
+                  {
+                    "id": "ai_retry_curve_l",
+                    "expr": "-2*x+8",
+                    "label": "ℓ",
+                    "color": "#0d0d0d",
+                    "mode": "yOfX",
+                    "dash": "solid",
+                    "strokeWidth": 2.2,
+                    "domain": {
+                      "min": "-3",
+                      "max": "7.5"
+                    }
+                  }
+                ],
+                "points": [
+                  {
+                    "id": "ai_retry_p_m2",
+                    "x": "-2",
+                    "y": "12",
+                    "color": "#0d0d0d",
+                    "fill": "solid",
+                    "radius": 3,
+                    "showXProjection": true,
+                    "showYProjection": true
+                  },
+                  {
+                    "id": "ai_retry_p_0",
+                    "x": "0",
+                    "y": "8",
+                    "color": "#0d0d0d",
+                    "fill": "solid",
+                    "radius": 3
+                  },
+                  {
+                    "id": "ai_retry_p_2",
+                    "x": "2",
+                    "y": "4",
+                    "color": "#0d0d0d",
+                    "fill": "solid",
+                    "radius": 3
+                  },
+                  {
+                    "id": "ai_retry_p_4",
+                    "x": "4",
+                    "y": "0",
+                    "color": "#0d0d0d",
+                    "fill": "solid",
+                    "radius": 3
+                  },
+                  {
+                    "id": "ai_retry_p_5",
+                    "x": "5",
+                    "y": "-2",
+                    "color": "#0d0d0d",
+                    "fill": "solid",
+                    "radius": 3
+                  },
+                  {
+                    "id": "ai_retry_p_7",
+                    "x": "7",
+                    "y": "-6",
+                    "color": "#0d0d0d",
+                    "fill": "solid",
+                    "radius": 3,
+                    "showXProjection": true,
+                    "showYProjection": true
+                  }
+                ],
+                "annotations": [
+                  {
+                    "id": "ai_retry_label_l",
+                    "x": "-3.2",
+                    "y": "12.5",
+                    "text": ""
+                  }
+                ],
+                "showFormulaLabels": false
+              },
+              "axisLabelTextShapeIds": {
+                "x": "ai_graph_label_e9a0b2f3-54a8-404c-98f1-38e04f4f2660",
+                "y": "ai_graph_label_84850532-8ba9-4e6a-a327-0fc7a56f8797"
+              },
+              "pointLabelTextShapeIdsByPointId": {},
+              "annotationTextShapeIdsByAnnotationId": {
+                "ai_retry_label_l": "ai_graph_label_27e781e3-a306-4fbe-af9d-d245c9623d82"
+              },
+              "labelTextShapeIds": [],
+              "labelTextShapeIdsByCurveId": {}
+            }
+          },
+          {
+            "id": "ai_graph_label_e9a0b2f3-54a8-404c-98f1-38e04f4f2660",
+            "type": "text",
+            "x": 514.8660615352442,
+            "y": 1513.761096284101,
+            "rotation": 0,
+            "anchor": {
+              "type": "shape",
+              "shapeId": "ai_coord_graph_retry",
+              "dx": 0,
+              "dy": 0,
+              "rx": 0.959375,
+              "ry": 0.5878712302467775
+            },
+            "props": {
+              "w": 9,
+              "h": 18,
+              "blocks": [
+                {
+                  "type": "paragraph",
+                  "id": "p_815ced46-f9ba-401f-a2be-b5fe565e1972",
+                  "children": [
+                    {
+                      "type": "mathInline",
+                      "id": "overlay_math_26118fe3-d173-45b3-958f-8e2d1cd6805a",
+                      "tex": "x",
+                      "display": "inline",
+                      "semanticRole": "expression"
+                    }
+                  ]
+                }
+              ],
+              "color": "#1f2937",
+              "fontSize": 10,
+              "size": "s"
+            }
+          },
+          {
+            "id": "ai_graph_label_84850532-8ba9-4e6a-a327-0fc7a56f8797",
+            "type": "text",
+            "x": 333.86606153524417,
+            "y": 1312.0561181520984,
+            "rotation": 0,
+            "anchor": {
+              "type": "shape",
+              "shapeId": "ai_coord_graph_retry",
+              "dx": 0,
+              "dy": 0,
+              "rx": 0.39375,
+              "ry": -0.008875538536174654
+            },
+            "props": {
+              "w": 8,
+              "h": 18,
+              "blocks": [
+                {
+                  "type": "paragraph",
+                  "id": "p_53dffc1d-3019-4a76-a3a4-ed8e9578302f",
+                  "children": [
+                    {
+                      "type": "mathInline",
+                      "id": "overlay_math_8ebb3118-2d48-4712-983c-52d43c346a5e",
+                      "tex": "y",
+                      "display": "inline",
+                      "semanticRole": "expression"
+                    }
+                  ]
+                }
+              ],
+              "color": "#1f2937",
+              "fontSize": 10,
+              "size": "s"
+            }
+          },
+          {
+            "id": "ai_graph_label_27e781e3-a306-4fbe-af9d-d245c9623d82",
+            "type": "text",
+            "x": 263.86606153524417,
+            "y": 1316.5063096187139,
+            "rotation": 0,
+            "anchor": {
+              "type": "shape",
+              "shapeId": "ai_coord_graph_retry",
+              "dx": 0,
+              "dy": 0,
+              "rx": 0.175,
+              "ry": 0.00429041008225915
+            },
+            "props": {
+              "w": 8,
+              "h": 18,
+              "blocks": [
+                {
+                  "type": "paragraph",
+                  "id": "p_8624c28b-9013-4144-b702-b18b26b91f05",
+                  "children": [
+                    {
+                      "type": "mathInline",
+                      "id": "overlay_math_ac99fd46-9c95-488d-9af5-9c2146771b1c",
+                      "tex": "ℓ",
+                      "display": "inline",
+                      "semanticRole": "expression"
+                    }
+                  ]
+                }
+              ],
+              "color": "#1f2937",
+              "fontSize": 10,
+              "size": "s"
+            }
+          },
+          {
+            "id": "overlay_shape_41e82bba-a51e-4151-b2f3-cd1db9c11e36",
             "type": "line",
-            "x": -1.5842392504721374,
-            "y": 1122.5196850393702,
+            "x": 0.4651495557439631,
+            "y": 1160.7540813962273,
             "rotation": 0,
             "anchor": {
               "type": "block",
               "blockId": "ai3_reference_h",
-              "dy": 634.8617010048587,
-              "dx": -124.52379719857561,
+              "dy": 703.5649722373936,
+              "dx": -122.47444018009563,
               "line": {
                 "index": 0,
-                "dy": 625.8616671242901
+                "dy": 694.5649443748832
               }
             },
             "props": {
@@ -1926,6 +2341,240 @@
               "labelColor": "#0083d5",
               "dash": "solid",
               "size": "xl"
+            }
+          },
+          {
+            "id": "overlay_shape_2141d1ac-30c3-4ca2-9cca-9d8576bd88f1",
+            "type": "tableShape",
+            "x": 116.4939802808081,
+            "y": 1749.8482919607031,
+            "rotation": 0,
+            "anchor": {
+              "type": "block",
+              "blockId": "ai_retry_a",
+              "dy": 11.357828550182376,
+              "dx": -6.445609455031487,
+              "line": {
+                "index": 0,
+                "dy": 11.357828550182376
+              }
+            },
+            "props": {
+              "w": 120,
+              "h": 128,
+              "table": {
+                "version": 1,
+                "kind": "plain",
+                "columns": [
+                  {
+                    "id": "table_col_9437e05b-c7ca-466d-87ff-d8ecdc80785a",
+                    "width": {
+                      "mode": "fr",
+                      "value": 1,
+                      "min": 64
+                    }
+                  }
+                ],
+                "rows": [
+                  {
+                    "id": "table_row_1d6cdda9-deeb-490c-a49c-6c71304c7952",
+                    "height": {
+                      "mode": "auto",
+                      "min": 34
+                    },
+                    "role": "header"
+                  },
+                  {
+                    "id": "table_row_9617a025-97ba-4416-8267-de9ef86b2923",
+                    "height": {
+                      "mode": "auto",
+                      "min": 32
+                    },
+                    "role": "body"
+                  },
+                  {
+                    "id": "table_row_2bf999d7-0877-4d02-b8b5-88a6a866ba5d",
+                    "height": {
+                      "mode": "auto",
+                      "min": 32
+                    },
+                    "role": "body"
+                  },
+                  {
+                    "id": "table_row_7eadfa71-bfac-4416-a65c-29d48a7caf47",
+                    "height": {
+                      "mode": "auto",
+                      "min": 32
+                    },
+                    "role": "body"
+                  }
+                ],
+                "cells": [
+                  {
+                    "id": "table_cell_4231fe17-8aa7-402f-ac38-b5a7240089dd",
+                    "rowId": "table_row_1d6cdda9-deeb-490c-a49c-6c71304c7952",
+                    "columnId": "table_col_9437e05b-c7ca-466d-87ff-d8ecdc80785a",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "id": "table_p_df4b1956-b910-4ddf-b58a-3eb93f77a772",
+                        "children": [
+                          {
+                            "type": "mathInline",
+                            "id": "m_inline_d0697936-8616-4de2-a58a-4913cd88d227",
+                            "tex": "A) $-\\frac{2}{5}$",
+                            "display": "inline",
+                            "semanticRole": "expression"
+                          }
+                        ],
+                        "align": "center"
+                      }
+                    ],
+                    "style": {
+                      "fontSize": 11
+                    }
+                  },
+                  {
+                    "id": "table_cell_e5ac4c34-120a-4b53-920c-10ececc57f65",
+                    "rowId": "table_row_9617a025-97ba-4416-8267-de9ef86b2923",
+                    "columnId": "table_col_9437e05b-c7ca-466d-87ff-d8ecdc80785a",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "id": "table_p_890e92e1-a276-48b5-ae9c-05f3192c761d",
+                        "children": [
+                          {
+                            "type": "mathInline",
+                            "id": "m_inline_ca949502-d9b7-4ee4-b991-e93a6f842971",
+                            "tex": "B) $-\\frac{3}{2}$",
+                            "display": "inline",
+                            "semanticRole": "expression"
+                          }
+                        ],
+                        "align": "center"
+                      }
+                    ],
+                    "style": {
+                      "fontSize": 11
+                    }
+                  },
+                  {
+                    "id": "table_cell_31f2c6af-4a5e-43a6-b0f1-50b79b5d18b6",
+                    "rowId": "table_row_2bf999d7-0877-4d02-b8b5-88a6a866ba5d",
+                    "columnId": "table_col_9437e05b-c7ca-466d-87ff-d8ecdc80785a",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "id": "table_p_9b3b11f3-de08-4fc8-97a2-d0246e833a0e",
+                        "children": [
+                          {
+                            "type": "mathInline",
+                            "id": "m_inline_0d4d8e06-b91b-4175-96ce-2322eff7111f",
+                            "tex": "C) $-\\frac{8}{9}$",
+                            "display": "inline",
+                            "semanticRole": "expression"
+                          }
+                        ],
+                        "align": "center"
+                      }
+                    ],
+                    "style": {
+                      "fontSize": 11
+                    }
+                  },
+                  {
+                    "id": "table_cell_02f51f5e-c22f-4299-ab21-79bdde9a64a7",
+                    "rowId": "table_row_7eadfa71-bfac-4416-a65c-29d48a7caf47",
+                    "columnId": "table_col_9437e05b-c7ca-466d-87ff-d8ecdc80785a",
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "id": "table_p_aa710ce9-f59d-47e1-8c23-8ca3360dbd36",
+                        "children": [
+                          {
+                            "type": "mathInline",
+                            "id": "m_inline_2e46f4ff-1b76-4991-8fce-7f8a479b99a0",
+                            "tex": "D) $-\\frac{11}{14}$",
+                            "display": "inline",
+                            "semanticRole": "expression"
+                          }
+                        ],
+                        "align": "center"
+                      }
+                    ],
+                    "style": {
+                      "fontSize": 11
+                    }
+                  }
+                ],
+                "grid": {
+                  "borderColor": "#111827",
+                  "borderWidth": 1,
+                  "borderStyle": "solid",
+                  "showOuterBorder": true,
+                  "showInnerBorders": true,
+                  "lineOverrides": [
+                    {
+                      "axis": "horizontal",
+                      "beforeRowId": "table_row_9617a025-97ba-4416-8267-de9ef86b2923",
+                      "style": {
+                        "visible": false
+                      }
+                    },
+                    {
+                      "axis": "horizontal",
+                      "beforeRowId": "table_row_2bf999d7-0877-4d02-b8b5-88a6a866ba5d",
+                      "style": {
+                        "visible": false
+                      }
+                    },
+                    {
+                      "axis": "horizontal",
+                      "beforeRowId": "table_row_7eadfa71-bfac-4416-a65c-29d48a7caf47",
+                      "style": {
+                        "visible": false
+                      }
+                    },
+                    {
+                      "axis": "horizontal",
+                      "edge": "bottom",
+                      "style": {
+                        "visible": false
+                      }
+                    },
+                    {
+                      "axis": "horizontal",
+                      "edge": "top",
+                      "style": {
+                        "visible": false
+                      }
+                    },
+                    {
+                      "axis": "vertical",
+                      "edge": "left",
+                      "style": {
+                        "visible": false
+                      }
+                    },
+                    {
+                      "axis": "vertical",
+                      "edge": "right",
+                      "style": {
+                        "visible": false
+                      }
+                    }
+                  ]
+                },
+                "defaultCellStyle": {
+                  "align": "center",
+                  "verticalAlign": "middle",
+                  "paddingX": 8,
+                  "paddingY": 5,
+                  "color": "#111827",
+                  "fontSize": 15,
+                  "fontWeight": "normal"
+                }
+              }
             }
           }
         ],
@@ -1971,8 +2620,8 @@
           }
         }
       },
-      "updatedAt": "2026-09-03T18:13:10.375Z"
+      "updatedAt": "2026-09-03T23:34:56.696Z"
     }
   },
-  "updatedAt": "2026-09-03T18:13:10.376Z"
+  "updatedAt": "2026-09-03T23:34:57.172Z"
 }

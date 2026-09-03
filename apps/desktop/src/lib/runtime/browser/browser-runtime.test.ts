@@ -107,6 +107,41 @@ describe("browser runtime", () => {
     expect(await runtime.library.listFiles()).toHaveLength(2);
   });
 
+  it("replaces the distributed legacy calculator test with the current pinned material", async () => {
+    const initialized = await runtime.library.initializeWorkspace();
+    expect(initialized.ok).toBe(true);
+    const files = await runtime.library.listFiles();
+    const mathFile = files.find((file) => file.title === "Math Test – Calculator Questions");
+    expect(mathFile).toBeDefined();
+
+    const current = await runtime.library.loadDocumentWithRecovery(mathFile!.fileId);
+    expect(current.ok).toBe(true);
+    const legacy = current.ok
+      ? {
+          ...current.document,
+          content: [{
+            id: "p_91633144-59ac-4fae-9ce4-3ba48d128db9",
+            type: "paragraph" as const,
+            children: [],
+          }],
+        }
+      : createBlankDocument("Math Test – Calculator Questions");
+    await backend.write(["documents"], (tx) => tx.put("documents", mathFile!.fileId, {
+      fileId: mathFile!.fileId,
+      document: legacy,
+      updatedAt: legacy.updatedAt ?? new Date().toISOString(),
+    }));
+
+    const restored = await runtime.library.initializeWorkspace();
+    const migrated = await runtime.library.loadDocumentWithRecovery(mathFile!.fileId);
+
+    expect(restored.ok && restored.state.openFileIds).toContain(mathFile!.fileId);
+    expect(migrated.ok && migrated.document.docId).toBe(legacy.docId);
+    expect(migrated.ok && migrated.revision).toBe(2);
+    expect(migrated.ok && migrated.document.content[0]?.id).toBe("ai3_sat_title");
+    expect(migrated.ok && JSON.stringify(migrated.document)).toContain("ai_coord_problem_retry");
+  });
+
   it("restores the two pinned tabs on every start without closing the current tab", async () => {
     const initialized = await runtime.library.initializeWorkspace();
     expect(initialized.ok).toBe(true);
