@@ -77,24 +77,32 @@ describe("browser runtime", () => {
     });
   });
 
-  it("creates a default workspace and one document on first start", async () => {
+  it("opens the English guide and calculator test on first start", async () => {
     const initialized = await runtime.library.initializeWorkspace();
 
     expect(initialized.ok).toBe(true);
     const files = await runtime.library.listFiles();
-    expect(files).toHaveLength(1);
+    expect(files.map((file) => file.title)).toEqual([
+      "Sigma Studio basics",
+      "Math Test – Calculator Questions",
+    ]);
+    expect(initialized.ok && initialized.state.openFileIds).toEqual(files.map((file) => file.fileId));
     expect(initialized.ok && initialized.state.activeFileId).toBe(files[0].fileId);
+
+    const guide = await runtime.library.loadDocumentWithRecovery(files[0].fileId);
+    expect(guide.ok && JSON.stringify(guide.document)).toContain("Write and format content in a block editor.");
+    expect(guide.ok && JSON.stringify(guide.document)).not.toMatch(/[ぁ-んァ-ン一-龯]/);
 
     const overview = await runtime.workspace.listOverview();
     expect(overview.state).toBe("ready");
     expect(overview.state === "ready" && overview.overview.workspaces).toHaveLength(1);
   });
 
-  it("does not create a second document when starting again", async () => {
+  it("does not duplicate the initial documents when starting again", async () => {
     await runtime.library.initializeWorkspace();
     await runtime.library.initializeWorkspace();
 
-    expect(await runtime.library.listFiles()).toHaveLength(1);
+    expect(await runtime.library.listFiles()).toHaveLength(2);
   });
 
   /** 「再読み込みしても消えない」の最小形。保管層を共有した別ランタイムから読み直す。 */
@@ -291,19 +299,22 @@ describe("browser runtime", () => {
 
   it("hides a deleted document and keeps the remaining one open", async () => {
     await runtime.library.initializeWorkspace();
+    const initialFiles = await runtime.library.listFiles();
     const second = await runtime.library.createDocument({ title: "2枚目" });
-    const first = (await runtime.library.listFiles()).find((file) => file.fileId !== second.fileId);
 
     const deleted = await runtime.library.deleteFile(second.fileId);
 
     expect(deleted.ok).toBe(true);
     const remaining = await runtime.library.listFiles();
-    expect(remaining.map((file) => file.fileId)).toEqual([first?.fileId]);
+    expect(remaining.map((file) => file.fileId)).toEqual(initialFiles.map((file) => file.fileId));
   });
 
   it("keeps a canonical delete successful when version cleanup fails", async () => {
     const initialized = await runtime.library.initializeWorkspace();
     const fileId = initialized.ok ? initialized.state.activeFileId : "";
+    const otherFileId = (await runtime.library.listFiles()).find((file) => file.fileId !== fileId)?.fileId;
+    expect(otherFileId).toBeDefined();
+    await runtime.library.deleteFile(otherFileId!);
     await runtime.library.saveDocument(fileId, createBlankDocument("履歴あり"), { expectedRevision: 1 });
     const [version] = await runtime.library.listDocumentVersions(fileId);
     expect(version).toBeDefined();
@@ -326,7 +337,7 @@ describe("browser runtime", () => {
 
     expect(copy.fileId).not.toBe(fileId);
     expect(copy.metadata.title).toContain("元の教材");
-    expect(await runtime.library.listFiles()).toHaveLength(2);
+    expect(await runtime.library.listFiles()).toHaveLength(3);
   });
 
   it("stores templates and materials per browser", async () => {

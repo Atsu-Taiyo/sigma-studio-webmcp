@@ -56,7 +56,6 @@ import {
   BrowserLedgerSchemaError,
   blankDocumentWithTitle,
   createFileFromDocument,
-  createInitialDocument,
   describeLedgerFailure,
   describeStorageError,
   duplicateTitle,
@@ -68,6 +67,7 @@ import {
   WORKSPACE_STATE_KEY,
   type StoredDocumentRecord,
 } from "./browser-library";
+import { createInitialBrowserDocuments } from "./initial-documents";
 import type { StorageChangeChannel } from "./change-channel";
 import { createStorageChangeChannel } from "./change-channel";
 import { createIndexedDbStoreBackend, isIndexedDbAvailable } from "./idb-backend";
@@ -262,13 +262,18 @@ export function createBrowserRuntime(options: BrowserRuntimeOptions): AppRuntime
           repairLibrary(record, now);
 
           if (visibleFiles(record).length === 0) {
-            const created = await createFileFromDocument(tx, record, {
-              document: createInitialDocument(),
-              now,
-            });
+            const created = [];
+            for (const document of createInitialBrowserDocuments(now)) {
+              created.push(await createFileFromDocument(tx, record, { document, now }));
+            }
+            const state = {
+              openFileIds: created.map((file) => file.fileId),
+              activeFileId: created[0].fileId,
+            };
+            await writeWorkspaceState(tx, record, state);
             return {
               ok: true as const,
-              state: { openFileIds: [created.fileId], activeFileId: created.fileId },
+              state,
             };
           }
 
